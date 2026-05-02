@@ -1,0 +1,42 @@
+[project]
+name = "skillbot"
+version = "0.1.0"
+description = "Multi-agent framework — unified chat API for deer-flow, nanobot, and hermes-agent"
+requires-python = ">=3.9"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "skillbot" }]
+
+dependencies = [
+    "requests>=2.28",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+nanobot = [
+    "websockets>=12.0",
+]
+# deer-flow backend requires the deer-flow agent's venv on sys.path
+# (langchain, langgraph, etc. — managed by agents/deer-flow/backend/.venv)
+# Usage:
+#   PYTHONPATH="src:agents/deer-flow/backend/packages/harness" \\
+#     agents/deer-flow/backend/.venv/bin/python3 -c "from chat import ChatClient; ..."
+deerflow = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "deerflow: tests requiring deer-flow venv + DEEPSEEK_API_KEY",
+    "nanobot: tests requiring nanobot :8900 reachable",
+    "hermes: tests requiring hermes :8642 reachable",
+    "integration: tests requiring actual agent processes running",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/chat"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

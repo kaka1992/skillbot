@@ -1,0 +1,114 @@
+# Hermes Agent Configuration
+# See: https://github.com/nousresearch/hermes-agent
+
+# Default model (OpenRouter slug format: provider/model)
+model: deepseek/deepseek-v4-flash
+
+# LLM providers — api_key is read from ~/.hermes/.env
+providers:
+  deepseek: {}
+  # openrouter: {}     # auto-detected when OPENROUTER_API_KEY is set
+  # anthropic: {}      # auto-detected when ANTHROPIC_API_KEY is set
+  # openai: {}         # auto-detected when OPENAI_API_KEY is set
+  # gemini: {}         # auto-detected when GEMINI_API_KEY is set
+  # ollama:            # local — set api_base if not default
+
+# Fallback provider chain (tried in order when primary fails)
+# fallback_providers:
+#   - provider: openrouter
+#     model: anthropic/claude-sonnet-4
+
+# Toolset loading
+toolsets:
+  - hermes-cli
+
+# Agent behavior
+agent:
+  max_turns: 90
+  gateway_timeout: 1800        # Inactivity timeout (seconds, 0 = unlimited)
+  restart_drain_timeout: 60    # Graceful drain on restart (seconds)
+  api_max_retries: 3           # App-level retries for API errors
+  tool_use_enforcement: auto   # auto | true | false | [model-substrings]
+  gateway_notify_interval: 180 # Periodic "still working" notification (seconds)
+  image_input_mode: auto       # auto | native | text
+  disabled_toolsets: []
+
+# Terminal / sandbox execution
+terminal:
+  backend: local               # local | docker | singularity | modal | ssh
+  cwd: "."
+  timeout: 180
+  env_passthrough: []
+  auto_source_bashrc: true
+  persistent_shell: true
+  docker_image: nikolaik/python-nodejs:python3.11-nodejs20
+  docker_forward_env: []
+  container_cpu: 1
+  container_memory: 5120       # MB
+  container_disk: 51200        # MB
+
+# Browser automation
+browser:
+  inactivity_timeout: 120
+  command_timeout: 30
+  record_sessions: false
+  allow_private_urls: false
+  dialog_policy: must_respond  # must_respond | auto_dismiss | auto_accept
+
+# Filesystem checkpoints (for /rollback)
+checkpoints:
+  enabled: true
+  max_snapshots: 50
+
+# Tool output truncation
+file_read_max_chars: 100000
+tool_output:
+  max_bytes: 50000
+  max_lines: 2000
+  max_line_length: 2000
+
+# Context compression
+compression:
+  enabled: true
+  threshold: 0.50
+  target_ratio: 0.20
+  protect_last_n: 20
+  hygiene_hard_message_limit: 400
+
+# Anthropic prompt caching
+prompt_caching:
+  cache_ttl: 5m                # 5m or 1h
+
+# Tool loop guardrails
+tool_loop_guardrails:
+  warnings_enabled: true
+  hard_stop_enabled: false
+
+# Auxiliary model config (summary, vision, search, etc.)
+# Uses "auto" to detect best available provider
+auxiliary:
+  vision:
+    provider: auto
+    timeout: 120
+  web_extract:
+    provider: auto
+    timeout: 360
+  compression:
+    provider: auto
+    timeout: 120
+  session_search:
+    provider: auto
+    timeout: 30
+    max_concurrency: 3
+  skills_hub:
+    provider: auto
+    timeout: 30
+  approval:
+    provider: auto
+    timeout: 30
+  mcp:
+    provider: auto
+    timeout: 30
+  title_generation:
+    provider: auto
+    timeout: 30
