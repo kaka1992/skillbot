@@ -7,18 +7,42 @@ conf/
 ├── .env                        # 全局环境变量（所有 agent 共享）
 ├── agent_conf/
 │   ├── deer-flow/
-│   │   ├── config.yaml         # deer-flow 配置模板
-│   │   ├── .env                # deer-flow 环境变量（API key 等）
-│   │   ├── config.example.yaml # 官方示例（参考用，不生效）
-│   │   └── .env.example        # 官方示例（参考用，不生效）
+│   │   ├── config.yaml         # deer-flow 配置
+│   │   └── .env                # deer-flow 环境变量（API key）
 │   ├── nanobot/
-│   │   ├── config.json         # nanobot 配置模板
+│   │   ├── config.json         # nanobot 配置
 │   │   └── .env                # nanobot 环境变量
 │   └── hermes-agent/
-│       ├── config.yaml         # hermes-agent 配置模板
+│       ├── config.yaml         # hermes-agent 配置
 │       └── .env                # hermes-agent 环境变量
-└── dev.md                     # 本文件
+└── dev.md                      # 本文件
 ```
+
+> `*.example` 文件来自 agent 官方仓库，仅供参考。**必须复制为正式配置文件才能生效**，详见下方「首次配置」。
+
+## 首次配置
+
+clone 仓库后 `conf/agent_conf/<agent>/` 目录下会包含 `*.example` 文件，
+这些是 agent 官方的参考示例。需要将其复制为正式配置文件，并填入自己的 API key：
+
+```bash
+# deer-flow
+cp conf/agent_conf/deer-flow/config.example.yaml conf/agent_conf/deer-flow/config.yaml
+cp conf/agent_conf/deer-flow/.env.example        conf/agent_conf/deer-flow/.env
+
+# nanobot
+cp conf/agent_conf/nanobot/config.example.json   conf/agent_conf/nanobot/config.json
+cp conf/agent_conf/nanobot/.env.example          conf/agent_conf/nanobot/.env
+
+# hermes-agent
+cp conf/agent_conf/hermes-agent/config.example.yaml conf/agent_conf/hermes-agent/config.yaml
+cp conf/agent_conf/hermes-agent/.env.example        conf/agent_conf/hermes-agent/.env
+
+# 编辑各 .env + config.*，填入 API key
+```
+
+配置完成后执行 `run.sh start <agent> <model>`，`cmd_start` 会自动将
+`conf/agent_conf/<agent>/*` 同步到 agent 的实际配置目录。
 
 ## 加载机制
 
