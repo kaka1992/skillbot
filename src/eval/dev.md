@@ -89,7 +89,7 @@ from chat import ChatClient
 
 async def main():
     c = ChatClient("nanobot")
-    ds = EvalDataset("math_questions.jsonl", tags=["easy"], limit=20)
+    ds = EvalDataset("questions.jsonl", tags=["easy"], limit=20)
 
     runner = AsyncEvalRunner(
         lambda q: c.async_chat(q, session="eval"),
