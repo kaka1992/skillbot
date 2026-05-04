@@ -1,0 +1,26 @@
+# Stock Data Fetcher — Python dependencies
+# Usage: pip install -r requirements.txt
+
+# ============================================================
+# Core (always required)
+# ============================================================
+
+# Data processing (used in _df_to_ohlcv, not lazy-loaded)
+pandas>=2.0
+
+# Universal fallback for all markets (A-share / HK / US)
+yfinance>=0.2.30
+
+# ============================================================
+# Enhanced A-share / HK data sources (optional, lazy-loaded)
+# ============================================================
+
+# efinance — EastMoney free data, priority 1 for A-share + HK
+efinance>=0.4.0
+
+# akshare — open-source financial data, priority 2 for A-share + HK
+akshare>=1.15.0
+
+# tushare — premium A-share data with TUSHARE_TOKEN, priority 0
+tushare>=1.4.0
+

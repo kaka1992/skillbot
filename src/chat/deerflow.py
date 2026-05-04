@@ -27,8 +27,11 @@ class DeerFlowBackend(AbstractBackend):
         self,
         model: Optional[str] = None,
         auto_start: bool = True,
+        timeout: int = 120,
     ) -> None:
         self._sessions: set[str] = set()
+        self._model = model
+        self._timeout = timeout
         self._threads: dict[str, str] = {}  # session -> thread_id
         self._session = requests.Session()
         self._csrf = ""
@@ -135,6 +138,7 @@ class DeerFlowBackend(AbstractBackend):
     def chat(
         self, content: str, session: str, model: Optional[str] = None
     ) -> str:
+        """Send a message. `model` overrides config.yaml's default (dynamic switching)."""
         self._sessions.add(session)
         tid = self._get_thread(session)
         r = self._session.post(
@@ -144,11 +148,11 @@ class DeerFlowBackend(AbstractBackend):
                     "messages": [{"role": "user", "content": content}]
                 },
                 "config": {
-                    "configurable": self._build_config(model)
+                    "configurable": self._build_config(model or self._model)
                 },
             },
             headers={"X-CSRF-Token": self._csrf},
-            timeout=120,
+            timeout=self._timeout,
         )
         if r.status_code == 401 and self._auth_retry():
             return self.chat(content, session, model)
@@ -169,6 +173,7 @@ class DeerFlowBackend(AbstractBackend):
     def stream(
         self, content: str, session: str, model: Optional[str] = None
     ) -> Iterator[str]:
+        """Stream tokens. `model` overrides config.yaml's default (dynamic switching)."""
         self._sessions.add(session)
         tid = self._get_thread(session)
         r = self._session.post(
@@ -178,13 +183,13 @@ class DeerFlowBackend(AbstractBackend):
                     "messages": [{"role": "user", "content": content}]
                 },
                 "config": {
-                    "configurable": self._build_config(model)
+                    "configurable": self._build_config(model or self._model)
                 },
                 "stream_mode": ["messages-tuple"],
             },
             headers={"X-CSRF-Token": self._csrf},
             stream=True,
-            timeout=120,
+            timeout=self._timeout,
         )
         if r.status_code == 401 and self._auth_retry():
             yield from self.stream(content, session, model)

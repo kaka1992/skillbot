@@ -9,15 +9,19 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT_NAME="$(basename "$0")"
 AGENT_NAMES="deer-flow nanobot hermes-agent"
 
-# Load project-level env config
+# Load project-level env config (only sets vars not already in environment)
 _load_env() {
     local env_file="${PROJECT_DIR}/conf/.env"
-    if [[ -f "$env_file" ]]; then
-        set -a
-        # shellcheck disable=SC1090
-        source "$env_file"
-        set +a
+    if [[ ! -f "$env_file" ]]; then
+        return
     fi
+    while IFS='=' read -r key value; do
+        # Skip comments, empty lines, and vars already set in environment
+        [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
+        key="${key%%[[:space:]]*}"
+        [[ -n "${!key:-}" ]] && continue  # skip if already set externally
+        export "$key=$value"
+    done < "$env_file"
 }
 
 # ============================================================
@@ -57,8 +61,8 @@ _conf_files() {
 
 _skills_path() {
     case "$1" in
-        deer-flow)    echo "skills/customer" ;;
-        nanobot)      echo "skills" ;;
+        deer-flow)    echo "skills/custom" ;;
+        nanobot)      echo "nanobot/skills" ;;
         hermes-agent) echo "skills/custom" ;;
     esac
 }
@@ -76,7 +80,7 @@ _start_cmd() {
             fi
             ;;
         nanobot)      echo ".venv/bin/nanobot gateway" ;;
-        hermes-agent) echo ".venv/bin/hermes gateway run" ;;
+        hermes-agent) echo ".venv/bin/hermes gateway run --replace" ;;
     esac
 }
 
@@ -356,7 +360,7 @@ _is_running() {
             lsof -i :8001 -sTCP:LISTEN -t &>/dev/null && return 0
             ;;
         hermes-agent)
-            pgrep -f "hermes.*gateway run" &>/dev/null && return 0
+            pgrep -f "python.*hermes.*gateway run" &>/dev/null && return 0
             ;;
     esac
 
@@ -431,9 +435,8 @@ cmd_start() {
     local log_file
     log_file="$(get_log_file "$agent")"
 
-    # For hermes-agent, allow re-start (hermes gateway --replace handles transition)
-    if [[ "$agent" != "hermes-agent" ]] && _is_running "$agent"; then
-        echo "  [SKIP] ${agent} is already running (pid $(cat "$pid_file"))"
+    if _is_running "$agent"; then
+        echo "  [SKIP] ${agent} is already running (pid $(cat "$pid_file" 2>/dev/null || echo '?'))"
         echo "=== ${agent}: already running ==="
         return 0
     fi
@@ -455,11 +458,16 @@ cmd_start() {
     nohup bash -c "${env_preamble}cd '$agent_path' && $start_cmd" > "$log_file" 2>&1 &
     echo $! > "$pid_file"
 
-    sleep 3
+    sleep 4
     # hermes-agent: capture real gateway pid (nohup bash exits after fork)
     if [[ "$agent" == "hermes-agent" ]]; then
-        local real_pid
-        real_pid=$(pgrep -f "hermes.*gateway run" 2>/dev/null | grep -v "$$" | tail -1 || true)
+        local real_pid tries=0
+        while [[ $tries -lt 5 ]]; do
+            real_pid=$(pgrep -f "python.*hermes.*gateway run" 2>/dev/null | tail -1 || true)
+            [[ -n "$real_pid" ]] && break
+            sleep 1
+            tries=$((tries + 1))
+        done
         if [[ -n "$real_pid" ]]; then
             echo "$real_pid" > "$pid_file"
         fi
@@ -523,14 +531,17 @@ cmd_stop() {
                     lsof -i :9119 -sTCP:LISTEN -t 2>/dev/null | xargs kill 2>/dev/null || true
                     echo "  [OK] dashboard stopped"
                 fi
-                # Stop gateway (retry for auto-restart)
-                local tries=0
-                while pgrep -f "hermes.*gateway" &>/dev/null && [[ $tries -lt 3 ]]; do
-                    pkill -9 -f "hermes.*gateway" 2>/dev/null || true
+                # Stop gateway: use hermes' own stop first, then force-kill all hermes
+                "${agent_path}/.venv/bin/hermes" gateway stop 2>/dev/null || true
+                sleep 1
+                local tries=0 killed=false
+                while pgrep -f hermes &>/dev/null && [[ $tries -lt 5 ]]; do
+                    pkill -9 -f hermes 2>/dev/null || true
+                    killed=true
                     sleep 1
                     tries=$((tries + 1))
                 done
-                if ! pgrep -f "hermes.*gateway" &>/dev/null; then
+                if $killed && ! pgrep -f hermes &>/dev/null; then
                     echo "  [OK] hermes gateway stopped"
                 fi
                 ;;
@@ -613,18 +624,26 @@ cmd_status() {
                 fi
                 ;;
             hermes-agent)
-                local hpid webui_pid dash_pid
+                local hpid dash_pid webui_pid
                 hpid=$(cat "$pid_file" 2>/dev/null || true)
                 dash_pid=$(lsof -i :9119 -sTCP:LISTEN -t 2>/dev/null | head -1 || true)
                 webui_pid=$(lsof -i :5173 -sTCP:LISTEN -t 2>/dev/null | head -1 || true)
 
+                # pid_file may be stale (nohup bash exits); fall back to pgrep
                 if [[ -n "$hpid" ]] && kill -0 "$hpid" 2>/dev/null; then
+                    running=true
+                elif [[ -z "$hpid" || "$hpid" == "0" ]] && pgrep -f "hermes.*gateway run" &>/dev/null; then
+                    hpid=$(pgrep -f "hermes.*gateway run" 2>/dev/null | tail -1 || true)
+                    running=true
+                fi
+
+                if $running; then
                     echo "  status:    RUNNING"
                     echo "  process:"
                     echo "    Gateway   pid ${hpid}"
                     [[ -n "$dash_pid" ]] && echo "    Dashboard pid ${dash_pid}  port 9119"
                     [[ -n "$webui_pid" ]] && echo "    WebUI     pid ${webui_pid}  port 5173 (http://localhost:5173)"
-                elif $running; then
+                elif _is_running "$agent"; then
                     echo "  status:    STARTING"
                 else
                     echo "  status:    STOPPED"
@@ -650,18 +669,27 @@ cmd_clean() {
 
         echo "=== Cleaning ${agent} ==="
 
-        # Stop first if running
-        local pid_file
-        pid_file="$(get_pid_file "$agent")"
-        if [[ -f "$pid_file" ]]; then
-            local pid
-            pid="$(cat "$pid_file")"
-            kill "$pid" 2>/dev/null || true
-            sleep 1
-            kill -9 "$pid" 2>/dev/null || true
-            rm -f "$pid_file"
+        # Stop first if running (use agent-specific stop for reliability)
+        if _is_running "$agent"; then
+            local ap
+            ap="$(get_agent_path "$agent")"
+            case "$agent" in
+                deer-flow)
+                    (cd "$ap" && make stop 2>&1) || true
+                    ;;
+                nanobot)
+                    pkill -f "nanobot gateway" 2>/dev/null || true
+                    lsof -i :5173 -sTCP:LISTEN -t 2>/dev/null | xargs kill 2>/dev/null || true
+                    ;;
+                hermes-agent)
+                    pkill -9 -f "hermes.*gateway" 2>/dev/null || true
+                    sleep 1
+                    ;;
+            esac
             echo "  [OK] stopped running instance"
         fi
+        # Also clean up stale pid file
+        rm -f "$(get_pid_file "$agent")"
 
         # Remove config
         # "home" type (conf in ~/.xxx): safe to delete entire dir
@@ -779,10 +807,10 @@ cmd_sync() {
     mkdir -p "$dest"
 
     # Parse skills_arg
-    # "skills/*"              -> copy all skills
+    # "skills/*"              -> copy all skills under src_dir
     # "skills/sA,skills/sB"   -> copy specific skills (comma-separated)
-    # shell-expanded list     -> already joined with commas above
-    if [[ "$skills_arg" == "skills/*" ]]; then
+    # "/abs/path/to/skills"   -> absolute path (treated as "skills/*")
+    if [[ "$skills_arg" == "skills/*" ]] || [[ "$skills_arg" == "${src_dir}" ]] || [[ "$skills_arg" == "${src_dir}/" ]]; then
         shopt -s dotglob 2>/dev/null || true
         cp -r "${src_dir}/"* "$dest"/
         shopt -u dotglob 2>/dev/null || true
@@ -792,6 +820,9 @@ cmd_sync() {
         local IFS=','
         for s in $skills_arg; do
             local skill_name="${s#skills/}"
+            # Handle absolute paths: strip src_dir prefix to get just the skill name
+            skill_name="${skill_name#${src_dir}/}"
+            skill_name="${skill_name#${src_dir}}"
             local skill_src="${src_dir}/${skill_name}"
             if [[ -d "$skill_src" ]]; then
                 cp -r "$skill_src" "$dest/"

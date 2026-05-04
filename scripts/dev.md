@@ -2,6 +2,18 @@
 
 ## Step 1: 安装脚本 install.sh
 
+### 环境变量加载
+
+所有命令执行前自动加载 `conf/.env`（`_load_env` 在 `main()` 入口），不会覆盖已在环境中设置的变量。
+
+自定义变量示例：
+```bash
+# conf/.env
+DEEPSEEK_API_KEY=sk-xxx
+SKILL_BOT_SKILL_PATH=skills/*
+SKILL_BOT_SKILL_DIR=/custom/skills/path    # 可选，覆盖默认源目录
+```
+
 ### 安装配置
 
 ```bash
@@ -71,8 +83,8 @@ install.sh check deer-flow                    # 检查 5 项：path / venv / pyt
 
 | Agent name | Git Url | Agent Config Path | Config Files | Skills Path |
 |---|---|---|---|---|
-| deer-flow | https://github.com/bytedance/deer-flow | ${agent_path}/ | config.yaml .env | ${agent_path}/skills/customer |
-| nanobot | https://github.com/HKUDS/nanobot | ~/.nanobot/ | config.json | ${agent_path}/skills |
+| deer-flow | https://github.com/bytedance/deer-flow | ${agent_path}/ | config.yaml .env | ${agent_path}/skills/custom |
+| nanobot | https://github.com/HKUDS/nanobot | ~/.nanobot/ | config.json | ${agent_path}/nanobot/skills |
 | hermes-agent | https://github.com/nousresearch/hermes-agent | ~/.hermes/ | config.yaml .env | ${agent_path}/skills/custom |
 
 ### WebUI 安装策略
@@ -126,7 +138,7 @@ run.sh stop [agent]
 
 - deer-flow：`make stop`（停止 Gateway + Frontend + Nginx）
 - nanobot：pkill gateway + pkill webui(:5173)
-- hermes-agent：pkill webui(:5173) → pkill dashboard(:9119) → pkill gateway（3 次重试防 auto-restart）
+- hermes-agent：pkill webui(:5173) → pkill dashboard(:9119) → `hermes gateway stop` → pkill -9 all hermes（5 次重试防 auto-restart）
 
 #### status — 查看运行状态
 
@@ -189,7 +201,8 @@ run.sh sync <agent> [skills]
 ```
 
 仅在 agent **未启动** 状态可执行。先清空目标目录，再复制 skill。
-如果省略 `[skills]` 参数，自动使用 `SKILL_BOT_SKILL_PATH` 环境变量。
+如果省略 `[skills]` 参数，自动从 `SKILL_BOT_SKILL_PATH` 环境变量读取（支持相对路径 `skills/*`、逗号列表 `skills/A,skills/B`、绝对路径 `/abs/path`）。
+源目录默认 `${PROJECT_DIR}/skills`，可通过 `SKILL_BOT_SKILL_DIR` 覆盖。
 
 ```bash
 # 通过环境变量预设 skill 路径（无需每次输入）
@@ -216,8 +229,8 @@ run.sh sync deer-flow skills/*
 
 | Agent | 目标路径 |
 |-------|---------|
-| deer-flow | agents/deer-flow/skills/customer/ |
-| nanobot | agents/nanobot/skills/ |
+| deer-flow | agents/deer-flow/skills/custom/ |
+| nanobot | agents/nanobot/nanobot/skills/ |
 | hermes-agent | agents/hermes-agent/skills/custom/ |
 
 ### 完整流程示例

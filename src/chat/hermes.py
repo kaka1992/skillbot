@@ -10,7 +10,7 @@ import requests
 from .base import AbstractBackend, AgentStartupTimeout, ChatError
 
 HERMES_PORT = 8642
-HERMES_BASE = f"http://localhost:{HERMES_PORT}/v1"
+HERMES_BASE = f"http://127.0.0.1:{HERMES_PORT}/v1"
 
 # Resolve API key from conf/agent_conf/hermes-agent/.env
 _PROJECT_DIR = os.path.abspath(
@@ -44,9 +44,11 @@ class HermesBackend(AbstractBackend):
     """Chat backend via hermes-agent's OpenAI-compatible REST API (port 8642)."""
 
     def __init__(
-        self, model: Optional[str] = None, auto_start: bool = True
+        self, model: Optional[str] = None, auto_start: bool = True, timeout: int = 120
     ) -> None:
         self._sessions: set[str] = set()
+        self._model = model
+        self._timeout = timeout
 
         if auto_start:
             self._ensure_running()
@@ -54,7 +56,7 @@ class HermesBackend(AbstractBackend):
     @staticmethod
     def _is_port_ready(port: int) -> bool:
         try:
-            requests.get(f"http://localhost:{port}/health", timeout=2)
+            requests.get(f"http://127.0.0.1:{port}/health", timeout=2)
             return True
         except Exception:
             return False
@@ -102,12 +104,15 @@ class HermesBackend(AbstractBackend):
     def chat(
         self, content: str, session: str, model: Optional[str] = None
     ) -> str:
+        """Send a message. NOTE: `model` param is ignored by hermes API server
+        (always uses ~/.hermes/config.yaml). Use `run.sh start hermes-agent <model>`
+        to change the active model."""
         self._sessions.add(session)
         resp = requests.post(
             f"{HERMES_BASE}/chat/completions",
-            json=self._build_body(model, content),
+            json=self._build_body(model or self._model, content),
             headers=self._headers(session),
-            timeout=120,
+            timeout=self._timeout,
         )
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
@@ -115,13 +120,14 @@ class HermesBackend(AbstractBackend):
     def stream(
         self, content: str, session: str, model: Optional[str] = None
     ) -> Iterator[str]:
+        """Stream tokens. NOTE: `model` param is ignored by hermes API server."""
         self._sessions.add(session)
         resp = requests.post(
             f"{HERMES_BASE}/chat/completions",
-            json=self._build_body(model, content, stream=True),
+            json=self._build_body(model or self._model, content, stream=True),
             headers=self._headers(session),
             stream=True,
-            timeout=120,
+            timeout=self._timeout,
         )
         resp.raise_for_status()
         for line in resp.iter_lines(decode_unicode=True):

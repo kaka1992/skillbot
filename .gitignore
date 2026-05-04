@@ -104,6 +104,7 @@ $RECYCLE.BIN/
 
 ### Logs ###
 *.log
+.run/
 
 ### Skillbot ###
 agents/

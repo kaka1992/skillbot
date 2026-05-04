@@ -16,10 +16,12 @@ NANOBOT_BASE = f"http://127.0.0.1:{NANOBOT_PORT}/v1"
 class NanobotBackend(AbstractBackend):
     """Chat backend via nanobot's OpenAI-compatible REST API (port 8900)."""
 
-    def __init__(self, model: Optional[str] = None, auto_start: bool = True) -> None:
+    def __init__(self, model: Optional[str] = None, auto_start: bool = True, timeout: int = 120) -> None:
 
 
         self._sessions: set[str] = set()
+        self._model = model
+        self._timeout = timeout
 
         if auto_start:
             self._ensure_running()
@@ -73,9 +75,10 @@ class NanobotBackend(AbstractBackend):
         return body
 
     def chat(self, content: str, session: str, model: Optional[str] = None) -> str:
+        """Send a message. `model` must match gateway's configured model or omit it."""
         self._sessions.add(session)
         body = json.dumps({
-            **({} if model is None else {"model": model}),
+            **({} if (model or self._model) is None else {"model": model or self._model}),
             "messages": [{"role": "user", "content": content}],
         }).encode()
         req = urllib.request.Request(
@@ -87,14 +90,15 @@ class NanobotBackend(AbstractBackend):
                 "X-Nanobot-Session-ID": session,
             },
         )
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=self._timeout) as resp:
             data = json.loads(resp.read())
         return data["choices"][0]["message"]["content"]
 
     def stream(self, content: str, session: str, model: Optional[str] = None) -> Iterator[str]:
+        """Stream tokens. `model` must match gateway's configured model or omit it."""
         self._sessions.add(session)
         body = json.dumps({
-            **({} if model is None else {"model": model}),
+            **({} if (model or self._model) is None else {"model": model or self._model}),
             "messages": [{"role": "user", "content": content}],
             "stream": True,
         }).encode()
@@ -107,7 +111,7 @@ class NanobotBackend(AbstractBackend):
                 "X-Nanobot-Session-ID": session,
             },
         )
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=self._timeout) as resp:
             for line in resp:
                 line = line.decode("utf-8").strip()
                 if not line.startswith("data: "):
