@@ -1,0 +1,9 @@
+{"id": "math-1", "question": "What is 1+1? Reply with just the number", "expected": "2", "tags": ["math", "easy"]}
+{"id": "math-2", "question": "Calculate 5*3. Reply with just the number", "expected": "15", "tags": ["math", "easy"]}
+{"id": "lang-1", "question": "Say hello in one word", "expected": "hello", "tags": ["lang", "easy"]}
+{"id": "lang-2", "question": "What is the opposite of hot? Reply in one word", "expected": "cold", "tags": ["lang", "easy"]}
+{"id": "geo-1", "question": "What is the capital of France? Reply in one word", "expected": "Paris", "tags": ["geo", "medium"]}
+{"id": "geo-2", "question": "Which continent is Brazil in? Reply in one word", "expected": "South", "tags": ["geo", "medium"]}
+# This is a comment line, should be skipped
+
+{"id": "trick-1", "question": "Is the sky green? Answer yes or no", "expected": "no", "tags": ["trick", "hard"]}
