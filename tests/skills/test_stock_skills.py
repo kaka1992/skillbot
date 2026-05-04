@@ -1,4 +1,4 @@
-"""Test stock-data-fetch + stock-analysis skills via hermes-agent REST API."""
+"""Test stock-data-fetch + stock-analysis skills via claude-code."""
 
 import os
 import subprocess
@@ -26,12 +26,12 @@ def _agent_running(agent: str) -> bool:
 
 @pytest.fixture(scope="module")
 def client():
-    """ChatClient connected to hermes-agent."""
-    if not _agent_running("hermes-agent"):
-        pytest.skip("hermes-agent not running (run.sh start hermes-agent --no-webui)")
+    """ChatClient connected to claude-code."""
+    if not _agent_running("claude-code"):
+        pytest.skip("claude-code not running (run.sh start claude-code)")
     from chat import ChatClient
 
-    return ChatClient("hermes-agent", model="deepseek-v4-flash", timeout=600)
+    return ChatClient("claude-code", timeout=600)
 
 
 # ============================================================

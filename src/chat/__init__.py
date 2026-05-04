@@ -1,12 +1,13 @@
-"""Unified chat client for deer-flow / nanobot / hermes-agent."""
+"""Unified chat client for deer-flow / nanobot / hermes-agent / claude-code."""
 
 from collections.abc import AsyncIterator, Iterator
 from typing import Optional
 
 from .base import AbstractBackend, AgentNotInstalledError, AgentStartupTimeout, ChatError
+from .claude import ClaudeBackend
 from .deerflow import DeerFlowBackend
-from .nanobot import NanobotBackend
 from .hermes import HermesBackend
+from .nanobot import NanobotBackend
 
 __all__ = [
     "ChatClient",
@@ -15,7 +16,7 @@ __all__ = [
     "AgentStartupTimeout",
 ]
 
-_AGENTS = {"deer-flow", "nanobot", "hermes-agent"}
+_AGENTS = {"deer-flow", "nanobot", "hermes-agent", "claude-code"}
 
 
 class ChatClient:
@@ -52,6 +53,8 @@ class ChatClient:
             self._backend = NanobotBackend(model=model, auto_start=auto_start, timeout=timeout)
         elif agent == "hermes-agent":
             self._backend = HermesBackend(model=model, auto_start=auto_start, timeout=timeout)
+        elif agent == "claude-code":
+            self._backend = ClaudeBackend(model=model, auto_start=auto_start, timeout=timeout)
         else:
             raise ValueError(f"Unknown agent: {agent}")
 

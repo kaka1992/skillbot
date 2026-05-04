@@ -7,7 +7,7 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT_NAME="$(basename "$0")"
-AGENT_NAMES="deer-flow nanobot hermes-agent"
+AGENT_NAMES="deer-flow nanobot hermes-agent claude-code"
 
 # Load project-level env config
 _load_env() {
@@ -29,6 +29,7 @@ _git_url() {
         deer-flow)    echo "https://github.com/bytedance/deer-flow" ;;
         nanobot)      echo "https://github.com/HKUDS/nanobot" ;;
         hermes-agent) echo "https://github.com/nousresearch/hermes-agent" ;;
+        claude-code)  echo "" ;;  # npm-based, no git clone
     esac
 }
 
@@ -45,6 +46,7 @@ _conf_home_dir() {
     case "$1" in
         nanobot)      echo ".nanobot" ;;
         hermes-agent) echo ".hermes" ;;
+        claude-code)  echo ".claude" ;;
     esac
 }
 
@@ -53,6 +55,7 @@ _conf_files() {
         deer-flow)    echo "config.yaml .env" ;;
         nanobot)      echo "config.json" ;;
         hermes-agent) echo "config.yaml .env" ;;
+        claude-code)  echo "settings.json .env" ;;
     esac
 }
 
@@ -140,14 +143,19 @@ resolve_agents() {
 # ============================================================
 
 cmd_install() {
-    check_prereqs
     for agent in $(resolve_agents "${1:-}"); do
+        echo "=== Installing ${agent} ==="
+
+        if [[ "$agent" == "claude-code" ]]; then
+            _install_claude
+            continue
+        fi
+
+        check_prereqs
         local agent_path
         agent_path="$(get_agent_path "$agent")"
         local git_url
         git_url="$(_git_url "$agent")"
-
-        echo "=== Installing ${agent} ==="
 
         if [[ -d "$agent_path" ]]; then
             echo "  [SKIP] ${agent_path} already exists"
@@ -174,6 +182,20 @@ cmd_install() {
 
         echo "=== ${agent} installed ==="
     done
+}
+
+_install_claude() {
+    if command -v claude &>/dev/null; then
+        echo "  [SKIP] claude already installed ($(claude --version 2>&1 | head -1))"
+        return 0
+    fi
+    if ! command -v npm &>/dev/null; then
+        echo "  [FAIL] npm not found — cannot install claude-code" >&2
+        exit 1
+    fi
+    echo "  [RUN] npm install -g @anthropic-ai/claude-code@latest"
+    npm install -g "@anthropic-ai/claude-code@latest"
+    echo "  [OK] claude-code installed ($(claude --version 2>&1 | head -1))"
 }
 
 _install_webui() {
@@ -204,12 +226,24 @@ _install_webui() {
 }
 
 cmd_update() {
-    check_prereqs
     for agent in $(resolve_agents "${1:-}"); do
+        echo "=== Updating ${agent} ==="
+
+        if [[ "$agent" == "claude-code" ]]; then
+            if ! command -v claude &>/dev/null; then
+                echo "  [SKIP] claude not installed — run install first"
+                continue
+            fi
+            echo "  [RUN] npm update -g @anthropic-ai/claude-code"
+            npm update -g "@anthropic-ai/claude-code"
+            echo "  [OK] claude-code updated ($(claude --version 2>&1 | head -1))"
+            echo "=== ${agent} updated ==="
+            continue
+        fi
+
+        check_prereqs
         local agent_path
         agent_path="$(get_agent_path "$agent")"
-
-        echo "=== Updating ${agent} ==="
 
         if [[ ! -d "$agent_path" ]]; then
             echo "  [SKIP] ${agent_path} not found — run install first"
@@ -236,6 +270,12 @@ cmd_update() {
 
 cmd_uninstall() {
     for agent in $(resolve_agents "${1:-}"); do
+        if [[ "$agent" == "claude-code" ]]; then
+            echo "=== Uninstalling ${agent} ==="
+            echo "  [SKIP] uninstall not supported for claude-code (use: npm uninstall -g @anthropic-ai/claude-code)"
+            continue
+        fi
+
         local agent_path
         agent_path="$(get_agent_path "$agent")"
 
@@ -266,6 +306,19 @@ cmd_uninstall() {
 cmd_check() {
     local agent="${1:?usage: ${SCRIPT_NAME} check <agent>}"
     require_agent "$agent"
+
+    # claude-code: npm-based, check binary only
+    if [[ "$agent" == "claude-code" ]]; then
+        echo "=== Checking ${agent} ==="
+        if command -v claude &>/dev/null; then
+            echo "  [OK] claude-code installed ($(claude --version 2>&1 | head -1))"
+        else
+            echo "  [FAIL] claude not found on PATH"
+            exit 1
+        fi
+        echo "=== ${agent}: OK ==="
+        return 0
+    fi
 
     local agent_path
     agent_path="$(get_agent_path "$agent")"

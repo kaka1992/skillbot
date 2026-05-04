@@ -75,18 +75,22 @@ install.sh uninstall                          # 卸载全部
 install.sh update nanobot                     # git pull + pip install + npm install
 install.sh update                             # 更新全部
 
+# 安装 claude-code（npm 全局安装）
+install.sh install claude-code
+
 # 检查安装状态
 install.sh check deer-flow                    # 检查 5 项：path / venv / python / packages / config
+install.sh check claude-code                  # 检查 claude 二进制是否存在
 ```
 
 ### 支持的 agent 列表
 
-| Agent name | Git Url | Agent Config Path | Config Files | Skills Path |
-|---|---|---|---|---|
-| deer-flow | https://github.com/bytedance/deer-flow | ${agent_path}/ | config.yaml .env | ${agent_path}/skills/custom |
-| nanobot | https://github.com/HKUDS/nanobot | ~/.nanobot/ | config.json | ${agent_path}/nanobot/skills |
-| hermes-agent | https://github.com/nousresearch/hermes-agent | ~/.hermes/ | config.yaml .env | ${agent_path}/skills/custom |
-
+| Agent name | Git Url                                      | Agent Config Path | Config Files | Skills Path                  |
+|---|----------------------------------------------|---|---|------------------------------|
+| deer-flow | https://github.com/bytedance/deer-flow       | ${agent_path}/ | config.yaml .env | ${agent_path}/skills/custom  |
+| nanobot | https://github.com/HKUDS/nanobot             | ~/.nanobot/ | config.json | ${agent_path}/nanobot/skills |
+| hermes-agent | https://github.com/nousresearch/hermes-agent | ~/.hermes/ | config.yaml .env | ${agent_path}/skills/custom  |
+|claude-code| npm包路径：anthropic-ai/claude-code@latest       |${agent_path}/| settings.json .env| ${agent_path}/.claude/skills |
 ### WebUI 安装策略
 
 | Agent | WebUI 位置 | 安装命令 | Python Dashboard 依赖 |
@@ -94,6 +98,7 @@ install.sh check deer-flow                    # 检查 5 项：path / venv / pyt
 | deer-flow | Next.js（集成在 make dev-daemon） | make install | 无需额外操作 |
 | nanobot | webui/ (Vite + React) | npm install | 无 |
 | hermes-agent | web/ (Vite + React) | npm install | uv pip install -e ".[web]" (fastapi + uvicorn) |
+| claude-code | — | 无需安装 | 无需额外操作 |
 
 ---
 
@@ -129,6 +134,7 @@ run.sh start <agent> [model] [--no-webui]
 | deer-flow | `make -C backend gateway` 仅 Gateway(8001)，跳过 Frontend(3000)+Nginx(2026) |
 | nanobot | 仅 Gateway(18790)，跳过 WebUI Vite(5173) |
 | hermes-agent | 仅 Gateway，跳过 Dashboard(9119)+WebUI(5173) |
+| claude-code | 不适用（HTTP Server 无 WebUI） |
 
 #### stop — 停止 agent
 
@@ -139,6 +145,7 @@ run.sh stop [agent]
 - deer-flow：`make stop`（停止 Gateway + Frontend + Nginx）
 - nanobot：pkill gateway + pkill webui(:5173)
 - hermes-agent：pkill webui(:5173) → pkill dashboard(:9119) → `hermes gateway stop` → pkill -9 all hermes（5 次重试防 auto-restart）
+- claude-code：`lsof -i :9000 -t | xargs kill`（通过端口终止 HTTP server）
 
 #### status — 查看运行状态
 
@@ -169,6 +176,13 @@ run.sh status [agent]
     WebUI     pid 56277  port 5173 (http://localhost:5173)
   model:     deepseek-v4-flash
   skills:    code-review web-search
+
+# claude-code 示例输出
+=== claude-code ===
+  status:    RUNNING
+  process:   pid 74084  port 9000
+  model:     none
+  skills:    stock-analysis stock-data-fetch
 ```
 
 #### clean — 清理运行时数据
@@ -232,6 +246,7 @@ run.sh sync deer-flow skills/*
 | deer-flow | agents/deer-flow/skills/custom/ |
 | nanobot | agents/nanobot/nanobot/skills/ |
 | hermes-agent | agents/hermes-agent/skills/custom/ |
+| claude-code | agents/claude-code/.claude/skills/ |
 
 ### 完整流程示例
 
@@ -245,6 +260,7 @@ install.sh install hermes-agent
 run.sh start deer-flow deepseek-v4-flash
 run.sh start nanobot deepseek-v4-flash --no-webui       # 仅 Gateway
 run.sh start hermes-agent deepseek-v4-flash              # 全栈含 WebUI
+python3 -c "from server.app import main; main()"        # Claude Code HTTP Server
 
 # 3. 查看状态
 run.sh status                     # 所有 agent
@@ -273,3 +289,4 @@ install.sh uninstall nanobot
 | deer-flow | 8001 | 3000 / 2026 (Nginx) | — | — |
 | nanobot | 18790 | 5173 (Vite) | — | 8900 (nanobot serve) |
 | hermes-agent | — | 5173 (Vite) | 9119 | 8642 (/v1/chat) |
+| claude-code | — | — | — | 9000 (HTTP) |

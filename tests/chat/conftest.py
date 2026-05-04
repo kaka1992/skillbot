@@ -86,6 +86,32 @@ def hermes_client():
 
 
 # ---------------------------------------------------------------------------
+# claude-code
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def claude_client():
+    """ChatClient("claude-code"). Requires claude server :9000 running."""
+    if not _agent_running("claude-code"):
+        # claude-code not in run.sh — just check port
+        import socket
+        s = socket.socket()
+        try:
+            s.settimeout(1)
+            s.connect(("127.0.0.1", 9000))
+        except Exception:
+            pytest.skip("claude server :9000 not reachable")
+        finally:
+            s.close()
+    _ensure_src_path()
+
+    from chat import ChatClient
+
+    return ChatClient("claude-code", timeout=60)
+
+
+# ---------------------------------------------------------------------------
 # shared helpers
 # ---------------------------------------------------------------------------
 

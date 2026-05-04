@@ -15,6 +15,9 @@ conf/
 │   └── hermes-agent/
 │       ├── config.yaml         # hermes-agent 配置
 │       └── .env                # hermes-agent 环境变量
+│   └── claude-code/
+│       ├── .env.example        # HTTP server 配置模板
+│       └── settings.json       # Claude Code 配置（同步到 agent_path/.claude/）
 └── dev.md                      # 本文件
 ```
 
@@ -37,6 +40,10 @@ cp conf/agent_conf/nanobot/.env.example          conf/agent_conf/nanobot/.env
 # hermes-agent
 cp conf/agent_conf/hermes-agent/config.example.yaml conf/agent_conf/hermes-agent/config.yaml
 cp conf/agent_conf/hermes-agent/.env.example        conf/agent_conf/hermes-agent/.env
+
+# claude-code（配置复制到隔离目录，避免污染 ~/.claude/）
+mkdir -p agents/claude-code/.claude
+cp conf/agent_conf/claude-code/settings.json agents/claude-code/.claude/settings.json
 
 # 编辑各 .env + config.*，填入 API key
 ```
@@ -81,6 +88,7 @@ SKILL_BOT_AGENT_INSTALL_DIR=/opt/skillbot/agents  # 可选，覆盖安装目录
 | deer-flow | `conf/agent_conf/deer-flow/config.yaml` + `.env` | `agents/deer-flow/` | `cp` |
 | nanobot | `conf/agent_conf/nanobot/config.json` + `.env` | `~/.nanobot/` | `cp` |
 | hermes-agent | `conf/agent_conf/hermes-agent/config.yaml` + `.env` | `~/.hermes/` | `cp` |
+| claude-code | `conf/agent_conf/claude-code/settings.json` | `${agent_path}/.claude/settings.json` | `cp` |
 
 ### 配置优先级
 
@@ -162,6 +170,43 @@ GATEWAY_ALLOW_ALL_USERS=true
 DEEPSEEK_API_KEY=sk-xxx
 ```
 
+### claude-code
+
+Claude Code 通过 `.claude/settings.json` 配置。skillbot 使用 `agents/claude-code/.claude/` 作为隔离目录（由 `get_agent_path` 解析），与 `~/.claude/` 完全隔离。
+
+**settings.json** — 核心配置：
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+    "ANTHROPIC_AUTH_TOKEN": "sk-your-deepseek-api-key",
+    "ANTHROPIC_MODEL": "deepseek-v4-pro[1m]",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-pro[1m]",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-pro[1m]",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash",
+    "CLAUDE_CODE_EFFORT_LEVEL": "max"
+  },
+  "alwaysThinkingEnabled": false,
+  "permissions": {
+    "allow": ["Bash(curl:*)", "Bash(python3:*)", "Bash(git:*)"],
+    "deny": ["Bash(rm -rf /*)", "Bash(sudo:*)"]
+  }
+}
+```
+
+| 配置项 | 说明 |
+|--------|------|
+| `ANTHROPIC_BASE_URL` | 后端 API 地址（DeepSeek/OpenRouter 等兼容端点） |
+| `ANTHROPIC_AUTH_TOKEN` | API key |
+| `ANTHROPIC_MODEL` | 默认模型 |
+| `ANTHROPIC_DEFAULT_*_MODEL` | 各模式对应模型（Opus/Sonnet/Haiku） |
+| `CLAUDE_CODE_EFFORT_LEVEL` | 推理强度：min/medium/max |
+| `permissions.allow` | 允许的工具白名单 |
+| `permissions.deny` | 禁止的工具黑名单 |
+
+配置文件位于 `conf/agent_conf/claude-code/settings.json`，`run.sh start` 会自动同步到 agent 目录。
+
 ## 快速配置指南
 
 ### 首次配置
@@ -178,7 +223,10 @@ echo "DEEPSEEK_API_KEY=sk-xxx" >> conf/agent_conf/deer-flow/.env
 echo "DEEPSEEK_API_KEY=sk-xxx" >> conf/agent_conf/nanobot/.env
 echo "DEEPSEEK_API_KEY=sk-xxx" >> conf/agent_conf/hermes-agent/.env
 
-# 4. 安装并启动
+# 4. 配置 Claude Code（自动写入 agents/claude-code/.claude/）
+run.sh start claude-code                    # 自动同步 config + 启动 HTTP Server
+
+# 5. 安装并启动
 install.sh install deer-flow
 run.sh start deer-flow deepseek-v4-flash
 ```
@@ -186,17 +234,24 @@ run.sh start deer-flow deepseek-v4-flash
 ### 切换模型
 
 ```bash
-# 修改全局配置中的模型（仅 deer-flow / nanobot 的 REST API 支持动态切换）
-# hermes-agent 需通过 run.sh start 修改
-run.sh start hermes-agent deepseek-v4-flash  # sed 替换 config.yaml
+# deer-flow / nanobot：REST API 支持动态切换，或通过 run.sh start 修改
+run.sh start deer-flow deepseek-v4-flash
+run.sh start nanobot deepseek-v4-flash
+
+# hermes-agent：必须通过 run.sh start 修改 config.yaml
+run.sh start hermes-agent deepseek-v4-flash
+
+# claude-code：编辑 conf/agent_conf/claude-code/settings.json，重启 server 生效
+# "ANTHROPIC_MODEL": "deepseek-v4-flash"
 ```
 
-### 配置 Web UI
+### 配置 Web UI / 服务
 
 | Agent | WebUI | 默认端口 | 启动方式 |
 |-------|-------|:---:|------|
 | deer-flow | Next.js（集成） | 3000 / 2026 | `make dev-daemon` |
 | nanobot | Vite | 5173 | `cd webui && npm run dev` |
 | hermes-agent | Vite + Dashboard | 5173 / 9119 | `hermes dashboard` + `npm run dev` |
+| claude-code | HTTP Server | 9000 | `run.sh start claude-code` |
 
 `run.sh start <agent>` 默认启动全栈（含 WebUI），`--no-webui` 可跳过前端。

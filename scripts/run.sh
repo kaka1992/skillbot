@@ -7,7 +7,7 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT_NAME="$(basename "$0")"
-AGENT_NAMES="deer-flow nanobot hermes-agent"
+AGENT_NAMES="deer-flow nanobot hermes-agent claude-code"
 
 # Load project-level env config (only sets vars not already in environment)
 _load_env() {
@@ -33,6 +33,7 @@ _git_url() {
         deer-flow)    echo "https://github.com/bytedance/deer-flow" ;;
         nanobot)      echo "https://github.com/HKUDS/nanobot" ;;
         hermes-agent) echo "https://github.com/nousresearch/hermes-agent" ;;
+        claude-code)  echo "" ;;  # npm-based
     esac
 }
 
@@ -41,6 +42,7 @@ _conf_type() {
         deer-flow)    echo "agent" ;;
         nanobot)      echo "home" ;;
         hermes-agent) echo "home" ;;
+        claude-code)  echo "home" ;;
     esac
 }
 
@@ -48,6 +50,7 @@ _conf_home_dir() {
     case "$1" in
         nanobot)      echo ".nanobot" ;;
         hermes-agent) echo ".hermes" ;;
+        claude-code)  echo ".claude" ;;
     esac
 }
 
@@ -56,6 +59,7 @@ _conf_files() {
         deer-flow)    echo "config.yaml .env" ;;
         nanobot)      echo "config.json" ;;
         hermes-agent) echo "config.yaml .env" ;;
+        claude-code)  echo "settings.json .env" ;;
     esac
 }
 
@@ -64,6 +68,7 @@ _skills_path() {
         deer-flow)    echo "skills/custom" ;;
         nanobot)      echo "nanobot/skills" ;;
         hermes-agent) echo "skills/custom" ;;
+        claude-code)  echo ".claude/skills" ;;
     esac
 }
 
@@ -81,6 +86,7 @@ _start_cmd() {
             ;;
         nanobot)      echo ".venv/bin/nanobot gateway" ;;
         hermes-agent) echo ".venv/bin/hermes gateway run --replace" ;;
+        claude-code)  echo "PYTHONPATH='${PROJECT_DIR}/src' ${PROJECT_DIR}/.venv/bin/python3 -c 'from server.app import main; main()'" ;;
     esac
 }
 
@@ -222,6 +228,13 @@ require_agent() {
 
 check_installed() {
     local agent="$1"
+    if [[ "$agent" == "claude-code" ]]; then
+        if ! command -v claude &>/dev/null; then
+            echo "ERROR: claude not found. Run: install.sh install claude-code" >&2
+            exit 1
+        fi
+        return 0
+    fi
     local agent_path
     agent_path="$(get_agent_path "$agent")"
     if [[ ! -d "$agent_path" ]]; then
@@ -362,6 +375,9 @@ _is_running() {
         hermes-agent)
             pgrep -f "python.*hermes.*gateway run" &>/dev/null && return 0
             ;;
+        claude-code)
+            lsof -i :9000 -sTCP:LISTEN -t &>/dev/null && return 0
+            ;;
     esac
 
     return 1
@@ -455,7 +471,13 @@ cmd_start() {
 
     local start_cmd
     start_cmd="$(_start_cmd "$agent" "$no_webui")"
-    nohup bash -c "${env_preamble}cd '$agent_path' && $start_cmd" > "$log_file" 2>&1 &
+
+    # claude-code is npm-global, no agent_path to cd into
+    if [[ "$agent" == "claude-code" ]]; then
+        nohup bash -c "${env_preamble}cd '${PROJECT_DIR}' && $start_cmd" > "$log_file" 2>&1 &
+    else
+        nohup bash -c "${env_preamble}cd '$agent_path' && $start_cmd" > "$log_file" 2>&1 &
+    fi
     echo $! > "$pid_file"
 
     sleep 4
@@ -518,6 +540,12 @@ cmd_stop() {
                     lsof -i :5173 -sTCP:LISTEN -t 2>/dev/null | xargs kill 2>/dev/null || true
                     [[ -f "${agent_path}/webui/node_modules/.vite" ]] && rm -rf "${agent_path}/webui/node_modules/.vite" 2>/dev/null || true
                     echo "  [OK] webui stopped"
+                fi
+                ;;
+            claude-code)
+                if lsof -i :9000 -sTCP:LISTEN -t &>/dev/null; then
+                    lsof -i :9000 -sTCP:LISTEN -t 2>/dev/null | xargs kill 2>/dev/null || true
+                    echo "  [OK] claude server stopped"
                 fi
                 ;;
             hermes-agent)
@@ -645,6 +673,16 @@ cmd_status() {
                     [[ -n "$webui_pid" ]] && echo "    WebUI     pid ${webui_pid}  port 5173 (http://localhost:5173)"
                 elif _is_running "$agent"; then
                     echo "  status:    STARTING"
+                else
+                    echo "  status:    STOPPED"
+                fi
+                ;;
+            claude-code)
+                local cpid
+                cpid=$(lsof -i :9000 -sTCP:LISTEN -t 2>/dev/null | head -1 || true)
+                if [[ -n "$cpid" ]]; then
+                    echo "  status:    RUNNING"
+                    echo "  process:   pid ${cpid}  port 9000"
                 else
                     echo "  status:    STOPPED"
                 fi

@@ -2,8 +2,8 @@
 
 ## 设计目标
 
-提供统一的 Python chat 客户端 `ChatClient`，封装 deer-flow / nanobot / hermes
-三套 agent 的底层差异。对外暴露一致的接口，支持：
+提供统一的 Python chat 客户端 `ChatClient`，封装 deer-flow / nanobot / hermes-agent / claude-code
+四套 agent 的底层差异。对外暴露一致的接口，支持：
 
 - 单次 / 流式对话
 - 会话隔离（多轮对话上下文）
@@ -48,6 +48,12 @@ ChatClient(agent, model, auto_start)
      └── agent == "hermes-agent"
            → HermesBackend (OpenAI REST)
            → POST :8642/v1/chat/completions
+
+ChatClient("claude-code")
+     │
+     └── agent == "claude-code"
+           → ClaudeBackend (HTTP Server)
+           → POST :9000/sessions/{id}/chat
 ```
 
 ## 文件结构
@@ -59,6 +65,7 @@ src/chat/
 ├── deerflow.py          # DeerFlowBackend
 ├── nanobot.py           # NanobotBackend
 ├── hermes.py            # HermesBackend
+├── claude.py            # ClaudeBackend
 └── dev.md               # 设计文档
 ```
 
@@ -103,6 +110,7 @@ class AbstractBackend(ABC):
 | deer-flow | `thread_id` | POST body 参数 | SQLite `.deer-flow/data/` |
 | nanobot | `X-Nanobot-Session-ID` | HTTP Header | `~/.nanobot/sessions/` |
 | hermes | `X-Hermes-Session-Id` | HTTP Header | `state.db` (opt-in) |
+| claude-code | `session` → server-side session | HTTP body | 内存（SessionManager） |
 
 - **deer-flow**: 不同 `session` → 不同 `thread_id`，`DeerFlowClient` 单例复用
 - **nanobot**: 不带 header → 共享 `api:default`；带 header → 独立 session
@@ -279,15 +287,15 @@ def _ensure_agent_running(self) -> None:
 
 ## 兼容性矩阵
 
-| 特性 | deer-flow | nanobot | hermes-agent |
-|------|:---:|:---:|:---:|
-| 单次对话 | ✓ | ✓ | ✓ |
-| 多轮对话（会话隔离） | ✓ | ✓ | ✓ |
-| 流式输出 | ✓ | ✓ | ✓ |
-| 动态选模型 | ✓ | ✓ | ✓ |
-| 缺省模型 | ✓ | ✓ | ✓ |
-| 无需预启动 HTTP | — | — | — |
-| 自动补启 agent | ✓ | ✓ | ✓ |
+| 特性 | deer-flow | nanobot | hermes-agent | claude-code |
+|------|:---:|:---:|:---:|:---:|
+| 单次对话 | ✓ | ✓ | ✓ | ✓ |
+| 多轮对话（会话隔离） | ✓ | ✓ | ✓ | ✓ |
+| 流式输出 | ✓ | ✓ | ✓ | — |
+| 动态选模型 | ✓ | ✓ | ✓ | — (settings.json) |
+| 缺省模型 | ✓ | ✓ | ✓ | — |
+| 无需预启动 HTTP | — | — | — | ✓ (server 内嵌) |
+| 自动补启 agent | ✓ | ✓ | ✓ | ✓ |
 
 ## 模型默认值
 
@@ -296,6 +304,7 @@ def _ensure_agent_running(self) -> None:
 | deer-flow | agent 配置的第一个模型 | `config.yaml` 中 `models[0]`，不传 model 时不注入字段 |
 | nanobot | gateway 启动时加载的模型 | `config.json` 的 `agents.defaults.model` |
 | hermes-agent | `config.yaml` 的 `model` 字段 | `~/.hermes/config.yaml` |
+| claude-code | `.claude/settings.json` 的 `ANTHROPIC_MODEL` | `agents/claude-code/.claude/settings.json` |
 
 ## 【example】
 
@@ -316,6 +325,10 @@ for chunk in c.stream(content="1+1=?", session="math"):
 c = ChatClient("hermes-agent", model="deepseek-v4-flash")
 c.chat("我叫李四", session="who")
 print(c.chat("我是谁？", session="who"))           # → "你是李四"
+
+# claude-code — HTTP Server，单轮对话
+c = ChatClient("claude-code", timeout=300)
+print(c.chat("1+1=?", session="cc"))              # → "2"
 
 # 会话管理
 print(c.list_sessions())    # → ["who"]
