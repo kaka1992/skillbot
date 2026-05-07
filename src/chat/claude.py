@@ -1,5 +1,6 @@
 """Claude backend — HTTP wrapper server on port 9000."""
 
+import json
 import time
 from collections.abc import Iterator
 from typing import Optional
@@ -29,6 +30,7 @@ class ClaudeBackend(AbstractBackend):
         timeout: int = 300,
     ) -> None:
         self._sessions: set[str] = set()
+        self._server_sids: dict[str, str] = {}  # client session → server sid
         self._model = model
         self._timeout = timeout
 
@@ -66,15 +68,17 @@ class ClaudeBackend(AbstractBackend):
     # ------------------------------------------------------------------
 
     def _get_session(self, session: str) -> str:
-        """Create a server-side session for the given client session ID."""
-        sid = f"chat-{session}"
-        try:
-            resp = requests.post(f"{CLAUDE_BASE}/sessions", timeout=5)
-            if resp.status_code == 201:
-                sid = resp.json()["session_id"]
-        except Exception:
-            pass
-        return sid
+        """Return cached server-side session ID, creating one on first call."""
+        if session not in self._server_sids:
+            try:
+                resp = requests.post(f"{CLAUDE_BASE}/sessions", timeout=5)
+                if resp.status_code == 201:
+                    self._server_sids[session] = resp.json()["session_id"]
+                else:
+                    self._server_sids[session] = f"chat-{session}"
+            except Exception:
+                self._server_sids[session] = f"chat-{session}"
+        return self._server_sids[session]
 
     # ------------------------------------------------------------------
     # chat / stream
@@ -97,12 +101,34 @@ class ClaudeBackend(AbstractBackend):
     def stream(
         self, content: str, session: str, model: Optional[str] = None
     ) -> Iterator[str]:
-        """Stream not supported yet; falls back to full response."""
-        yield self.chat(content, session, model)
+        self._sessions.add(session)
+        sid = self._get_session(session)
+        resp = requests.post(
+            f"{CLAUDE_BASE}/sessions/{sid}/chat/stream",
+            json={"message": content, "timeout": self._timeout},
+            timeout=self._timeout + 10,
+            stream=True,
+        )
+        resp.raise_for_status()
+        for line in resp.iter_lines(decode_unicode=True):
+            if not line.startswith("data: "):
+                continue
+            data = json.loads(line[6:])
+            if text := data.get("text"):
+                yield text
+            elif data.get("type") == "error":
+                raise RuntimeError(data["error"])
+            elif data.get("type") == "done":
+                return
 
     def list_sessions(self) -> list[str]:
         return sorted(self._sessions)
 
     def clear_session(self, session: str) -> None:
         self._sessions.discard(session)
-        # Note: server-side session persists until TTL expiry
+        if session in self._server_sids:
+            sid = self._server_sids.pop(session)
+            try:
+                requests.delete(f"{CLAUDE_BASE}/sessions/{sid}", timeout=5)
+            except Exception:
+                pass

@@ -31,7 +31,7 @@ skillbot/
 ├── src/
 │   ├── chat/         # 统一 Python chat 客户端（同步 + 异步）
 │   ├── eval/         # JSONL 驱动的 agent 评测框架
-│   └── server/       # Claude Code HTTP 服务端
+│   └── server/       # Claude Code HTTP 服务端（claude-agent-sdk + SSE）
 ├── conf/
 │   ├── .env          # 项目级环境配置（API key 等）
 │   └── agent_conf/   # 各 agent 配置模板
@@ -47,7 +47,7 @@ skillbot/
 | [deer-flow](https://github.com/bytedance/deer-flow) | 8001 | 3000/2026 (Next.js+Nginx) | LangGraph SSE | ✓ |
 | [nanobot](https://github.com/HKUDS/nanobot) | 18790 | 5173 (Vite) | OpenAI REST :8900 | ✓ |
 | [hermes-agent](https://github.com/nousresearch/hermes-agent) | — | 5173 (Vite) | OpenAI REST :8642 | ✓ |
-| claude-code (npm) | — | — | HTTP :9000 | ✓ |
+| claude-code (SDK + SSE) | — | — | HTTP :9000 | ✓ |
 
 ## CLI 命令
 
@@ -83,13 +83,18 @@ reply = c.chat("你好", session="s1")
 for chunk in c.stream("讲个笑话", session="s2"):
     print(chunk, end="")
 
+# claude-code 流式（SSE，token 级别）
+cc = ChatClient("claude-code", timeout=60)
+for chunk in cc.stream("数 1 到 3", session="s3"):
+    print(repr(chunk))   # → '1' '\n' '2' '\n' '3'
+
 # 异步 + 并发
 import asyncio
 c = ChatClient("nanobot")
 
 async def main():
-    reply = await c.async_chat("你好", session="s3")
-    async for chunk in c.async_stream("数 1 到 3", session="s4"):
+    reply = await c.async_chat("你好", session="s4")
+    async for chunk in c.async_stream("数 1 到 3", session="s5"):
         print(chunk, end="")
 
 asyncio.run(main())
@@ -102,7 +107,7 @@ asyncio.run(main())
 | deer-flow | `session` → `thread_id` | LangGraph SQLite checkpointer |
 | nanobot | `X-Nanobot-Session-ID` 请求头 | API session 持久化 |
 | hermes-agent | `X-Hermes-Session-Id` 请求头 | state.db 持久化 |
-| claude-code | `session` → server-side session | 内存中（SessionManager） |
+| claude-code | `session` → server-side session | `ClaudeSDKClient` 持久连接 |
 
 ## 评测框架
 

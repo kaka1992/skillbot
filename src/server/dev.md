@@ -1,118 +1,113 @@
-# Claude Code HTTP Server
-
-## 设计目标
-
-通过 HTTP 接口包装 `claude -p` CLI，提供多 session 的对话服务。每个 session 维护独立的对话历史，Claude Code 运行在与 `~/.claude/` 隔离的独立 home 目录中。
+# Claude Code HTTP Server — claude-agent-sdk 实现
 
 ## 架构
 
 ```
-HTTP Client (curl / ChatClient / WebUI)
-       │
-       ▼
-  FastAPI (port 9000)
-       │
-       ├── SessionManager ── dict[session_id → Session]
-       │     ├── 创建 / 销毁 session
-       │     ├── 对话历史追踪（仅客户端侧，Claude 不持久化）
-       │     └── asyncio.Lock（单 session 内串行）
-       │
-       └── run_claude() ── subprocess claude -p --dangerously-skip-permissions
-              │
-              ├── env: HOME = agents/claude-code/（隔离目录）
-              └── settings.json 从 conf/agent_conf/claude-code/ 加载
+HTTP → FastAPI → SessionManager → ClaudeSDKClient → claude CLI 子进程
 ```
+
+`session.py` 使用 `claude-agent-sdk`（Python 包）替代了原来的 `subprocess claude -p` 调用：
+
+- **前**: 每次请求 spawn 新 `claude -p` 进程，通过 prompt 注入实现多轮
+- **后**: `ClaudeSDKClient` 持久连接，SDK 原生支持多轮对话
+
+## 核心实现
+
+### Session（session.py）
+
+每个 `Session` 持有一个 `ClaudeSDKClient` 实例：
+
+| 方法 | 用途 | 说明 |
+|------|------|------|
+| `send()` | 非流式对话 | 首条用 `connect()`，后续用 `query()`，`receive_response()` 累积全文 |
+| `send_stream()` | SSE 流式对话 | 设置 `include_partial_messages=True`，`receive_response()` 逐 chunk yield |
+| `close()` | 清理 | `client.disconnect()` 关闭子进程 |
+
+**`send()`** — 返回完整文本：
+
+1. `client.connect(prompt=message)` 或 `client.query(message)`
+2. `receive_response()` 遍历 `AssistantMessage` → 提取 `TextBlock.text` → 拼接返回
+3. `asyncio.wait_for(coro, timeout)` 整体超时
+
+**`send_stream()`** — 渐进 yield 文本增量：
+
+1. 同上建立/复用连接，设置 `include_partial_messages=True`
+2. `receive_response()` 遍历 `StreamEvent` → 解析 `event.content_block_delta.text_delta`
+3. 逐 chunk yield，每个 chunk 独立超时（`asyncio.wait_for(gen.__anext__(), timeout)`）
+4. 流结束后将完整文本记录到 history
+
+`send()` 和 `send_stream()` 的 lock 都由调用方（app.py）持有。
+
+### ClaudeAgentOptions
+
+```python
+ClaudeAgentOptions(
+    allowed_tools=["Bash", "Read", ...],
+    permission_mode="bypassPermissions",     # 替换 --dangerously-skip-permissions
+    cwd="/working/dir",
+    env={"HOME": "/path/to/claude-home"},     # 隔离 claude 配置
+    setting_sources=["user"],                 # 仅加载 isolated HOME 的用户配置
+    max_turns=50,
+    include_partial_messages=True,            # 仅 send_stream() 启用
+)
+```
+
+### SessionManager
+
+内存管理 session 生命周期，`delete()` 异步清理 SDK client。
+
+## 流式输出（SSE）
+
+`POST /sessions/{sid}/chat/stream` 返回 `text/event-stream`，token 级别渐进输出。
+
+### SSE 事件格式
+
+| 事件 | 格式 | 说明 |
+|------|------|------|
+| 文本增量 | `data: {"text": "..."}\n\n` | 每个 token/文本块 |
+| 完成 | `data: {"type": "done"}\n\n` | 流正常结束 |
+| 错误 | `data: {"type": "error", "error": "..."}\n\n` | 超时或 SDK 错误 |
+
+### 流式调用链
+
+```
+HTTP SSE → app.py chat_stream() → session.send_stream() → _send_inner_stream()
+          → client.receive_response() → StreamEvent → content_block_delta.text_delta
+```
+
+`send_stream()` 的 lock 贯穿整个流生命周期，流结束后释放。`receive_response()` 在遇到 `ResultMessage` 时自动终止。
+
+### 客户端消费
+
+```python
+from chat import ChatClient
+c = ChatClient("claude-code")
+for chunk in c.stream("讲个笑话", session="s1"):
+    print(chunk, end="")
+# → "1"\n"2"\n"3"  (逐 token 输出)
+```
+
+底层 `ClaudeBackend.stream()` 通过 `requests.post(stream=True)` + `iter_lines()` 解析 SSE。
+
+## SDK vs CLI 对比
+
+| | CLI (`subprocess`) | SDK (`claude-agent-sdk`) |
+|---|---|---|
+| 启动延迟 | ~3-5s（冷启动进程） | 进程内复用 |
+| 多轮对话 | prompt 注入历史 | SDK 原生 session |
+| 流式输出 | 不支持 | SSE（token 级别） |
+| 权限控制 | `--dangerously-skip-permissions` | `permission_mode="bypassPermissions"` |
+| 配置隔离 | `HOME` env var | `env={"HOME": ...}` |
 
 ## API
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/health` | 健康检查 |
-| POST | `/sessions` | 创建会话 → `{"session_id": "uuid12"}` |
-| GET | `/sessions` | 列出所有会话 |
-| GET | `/sessions/{id}` | 获取会话详情 |
-| DELETE | `/sessions/{id}` | 删除会话 |
-| POST | `/sessions/{id}/chat` | 发送消息 → `claude -p` |
-| GET | `/sessions/{id}/history` | 获取对话历史 |
-
-### Chat 请求
-
-```json
-{
-  "message": "hello",
-  "timeout": 300,
-  "allowed_tools": "Read,Write"
-}
 ```
-
-### Chat 响应
-
-```json
-{
-  "session_id": "abc123",
-  "reply": "Hi there!",
-  "elapsed": 3.5
-}
+GET  /health
+POST /sessions
+GET  /sessions
+GET  /sessions/{sid}
+DELETE /sessions/{sid}
+POST /sessions/{sid}/chat         {"message": "...", "timeout": 300, "allowed_tools": "..."}
+POST /sessions/{sid}/chat/stream  {"message": "...", "timeout": 300, "allowed_tools": "..."}
+GET  /sessions/{sid}/history
 ```
-
-## 文件结构
-
-```
-src/server/
-├── __init__.py
-├── app.py           # FastAPI app + 路由
-├── session.py       # SessionManager + run_claude()
-└── dev.md           # 本文件
-```
-
-## Session 管理
-
-- `Session` 维护 `claude_sid`（未使用，Claude v2.x `-p` 模式不支持 `--resume`）、`history: list[Message]`、`lock: asyncio.Lock`
-- 多轮对话通过将历史作为 prompt 上下文注入，而非 Claude 原生 session 持久化
-- session 存储在内存中，服务重启后丢失
-
-## 并发模型
-
-```
-同一 session:  asyncio.Lock 串行
-不同 session:  独立 claude 子进程，并发执行（受 Semaphore 限流）
-```
-
-## Claude Home 隔离
-
-Claude Code 的 home 目录由 `_resolve_claude_home()` 解析：
-
-1. `SKILL_BOT_AGENT_INSTALL_DIR/claude-code`（如果设置）
-2. 否则 `PROJECT_DIR/agents/claude-code/`
-
-通过 `HOME` 环境变量注入子进程，与 `~/.claude/` 完全隔离。每次启动自动验证 `.claude/settings.json` 存在。
-
-## 自动审批
-
-`claude -p` 默认需要用户审批工具调用。Server 模式通过 `--dangerously-skip-permissions` 跳过所有权限检查，使 Claude 全自动执行。
-
-## 配置
-
-| 环境变量 | 默认值 | 说明 |
-|----------|--------|------|
-| `CLAUDE_SERVER_HOST` | 127.0.0.1 | 绑定地址 |
-| `CLAUDE_SERVER_PORT` | 9000 | 监听端口 |
-| `CLAUDE_SERVER_TIMEOUT` | 300 | Claude 调用超时（秒） |
-| `CLAUDE_SERVER_ALLOWED_TOOLS` | (空=全部) | 工具白名单 |
-| `CLAUDE_SERVER_WORK_DIR` | . | Claude 工作目录 |
-
-## 启动
-
-```bash
-# 直接启动
-PYTHONPATH="src" .venv/bin/python3 -c "from server.app import main; main()"
-
-# 通过 run.sh
-run.sh start claude-code
-```
-
-## 限制
-
-- Claude Code v2.x `-p` 不支持 `--resume`，多轮上下文通过 prompt 注入
-- 无 SSE 流式输出（`-p` 只支持全文返回）
-- session 存储在内存中，重启丢失

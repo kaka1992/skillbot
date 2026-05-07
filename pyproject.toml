@@ -1,7 +1,7 @@
 [project]
 name = "skillbot"
 version = "0.2.0"
-description = "Multi-agent framework — unified chat API for deer-flow, nanobot, and hermes-agent"
+description = "Multi-agent framework — unified chat API for deer-flow, nanobot, hermes-agent, and claude-code"
 requires-python = ">=3.9"
 readme = "README.md"
 license = { text = "MIT" }
@@ -9,6 +9,9 @@ authors = [{ name = "skillbot" }]
 
 dependencies = [
     "requests>=2.28",
+    "fastapi>=0.100",
+    "uvicorn>=0.30",
+    "claude-agent-sdk>=0.1.0",
 ]
 
 [project.optional-dependencies]
