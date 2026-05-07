@@ -1,0 +1,14 @@
+output_dir: results/
+
+tasks:
+  - name: math-smoke
+    dataset: tests/eval/data/sample.jsonl
+    agent: nanobot
+    tags: [math]
+    concurrency: 2
+
+  - name: geo-claude
+    dataset: tests/eval/data/sample.jsonl
+    agent: claude-code
+    tags: [geo]
+    timeout: 180

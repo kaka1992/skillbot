@@ -19,13 +19,35 @@ class EvalResult:
     expected: str = ""
     answer: str = ""
     success: Optional[bool] = None
+    score: Optional[float] = None
     elapsed: float = 0.0
     tags: list[str] = field(default_factory=list)
     error: str = ""
     extra: dict = field(default_factory=dict)
+    grade_detail: dict | None = None
 
+
+@dataclass
+class GraderOutput:
+    """Output of a grader function."""
+
+    success: bool | None = None
+    score: float | None = None
+    detail: dict | None = None
+
+
+GraderFn = Callable[[str, str, dict], GraderOutput]
+"""Grader function: (expected, answer, extra) -> GraderOutput."""
 
 AsyncChatFn = Callable[[str], Any]  # async (str) -> str
+
+
+def default_grader(expected: str, answer: str, extra: dict) -> GraderOutput:
+    """Default grader: case-insensitive substring match."""
+    if not expected:
+        return GraderOutput()
+    ok = expected.strip().lower() in answer.strip().lower()
+    return GraderOutput(success=ok)
 
 
 class AsyncEvalRunner:
@@ -38,11 +60,18 @@ class AsyncEvalRunner:
 
         c = ChatClient("nanobot")
         ds = EvalDataset("questions.jsonl", limit=10)
+
+        # default grader (substring match)
         runner = AsyncEvalRunner(
             lambda q: c.async_chat(q, session="eval"),
             concurrency=5,
-            auto_grade=True,
         )
+
+        # custom grader
+        runner = AsyncEvalRunner(chat_fn, grader=my_grader)
+
+        # no grading
+        runner = AsyncEvalRunner(chat_fn, grader=None)
 
         async for result in runner.run(ds):
             print(f"{result.id}: {'OK' if result.success else 'FAIL'}")
@@ -56,11 +85,11 @@ class AsyncEvalRunner:
         chat_fn: AsyncChatFn,
         *,
         concurrency: int = 5,
-        auto_grade: bool = False,
+        grader: GraderFn | None = default_grader,
     ) -> None:
         self._chat = chat_fn
         self._concurrency = concurrency
-        self._auto_grade = auto_grade
+        self._grader = grader
         self.results: list[EvalResult] = []
 
     async def run(self, dataset) -> AsyncIterator[EvalResult]:
@@ -83,11 +112,13 @@ class AsyncEvalRunner:
                 elapsed = time.monotonic() - t0
 
                 success = None
-                if self._auto_grade and item.expected and not error:
-                    success = (
-                        item.expected.strip().lower()
-                        in answer.strip().lower()
-                    )
+                score = None
+                grade_detail = None
+                if not error and self._grader is not None:
+                    go = self._grader(item.expected, answer, item.extra)
+                    success = go.success
+                    score = go.score
+                    grade_detail = go.detail
 
                 result = EvalResult(
                     id=item.id,
@@ -95,15 +126,21 @@ class AsyncEvalRunner:
                     expected=item.expected,
                     answer=answer,
                     success=success,
+                    score=score,
                     elapsed=round(elapsed, 2),
                     tags=item.tags,
                     error=error,
                     extra=item.extra,
+                    grade_detail=grade_detail,
                 )
                 self.results.append(result)
+                status = (
+                    "OK" if success else
+                    ("ERR" if error else "--")
+                )
                 print(
                     f"[{idx + 1}/{total}] {item.id} "
-                    f"({'OK' if success else ('ERR' if error else '--')}) "
+                    f"({status}) "
                     f"{elapsed:.1f}s"
                 )
                 return result
@@ -124,7 +161,8 @@ class AsyncEvalRunner:
         errors = [r for r in self.results if r.error]
         avg_elapsed = round(sum(r.elapsed for r in self.results) / total, 2)
         passed = sum(1 for r in graded if r.success)
-        return {
+        scored = [r for r in self.results if r.score is not None]
+        s = {
             "total": total,
             "graded": len(graded),
             "passed": passed,
@@ -132,6 +170,11 @@ class AsyncEvalRunner:
             "errors": len(errors),
             "avg_elapsed": avg_elapsed,
         }
+        if scored:
+            s["avg_score"] = round(
+                sum(r.score for r in scored) / len(scored), 4
+            )
+        return s
 
     def report(self) -> str:
         s = self.stats
@@ -142,6 +185,8 @@ class AsyncEvalRunner:
             f"  Errors:  {s.get('errors', 0)}",
             f"  Avg time: {s.get('avg_elapsed', 0)}s",
         ]
+        if "avg_score" in s:
+            lines.append(f"  Avg score: {s['avg_score']}")
         if s.get("graded", 0) > 0:
             rate = s["passed"] / s["graded"] * 100
             lines.append(f"  Accuracy: {rate:.1f}%")
@@ -163,6 +208,16 @@ class AsyncEvalRunner:
                     "error": r.error,
                     "eval_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 }
+                if r.score is not None:
+                    obj["score"] = r.score
+                if r.grade_detail:
+                    obj["grade_detail"] = r.grade_detail
                 if r.extra:
                     obj["extra"] = r.extra
                 f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+
+        # also write report alongside results
+        report_path = path.with_suffix(".report.txt")
+        report_text = self.report()
+        report_path.write_text(report_text, encoding="utf-8")
+        print(report_text)

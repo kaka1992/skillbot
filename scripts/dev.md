@@ -260,7 +260,7 @@ install.sh install hermes-agent
 run.sh start deer-flow deepseek-v4-flash
 run.sh start nanobot deepseek-v4-flash --no-webui       # 仅 Gateway
 run.sh start hermes-agent deepseek-v4-flash              # 全栈含 WebUI
-python3 -c "from server.app import main; main()"        # Claude Code HTTP Server
+run.sh start claude-code                                  # Claude Code HTTP Server
 
 # 3. 查看状态
 run.sh status                     # 所有 agent
@@ -278,7 +278,10 @@ run.sh stop hermes-agent
 # 6. 清理运行时数据（保留 agent 安装）
 run.sh clean nanobot
 
-# 7. 卸载（完全移除）
+# 7. 批量评测
+bash scripts/eval.sh run tasks.yaml
+
+# 8. 卸载（完全移除）
 install.sh uninstall nanobot
 ```
 
@@ -290,3 +293,82 @@ install.sh uninstall nanobot
 | nanobot | 18790 | 5173 (Vite) | — | 8900 (nanobot serve) |
 | hermes-agent | — | 5173 (Vite) | 9119 | 8642 (/v1/chat) |
 | claude-code | — | — | — | 9000 (HTTP) |
+
+---
+
+## Step3: 评测脚本 eval.sh
+
+### 命令签名
+
+```bash
+eval.sh run  <config>            # 运行 YAML 配置中的所有 task
+eval.sh run  <config> -t <name>  # 运行指定 task
+eval.sh run  <config> -o <dir>   # 指定输出目录
+eval.sh list <config>            # 列出配置中的 task
+eval.sh -h|--help                # 帮助
+```
+
+### 配置文件格式（YAML）
+
+```yaml
+# tasks.yaml
+output_dir: results/
+
+tasks:
+  - name: math-smoke
+    dataset: tests/eval/data/sample.jsonl
+    agent: nanobot
+    tags: [math]
+    concurrency: 2
+
+  - name: geo-claude
+    dataset: tests/eval/data/sample.jsonl
+    agent: claude-code
+    tags: [geo]
+    timeout: 180
+```
+
+### EvalTask 字段
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `name` | **必填** | task 名称，决定输出文件名 |
+| `dataset` | **必填** | JSONL 数据集路径 |
+| `agent` | `"nanobot"` | agent 名称 |
+| `model` | — | 模型（None=默认） |
+| `tags` | — | 数据集 tag 过滤（OR） |
+| `limit` | — | 截取条数 |
+| `shuffle` | `false` | 是否随机打乱 |
+| `concurrency` | `5` | 并发数 |
+| `timeout` | `120` | 单条超时（秒） |
+| `output` | — | 自定义输出路径 |
+
+### 示例
+
+```bash
+# 查看所有 task
+bash scripts/eval.sh list tasks.yaml
+# output_dir: results/
+# tasks (2):
+#   - math-smoke  (nanobot, tests/eval/data/sample.jsonl)
+#   - geo-claude  (claude-code, tests/eval/data/sample.jsonl)
+
+# 运行全部
+bash scripts/eval.sh run tasks.yaml
+
+# 运行指定 task
+bash scripts/eval.sh run tasks.yaml -t math-smoke -o ci_results/
+```
+
+内部通过 `PYTHONPATH="src" python -c "from eval.task import ..."` 调用 `load_tasks()` + `run_tasks()`。
+
+### 输出结构
+
+```
+results/
+├── math-smoke.jsonl          # AsyncEvalRunner.save()
+├── math-smoke.report.txt     # 自动生成
+├── geo-claude.jsonl
+├── geo-claude.report.txt
+└── summary.txt               # 跨 task 汇总报告
+```
