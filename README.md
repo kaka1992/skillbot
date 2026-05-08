@@ -48,7 +48,7 @@ skillbot/
 | [deer-flow](https://github.com/bytedance/deer-flow) | 8001 | 3000/2026 (Next.js+Nginx) | LangGraph SSE | ✓ |
 | [nanobot](https://github.com/HKUDS/nanobot) | 18790 | 5173 (Vite) | OpenAI REST :8900 | ✓ |
 | [hermes-agent](https://github.com/nousresearch/hermes-agent) | — | 5173 (Vite) | OpenAI REST :8642 | ✓ |
-| claude-code (SDK + SSE) | — | — | HTTP :9000 | ✓ |
+| [claude-code (SDK + SSE)](https://github.com/anthropics/claude-agent-sdk-python) | — | — | HTTP :9000 | ✓ |
 
 ## CLI 命令
 
