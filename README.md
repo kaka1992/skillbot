@@ -122,71 +122,57 @@ asyncio.run(main())
 ## 评测框架
 
 ```python
-from eval import EvalDataset, AsyncEvalRunner, GraderOutput
+from eval import EvalDataset, AsyncEvalRunner
 from chat import ChatClient
 
 ds = EvalDataset("questions.jsonl", tags=["math"], limit=10)
 c = ChatClient("nanobot")
 runner = AsyncEvalRunner(
     lambda q: c.async_chat(q, session="eval"),
-    concurrency=5,       # 最大并发数
-    # grader 默认使用 default_grader（子串匹配），传 None 禁用
+    concurrency=5,       # 默认使用 default_grader（子串匹配）
 )
 
 async for result in runner.run(ds):
     print(f"{result.id}: {'OK' if result.success else 'FAIL'}")
 
 print(runner.report())
-runner.save("results.jsonl")
+runner.save("results.jsonl")   # 同时写入 .jsonl 和 .report.txt
 ```
 
 ### 自定义 Grader
 
-`grader` 参数支持自定义评估函数，接收 `(expected, answer, extra)`，返回 `GraderOutput`：
-
 ```python
-from eval import GraderOutput, default_grader
+from eval import GraderOutput, register_grader
 
-# 评分式评估
+# 定义 grader 并注册到 YAML 可用名
 def score_grader(expected, answer, extra):
     ok = expected.strip().lower() in answer.strip().lower()
     return GraderOutput(success=ok, score=1.0 if ok else 0.0)
 
-# 利用 extra 字段的多参考答案评估
-def multi_ref_grader(expected, answer, extra):
-    refs = extra.get("references", [expected])
-    ok = any(ref.lower() in answer.lower() for ref in refs)
-    return GraderOutput(success=ok, detail={"matched": ok})
+register_grader("score", score_grader)
 
+# 通过 API 直接使用
 runner = AsyncEvalRunner(chat_fn, grader=score_grader)
 runner = AsyncEvalRunner(chat_fn, grader=None)   # 禁用评分
-
-# GraderOutput 字段
-#   success: bool | None  — 通过/失败/未评估
-#   score: float | None   — 可选评分
-#   detail: dict | None   — 可选详情（token 数、匹配度等）
 ```
 
-### 批量执行（YAML 配置 + CLI）
+### 批量执行
 
 ```yaml
 # tasks.yaml
 output_dir: results/
 tasks:
   - name: math-smoke
-    dataset: tests/eval/data/sample.jsonl
+    dataset: data/math.jsonl
     agent: nanobot
-    tags: [math]
+    grader: score                       # 使用注册的 grader（可选）
     concurrency: 2
-  - name: geo-claude
-    dataset: tests/eval/data/sample.jsonl
-    agent: claude-code
-    tags: [geo]
-    timeout: 180
 ```
 
 ```bash
-bash scripts/eval.sh run tasks.yaml     # 批量执行，结果写入 results/
+bash scripts/eval.sh run tasks.yaml                           # 运行全部
+bash scripts/eval.sh run tasks.yaml -t math-smoke -o results/ # 运行指定
+bash scripts/eval.sh list tasks.yaml                          # 列出 task
 ```
 
 输出：`<name>.jsonl` + `<name>.report.txt` + `summary.txt`。

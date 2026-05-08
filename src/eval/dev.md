@@ -100,13 +100,33 @@ def multi_ref_grader(expected, answer, extra):
         detail={"matched": matched},
     )
 
-# LLM 评估
-def llm_grader(expected, answer, extra):
-    score = judge_model.evaluate(expected, answer)
-    return GraderOutput(success=score >= 0.8, score=score)
-
 runner = AsyncEvalRunner(chat_fn, grader=score_grader)
 ```
+
+### Grader 注册表
+
+通过 `register_grader()` 注册命名 grader，可在 YAML 中通过名字引用：
+
+```python
+from eval import register_grader
+
+register_grader("score", score_grader)
+register_grader("multi_ref", multi_ref_grader)
+```
+
+YAML 中引用：
+
+```yaml
+tasks:
+  - name: test
+    dataset: data.jsonl
+    grader: score            # 查找注册表 → score_grader
+    # grader: default        # 内置默认（等同于不写）
+    # grader: none           # 禁用评分
+    # grader: pkg.mod:fn     # 动态 import
+```
+
+注册表预置 `"default"` → `default_grader`。
 
 ### 运行流程
 
@@ -119,39 +139,6 @@ dataset 逐条 → asyncio.Semaphore(concurrency) 限流
   ├── 计时 elapsed
   ├── 打印进度 [i/total] id (OK/ERR/--) elapsed
   └── yield EvalResult
-```
-
-## 使用示例
-
-```python
-import asyncio
-from eval import EvalDataset, AsyncEvalRunner, GraderOutput
-from chat import ChatClient
-
-async def main():
-    c = ChatClient("nanobot")
-    ds = EvalDataset("questions.jsonl", tags=["easy"], limit=20)
-
-    runner = AsyncEvalRunner(
-        lambda q: c.async_chat(q, session="eval"),
-        concurrency=5,
-    )
-
-    async for r in runner.run(ds):
-        pass  # 进度已在 runner 内打印
-
-    print(runner.report())
-    # Eval Report (20 items)
-    #   Passed:  18
-    #   Failed:  2
-    #   Errors:  0
-    #   Avg time: 1.5s
-    #   Avg score: 0.85
-    #   Accuracy: 90.0%
-
-    runner.save("results.jsonl")
-
-asyncio.run(main())
 ```
 
 ## 并发控制
@@ -202,10 +189,10 @@ tasks:
     tags: [math]
     concurrency: 2
 
-  - name: lang-claude
+  - name: geo-claude
     dataset: tests/eval/data/sample.jsonl
     agent: claude-code
-    tags: [lang]
+    tags: [geo]
     timeout: 180
 ```
 
@@ -240,14 +227,13 @@ asyncio.run(run_tasks(tasks, out_dir))
 results/
 ├── math-smoke.jsonl
 ├── math-smoke.report.txt
-├── lang-claude.jsonl
-├── lang-claude.report.txt
+├── geo-claude.jsonl
+├── geo-claude.report.txt
 └── summary.txt            # 跨 task 汇总
 ```
 
 ## 扩展点
 
-- **自定义 grader**：传入 `grader=my_grader` 替代默认子串匹配
-- **多 agent 对比**：同一数据集跑多个 runner，对比 stats
-- **CI 集成**：`--tags smoke --limit 5` 快速冒烟测试
-- **LLM-as-judge**：grader 内调用评估模型做语义判断
+- **LLM-as-judge**：在 grader 内调用评估模型做语义判断，代替子串匹配
+- **多 agent 对比报告**：同一数据集跑多个 agent，diff 成功率
+- **CI 集成**：`--tags smoke --limit 5` 快速冒烟测试，`exit 1` on failure
