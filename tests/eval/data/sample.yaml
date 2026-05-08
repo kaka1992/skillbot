@@ -6,6 +6,10 @@ tasks:
     agent: nanobot
     tags: [math]
     concurrency: 2
+    # grader: default          # default grader (substring match) — default
+    # grader: none             # disable grading
+    # grader: my_grader        # registered via register_grader("my_grader", fn)
+    # grader: pkg.mod:fn       # dynamic import from Python path
 
   - name: geo-claude
     dataset: tests/eval/data/sample.jsonl

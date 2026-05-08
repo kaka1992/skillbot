@@ -8,7 +8,7 @@ from .runner import (
     GraderOutput,
     default_grader,
 )
-from .task import EvalTask, load_and_run, load_tasks, run_tasks
+from .task import EvalTask, load_and_run, load_tasks, register_grader, run_tasks
 
 __all__ = [
     "AsyncEvalRunner",
@@ -20,5 +20,6 @@ __all__ = [
     "default_grader",
     "load_and_run",
     "load_tasks",
+    "register_grader",
     "run_tasks",
 ]

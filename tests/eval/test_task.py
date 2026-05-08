@@ -8,7 +8,14 @@ from pathlib import Path
 import pytest
 import yaml
 
-from eval.task import EvalTask, load_tasks, run_tasks
+from eval.runner import GraderOutput, default_grader
+from eval.task import (
+    EvalTask,
+    load_tasks,
+    register_grader,
+    resolve_grader,
+    run_tasks,
+)
 
 _DATA = os.path.join(os.path.dirname(__file__), "data", "sample.jsonl")
 
@@ -151,3 +158,57 @@ class TestEvalTaskDataclass:
         assert t.concurrency == 5
         assert t.timeout == 120
         assert t.output is None
+        assert t.grader is None  # defaults to default_grader
+
+    def test_get_grader_default(self):
+        t = EvalTask(name="test", dataset="data.jsonl")
+        assert t.get_grader() is default_grader
+
+    def test_get_grader_none_disables(self):
+        t = EvalTask(name="test", dataset="data.jsonl", grader="none")
+        assert t.get_grader() is None
+
+
+class TestGraderRegistry:
+    def test_resolve_default(self):
+        assert resolve_grader("default") is default_grader
+
+    def test_register_and_resolve(self):
+        def my_grader(expected, answer, extra):
+            return GraderOutput(success=True, score=1.0)
+
+        register_grader("my_grader", my_grader)
+        assert resolve_grader("my_grader") is my_grader
+
+    def test_resolve_unknown_raises(self):
+        with pytest.raises(ValueError, match="Unknown grader"):
+            resolve_grader("nonexistent_grader")
+
+    def test_resolve_import_path(self):
+        fn = resolve_grader("eval.runner:default_grader")
+        assert fn is default_grader
+
+    def test_resolve_import_bad_path(self):
+        with pytest.raises(ValueError, match="Cannot import"):
+            resolve_grader("no_such_module:no_such_fn")
+
+    def test_load_tasks_with_grader_name(self):
+        cfg = _write_config(
+            [{"name": "t1", "dataset": _DATA, "grader": "default"}]
+        )
+        try:
+            tasks, _ = load_tasks(cfg)
+            assert tasks[0].grader == "default"
+            assert tasks[0].get_grader() is default_grader
+        finally:
+            os.unlink(cfg)
+
+    def test_load_tasks_with_grader_none(self):
+        cfg = _write_config(
+            [{"name": "t1", "dataset": _DATA, "grader": "none"}]
+        )
+        try:
+            tasks, _ = load_tasks(cfg)
+            assert tasks[0].get_grader() is None
+        finally:
+            os.unlink(cfg)
