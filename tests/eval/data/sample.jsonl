@@ -2,8 +2,12 @@
 {"id": "math-2", "question": "Calculate 5*3. Reply with just the number", "expected": "15", "tags": ["math", "easy"]}
 {"id": "lang-1", "question": "Say hello in one word", "expected": "hello", "tags": ["lang", "easy"]}
 {"id": "lang-2", "question": "What is the opposite of hot? Reply in one word", "expected": "cold", "tags": ["lang", "easy"]}
-{"id": "geo-1", "question": "What is the capital of France? Reply in one word", "expected": "Paris", "tags": ["geo", "medium"]}
+{"id": "geo-1", "question": "What is the capital of France? Reply in one word", "expected": "Paris", "tags": ["geo", "medium"], "min_score": 0.8, "references": ["Paris", "paris"]}
 {"id": "geo-2", "question": "Which continent is Brazil in? Reply in one word", "expected": "South", "tags": ["geo", "medium"]}
 # This is a comment line, should be skipped
 
 {"id": "trick-1", "question": "Is the sky green? Answer yes or no", "expected": "no", "tags": ["trick", "hard"]}
+
+{"id": "tool-1", "question": "Use Python to calculate 2**10 and report the result.", "expected": "1024", "tags": ["tool", "medium"]}
+{"id": "tool-2", "question": "Run: echo hello_tool_test", "expected": "hello_tool_test", "tags": ["tool", "easy"]}
+{"id": "tool-3", "question": "Use Python: print('trace_ok')", "expected": "trace_ok", "tags": ["tool", "easy"]}

@@ -1,4 +1,3 @@
-from typing import Optional
 """Nanobot backend — OpenAI-compatible REST API on port 8900."""
 
 import json
@@ -6,8 +5,9 @@ import time
 import urllib.request
 import urllib.error
 from collections.abc import Iterator
+from typing import Optional
 
-from .base import AbstractBackend, AgentStartupTimeout
+from .base import AbstractBackend, AgentStartupTimeout, StreamChunk
 
 NANOBOT_PORT = 8900
 NANOBOT_BASE = f"http://127.0.0.1:{NANOBOT_PORT}/v1"
@@ -123,6 +123,46 @@ class NanobotBackend(AbstractBackend):
                     delta = chunk["choices"][0]["delta"]
                     if "content" in delta:
                         yield delta["content"]
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    continue
+
+    def stream_chunks(
+        self, content: str, session: str, model: Optional[str] = None
+    ) -> Iterator[StreamChunk]:
+        """Stream text chunks from OpenAI-compatible SSE.
+
+        nanobot's /v1/chat/completions streaming endpoint only emits
+        ``delta.content`` — no tool events, no usage.  Tool trace would
+        require modifying the nanobot API server to emit custom SSE
+        events (like hermes's ``hermes.tool.progress``).
+        """
+        self._sessions.add(session)
+        body = json.dumps({
+            **({} if (model or self._model) is None else {"model": model or self._model}),
+            "messages": [{"role": "user", "content": content}],
+            "stream": True,
+        }).encode()
+        req = urllib.request.Request(
+            f"{NANOBOT_BASE}/chat/completions",
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "skillbot/1.0",
+                "X-Nanobot-Session-ID": session,
+            },
+        )
+        with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+            for line in resp:
+                line = line.decode("utf-8").strip()
+                if not line.startswith("data: "):
+                    continue
+                if line == "data: [DONE]":
+                    break
+                try:
+                    chunk = json.loads(line[6:])
+                    delta = chunk["choices"][0]["delta"]
+                    if "content" in delta and delta["content"]:
+                        yield StreamChunk(text=delta["content"])
                 except (json.JSONDecodeError, KeyError, IndexError):
                     continue
 

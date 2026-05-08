@@ -98,6 +98,16 @@ cc = ChatClient("claude-code", timeout=60)
 for chunk in cc.stream("数 1 到 3", session="s3"):
     print(repr(chunk))   # → '1' '\n' '2' '\n' '3'
 
+# stream_chunks — 结构化 trace 采集
+from eval.trace import TraceCollector
+collector = TraceCollector()
+for chunk in cc.stream_chunks("执行python: print(123)", session="trace"):
+    collector.feed(chunk)
+    if chunk.text:
+        print(chunk.text, end="")
+trace = collector.to_dict()
+# → {"thinking": [...], "tool_calls": [...], "usage": [...]}
+
 # 异步 + 并发
 import asyncio
 c = ChatClient("nanobot")
@@ -154,6 +164,7 @@ register_grader("score", score_grader)
 # 通过 API 直接使用
 runner = AsyncEvalRunner(chat_fn, grader=score_grader)
 runner = AsyncEvalRunner(chat_fn, grader=None)   # 禁用评分
+runner = AsyncEvalRunner(chat_fn, trace=True)    # trace 采集
 ```
 
 ### 批量执行
@@ -165,7 +176,8 @@ tasks:
   - name: math-smoke
     dataset: data/math.jsonl
     agent: nanobot
-    grader: score                       # 使用注册的 grader（可选）
+    grader: score                       # grader 名（default / none / 注册名 / pkg:fn）
+    trace: true                         # 开启 process trace 采集
     concurrency: 2
 ```
 
@@ -176,6 +188,15 @@ bash scripts/eval.sh list tasks.yaml                          # 列出 task
 ```
 
 输出：`<name>.jsonl` + `<name>.report.txt` + `summary.txt`。
+
+### Trace 能力矩阵
+
+| trace 数据 | deer-flow | nanobot | hermes-agent | claude-code |
+|------|:---:|:---:|:---:|:---:|
+| thinking / 推理过程 | — | — | — | ✓ |
+| tool_use / tool_result | ✓ | — | ✓ | ✓ |
+| subagent 生命周期 | — | — | — | ✓ |
+| usage / token 用量 | — | — | ✓ | ✓ |
 
 ## 配置
 
@@ -211,9 +232,9 @@ uv venv && uv pip install -e ".[dev]"
 PYTHONPATH="src" .venv/bin/pytest tests/ -v
 
 # 按模块测试
-PYTHONPATH="src" .venv/bin/pytest tests/chat/ -v
-PYTHONPATH="src" .venv/bin/pytest tests/eval/ -v
-PYTHONPATH="src" .venv/bin/pytest tests/server/ -v
+PYTHONPATH="src" .venv/bin/pytest tests/chat/ -v    # ~57 测试
+PYTHONPATH="src" .venv/bin/pytest tests/eval/ -v    # ~83 测试
+PYTHONPATH="src" .venv/bin/pytest tests/server/ -v  # ~24 测试
 ```
 
 ## License

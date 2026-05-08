@@ -141,6 +141,48 @@ async def chat_stream(sid: str, body: ChatRequest):
     )
 
 
+@app.post("/sessions/{sid}/chat/trace")
+async def chat_trace(sid: str, body: ChatRequest):
+    """Stream chat with full trace: text + thinking + tool_use + subagent + usage."""
+    s = manager.get(sid)
+    if not s:
+        raise HTTPException(404, f"Session {sid} not found")
+
+    async def event_generator():
+        async with s.lock:
+            try:
+                async for chunk in s.send_stream_chunks(
+                    body.message,
+                    timeout=body.timeout or TIMEOUT,
+                    allowed_tools=body.allowed_tools or ALLOWED_TOOLS or None,
+                    cwd=WORK_DIR,
+                ):
+                    if chunk.text:
+                        yield f"data: {json.dumps({'type': 'text', 'text': chunk.text})}\n\n"
+                    if chunk.blocks:
+                        for b in chunk.blocks:
+                            yield f"data: {json.dumps({'type': b.type, 'data': b.data})}\n\n"
+            except RuntimeError as e:
+                yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+                return
+            except Exception:
+                logger.exception("Unhandled error during trace streaming")
+                yield f"data: {json.dumps({'type': 'error', 'error': 'Internal server error'})}\n\n"
+                return
+
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.get("/sessions/{sid}/history")
 async def get_history(sid: str):
     s = manager.get(sid)

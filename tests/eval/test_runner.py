@@ -5,6 +5,8 @@ import os
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from eval import (
     AsyncEvalRunner,
     EvalDataset,
@@ -364,3 +366,131 @@ class TestCustomGrader:
         asyncio.run(_collect(runner, ds))
         r = runner.report()
         assert "Avg score: 0.75" in r
+
+
+class TestTraceRunner:
+    """Tests for trace-enabled runner (chat_fn returns (str, dict))."""
+
+    async def _chat_with_trace(self, q: str):
+        await asyncio.sleep(0.01)
+        return q.upper(), {"thinking": [{"text": "thinking..."}], "tool_calls": []}
+
+    async def _chat_no_trace(self, q: str) -> str:
+        await asyncio.sleep(0.01)
+        return q.upper()
+
+    def test_trace_enabled_captures_trace(self):
+        """trace=True: chat_fn returns (answer, trace_dict), stored in grade_detail."""
+        ds = EvalDataset(_DATA, limit=2)
+        runner = AsyncEvalRunner(self._chat_with_trace, trace=True)
+        results = asyncio.run(_collect(runner, ds))
+        assert results[0].grade_detail is not None
+        assert "trace" in results[0].grade_detail
+        assert results[0].grade_detail["trace"]["thinking"] == [{"text": "thinking..."}]
+
+    def test_trace_enabled_merges_with_grader_detail(self):
+        """trace=True + grader with detail: both trace and grader detail preserved."""
+
+        def detail_grader(expected, answer, extra):
+            return GraderOutput(success=True, detail={"score": 0.9})
+
+        ds = EvalDataset(_DATA, limit=1)
+        runner = AsyncEvalRunner(
+            self._chat_with_trace, grader=detail_grader, trace=True,
+        )
+        results = asyncio.run(_collect(runner, ds))
+        gd = results[0].grade_detail
+        assert gd["score"] == 0.9
+        assert "trace" in gd
+
+    def test_trace_disabled_requires_str_chat_fn(self):
+        """trace=False: chat_fn must return str, not tuple."""
+        ds = EvalDataset(_DATA, limit=1)
+        runner = AsyncEvalRunner(self._chat_with_trace, trace=False)
+        # tuple not unpacked → grader receives tuple → AttributeError
+        with pytest.raises(AttributeError):
+            asyncio.run(_collect(runner, ds))
+
+    def test_trace_disabled_with_str_chat_fn(self):
+        """trace=False: plain str chat_fn works as before."""
+        ds = EvalDataset(_DATA, limit=2)
+        runner = AsyncEvalRunner(self._chat_no_trace, trace=False)
+        results = asyncio.run(_collect(runner, ds))
+        assert results[0].grade_detail is None  # no grader, no trace
+        assert results[0].answer == results[0].question.upper()
+
+    def test_trace_enabled_grader_none(self):
+        """trace=True + grader=None: grade_detail has trace, success is None."""
+        ds = EvalDataset(_DATA, limit=1)
+        runner = AsyncEvalRunner(
+            self._chat_with_trace, grader=None, trace=True,
+        )
+        results = asyncio.run(_collect(runner, ds))
+        assert results[0].success is None
+        assert results[0].grade_detail is not None
+        assert "trace" in results[0].grade_detail
+
+    def test_result_tags_and_elapsed(self):
+        """EvalResult carries tags from dataset and elapsed time."""
+        ds = EvalDataset(_DATA, tags=["tool"], limit=1)
+        runner = AsyncEvalRunner(self._chat_no_trace)
+        results = asyncio.run(_collect(runner, ds))
+        assert "tool" in results[0].tags
+        assert results[0].elapsed >= 0
+
+    def test_extra_field_propagation(self):
+        """EvalResult.extra carries extra fields from dataset."""
+        ds = EvalDataset(_DATA, tags=["geo"], limit=1)
+        runner = AsyncEvalRunner(self._chat_no_trace)
+        results = asyncio.run(_collect(runner, ds))
+        geo = [r for r in results if r.id == "geo-1"]
+        if geo:
+            assert "min_score" in geo[0].extra
+
+    def test_save_with_error_results(self):
+        """save() handles results with errors (success=None, error populated)."""
+        async def fail(_q: str) -> str:
+            raise RuntimeError("boom")
+
+        ds = EvalDataset(_DATA, limit=1)
+        runner = AsyncEvalRunner(fail)
+        asyncio.run(_collect(runner, ds))
+
+        with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as f:
+            tmp = f.name
+        try:
+            runner.save(tmp)
+            import json
+
+            with open(tmp) as f:
+                lines = [json.loads(l) for l in f if l.strip()]
+            assert len(lines) == 1
+            assert lines[0]["success"] is None
+            assert "boom" in lines[0]["error"]
+        finally:
+            os.unlink(tmp)
+            report_path = Path(tmp).with_suffix(".report.txt")
+            if report_path.exists():
+                os.unlink(report_path)
+
+    def test_save_with_trace_in_grade_detail(self):
+        """save() writes grade_detail containing trace data."""
+        ds = EvalDataset(_DATA, limit=1)
+        runner = AsyncEvalRunner(self._chat_with_trace, trace=True)
+        asyncio.run(_collect(runner, ds))
+
+        with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as f:
+            tmp = f.name
+        try:
+            runner.save(tmp)
+            import json
+
+            with open(tmp) as f:
+                lines = [json.loads(l) for l in f if l.strip()]
+            gd = lines[0].get("grade_detail", {})
+            assert "trace" in gd
+        finally:
+            os.unlink(tmp)
+            report_path = Path(tmp).with_suffix(".report.txt")
+            if report_path.exists():
+                os.unlink(report_path)

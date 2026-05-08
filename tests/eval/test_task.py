@@ -114,6 +114,24 @@ class TestLoadTasks:
         finally:
             os.unlink(cfg)
 
+    def test_load_trace_field(self):
+        cfg = _write_config(
+            [{"name": "t1", "dataset": _DATA, "trace": True}]
+        )
+        try:
+            tasks, _ = load_tasks(cfg)
+            assert tasks[0].trace is True
+        finally:
+            os.unlink(cfg)
+
+    def test_load_trace_defaults_false(self):
+        cfg = _write_config([{"name": "t1", "dataset": _DATA}])
+        try:
+            tasks, _ = load_tasks(cfg)
+            assert tasks[0].trace is False
+        finally:
+            os.unlink(cfg)
+
     def test_missing_tasks_key_raises(self):
         with tempfile.NamedTemporaryFile(
             suffix=".yaml", mode="w", delete=False, encoding="utf-8"
@@ -159,6 +177,7 @@ class TestEvalTaskDataclass:
         assert t.timeout == 120
         assert t.output is None
         assert t.grader is None  # defaults to default_grader
+        assert t.trace is False  # default off
 
     def test_get_grader_default(self):
         t = EvalTask(name="test", dataset="data.jsonl")
@@ -167,6 +186,59 @@ class TestEvalTaskDataclass:
     def test_get_grader_none_disables(self):
         t = EvalTask(name="test", dataset="data.jsonl", grader="none")
         assert t.get_grader() is None
+
+
+class TestRunTasksMulti:
+    """run_tasks with multiple tasks and various configs."""
+
+    def test_run_tasks_multi_output(self):
+        """Multiple tasks produce summary.txt with both task reports."""
+        tasks = [
+            EvalTask(name="multi-a", dataset=_DATA, agent="nanobot",
+                     tags=["math"], limit=1),
+            EvalTask(name="multi-b", dataset=_DATA, agent="nanobot",
+                     tags=["lang"], limit=1),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(run_tasks(tasks, tmp))
+            assert os.path.exists(os.path.join(tmp, "multi-a.jsonl"))
+            assert os.path.exists(os.path.join(tmp, "multi-b.jsonl"))
+            summary = Path(tmp, "summary.txt").read_text()
+            assert "Eval Summary" in summary
+            assert "Passed" in summary
+
+    def test_run_tasks_with_grader_import_path(self):
+        """run_tasks resolves grader via YAML grader name."""
+        tasks = [
+            EvalTask(name="gr-import", dataset=_DATA, agent="nanobot",
+                     tags=["math"], limit=1,
+                     grader="eval.runner:default_grader"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(run_tasks(tasks, tmp))
+            assert os.path.exists(os.path.join(tmp, "gr-import.jsonl"))
+
+
+class TestLoadAndRun:
+    """load_and_run() end-to-end (CLI entry point)."""
+
+    def test_load_and_run_creates_output(self):
+        from eval.task import load_and_run
+
+        cfg = _write_config(
+            [{"name": "lar-test", "dataset": _DATA, "agent": "nanobot",
+              "tags": ["math"], "limit": 1}],
+            output_dir="lar_results",
+        )
+        try:
+            load_and_run(cfg)
+            assert os.path.exists("lar_results/lar-test.jsonl")
+            assert os.path.exists("lar_results/lar-test.report.txt")
+            assert os.path.exists("lar_results/summary.txt")
+        finally:
+            os.unlink(cfg)
+            import shutil
+            shutil.rmtree("lar_results", ignore_errors=True)
 
 
 class TestGraderRegistry:

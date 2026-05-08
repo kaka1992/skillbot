@@ -7,7 +7,7 @@ from typing import Optional
 
 import requests
 
-from .base import AbstractBackend, AgentStartupTimeout
+from .base import AbstractBackend, AgentStartupTimeout, StreamChunk, TraceBlock
 
 CLAUDE_PORT = 9000
 CLAUDE_BASE = f"http://127.0.0.1:{CLAUDE_PORT}"
@@ -120,6 +120,49 @@ class ClaudeBackend(AbstractBackend):
                 raise RuntimeError(data["error"])
             elif data.get("type") == "done":
                 return
+
+    def stream_chunks(
+        self, content: str, session: str, model: Optional[str] = None
+    ) -> Iterator[StreamChunk]:
+        """Stream with trace data (thinking, tool_use, subagent, usage)."""
+        self._sessions.add(session)
+        sid = self._get_session(session)
+        resp = requests.post(
+            f"{CLAUDE_BASE}/sessions/{sid}/chat/trace",
+            json={"message": content, "timeout": self._timeout},
+            timeout=self._timeout + 10,
+            stream=True,
+        )
+        resp.raise_for_status()
+        text_parts: list[str] = []
+        blocks: list[TraceBlock] = []
+        for line in resp.iter_lines(decode_unicode=True):
+            if not line.startswith("data: "):
+                continue
+            data = json.loads(line[6:])
+            event_type = data.get("type")
+            if event_type == "text":
+                text_parts.append(data.get("text", ""))
+            elif event_type == "error":
+                raise RuntimeError(data["error"])
+            elif event_type == "done":
+                if text_parts or blocks:
+                    yield StreamChunk(
+                        text="".join(text_parts), blocks=blocks or None
+                    )
+                return
+            else:
+                # trace event: thinking, tool_use, tool_result, subagent, usage
+                # flush accumulated text first
+                if text_parts:
+                    yield StreamChunk(text="".join(text_parts))
+                    text_parts.clear()
+                blocks.append(TraceBlock(
+                    type=event_type,
+                    data=data.get("data"),
+                ))
+        if text_parts or blocks:
+            yield StreamChunk(text="".join(text_parts), blocks=blocks or None)
 
     def list_sessions(self) -> list[str]:
         return sorted(self._sessions)

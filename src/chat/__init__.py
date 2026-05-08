@@ -3,7 +3,13 @@
 from collections.abc import AsyncIterator, Iterator
 from typing import Optional
 
-from .base import AbstractBackend, AgentNotInstalledError, AgentStartupTimeout, ChatError
+from .base import (
+    AbstractBackend,
+    AgentNotInstalledError,
+    AgentStartupTimeout,
+    ChatError,
+    StreamChunk,
+)
 from .claude import ClaudeBackend
 from .deerflow import DeerFlowBackend
 from .hermes import HermesBackend
@@ -81,6 +87,19 @@ class ChatClient:
     ) -> AsyncIterator[str]:
         """Async: send a message and yield response tokens."""
         async for chunk in self._backend.async_stream(content=content, session=session, model=model):
+            yield chunk
+
+    def stream_chunks(
+        self, content: str, session: str = "default", model: Optional[str] = None
+    ) -> Iterator[StreamChunk]:
+        """Send a message and yield structured chunks with trace data."""
+        yield from self._backend.stream_chunks(content=content, session=session, model=model)
+
+    async def async_stream_chunks(
+        self, content: str, session: str = "default", model: Optional[str] = None
+    ) -> AsyncIterator[StreamChunk]:
+        """Async: send a message and yield structured chunks with trace data."""
+        async for chunk in self._backend.async_stream_chunks(content=content, session=session, model=model):
             yield chunk
 
     def list_sessions(self) -> list[str]:

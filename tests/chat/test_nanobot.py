@@ -49,3 +49,66 @@ class TestNanobotSessionManagement:
         assert "mg-x" in c.list_sessions()
         c.clear_session("mg-x")
         assert "mg-x" not in c.list_sessions()
+
+
+class TestNanobotTrace:
+    """stream_chunks() via default wrapper (text-only, no trace blocks yet)."""
+
+    def test_stream_chunks_yields_streamchunk(self, nanobot_client):
+        from chat.base import StreamChunk
+
+        chunks = list(
+            nanobot_client._backend.stream_chunks(
+                "Say hello in one word.", session="trace-n1"
+            )
+        )
+        assert len(chunks) >= 1
+        assert all(isinstance(c, StreamChunk) for c in chunks)
+        full_text = "".join(c.text for c in chunks)
+        assert len(full_text.strip()) > 0
+
+    def test_stream_chunks_returns_text(self, nanobot_client):
+        """stream_chunks() text is non-empty and contains expected content."""
+        full_text = "".join(
+            c.text for c in nanobot_client._backend.stream_chunks(
+                "What is 1+1? Reply with just the number.",
+                session="trace-n2",
+            )
+        )
+        assert "2" in full_text, f"Expected '2' in: {full_text}"
+
+    @pytest.mark.skip(reason="nanobot currently returns text-only deltas")
+    def test_stream_chunks_tool_use_prompt(self, nanobot_client):
+        """tool_use blocks when model invokes tools (depends on model behavior)."""
+        chunks = list(
+            nanobot_client._backend.stream_chunks(
+                "使用Python执行: print('hello_trace_test')",
+                session="trace-ntool",
+            )
+        )
+        tool_blocks = [
+            b for c in chunks if c.blocks
+            for b in c.blocks if b.type == "tool_use"
+        ]
+        assert len(tool_blocks) >= 1
+
+    def test_stream_chunks_text_and_blocks(self, nanobot_client):
+        """stream_chunks() yields well-formed StreamChunks with valid text."""
+        chunks = list(
+            nanobot_client._backend.stream_chunks(
+                "What is 1+1? Reply with the number only.",
+                session="trace-n3",
+            )
+        )
+        assert len(chunks) >= 1
+        full_text = "".join(c.text for c in chunks)
+        assert "2" in full_text
+        from chat.base import StreamChunk
+        assert all(isinstance(c, StreamChunk) for c in chunks)
+        for c in chunks:
+            if c.blocks:
+                for b in c.blocks:
+                    assert b.type in (
+                        "thinking", "tool_use", "tool_result",
+                        "subagent", "usage",
+                    ), f"Unknown block type: {b.type}"

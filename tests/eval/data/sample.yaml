@@ -1,18 +1,47 @@
 output_dir: results/
 
 tasks:
+  # basic: default grader (substring match), no trace
   - name: math-smoke
     dataset: tests/eval/data/sample.jsonl
     agent: nanobot
     tags: [math]
     concurrency: 2
-    # grader: default          # default grader (substring match) — default
-    # grader: none             # disable grading
-    # grader: my_grader        # registered via register_grader("my_grader", fn)
-    # grader: pkg.mod:fn       # dynamic import from Python path
 
-  - name: geo-claude
+  # grader: default — explicit reference to default grader (same as omitting)
+  - name: geo-graded
     dataset: tests/eval/data/sample.jsonl
     agent: claude-code
     tags: [geo]
     timeout: 180
+    grader: default
+
+  # grader: none — disable grading (success stays None)
+  - name: geo-ungraded
+    dataset: tests/eval/data/sample.jsonl
+    agent: claude-code
+    tags: [geo]
+    timeout: 180
+    grader: none
+
+  # trace: true — capture thinking + tool_use + subagent + usage
+  - name: trick-traced
+    dataset: tests/eval/data/sample.jsonl
+    agent: claude-code
+    tags: [trick]
+    trace: true
+
+  # grader: none + trace: true — raw output with process data
+  - name: lang-raw
+    dataset: tests/eval/data/sample.jsonl
+    agent: claude-code
+    tags: [lang]
+    grader: none
+    trace: true
+
+  # tool tag + trace — verify tool_use/tool_result blocks in trace
+  - name: tool-traced
+    dataset: tests/eval/data/sample.jsonl
+    agent: claude-code
+    tags: [tool]
+    trace: true

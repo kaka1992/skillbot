@@ -60,12 +60,12 @@ ChatClient("claude-code")
 
 ```
 src/chat/
-├── __init__.py          # ChatClient 入口
-├── base.py              # AbstractBackend（接口定义）
-├── deerflow.py          # DeerFlowBackend
-├── nanobot.py           # NanobotBackend
-├── hermes.py            # HermesBackend
-├── claude.py            # ClaudeBackend
+├── __init__.py          # ChatClient 入口（chat / stream / stream_chunks / async 系列）
+├── base.py              # AbstractBackend + TraceBlock + StreamChunk 数据模型
+├── deerflow.py          # DeerFlowBackend（LangGraph SSE + messages-tuple + custom events）
+├── nanobot.py           # NanobotBackend（OpenAI REST，stream_chunks 默认 wrap）
+├── hermes.py            # HermesBackend（OpenAI SSE + hermes.tool.progress events）
+├── claude.py            # ClaudeBackend（HTTP :9000 + trace SSE endpoint）
 └── dev.md               # 设计文档
 ```
 
@@ -292,6 +292,11 @@ def _ensure_agent_running(self) -> None:
 | 单次对话 | ✓ | ✓ | ✓ | ✓ |
 | 多轮对话（会话隔离） | ✓ | ✓ | ✓ | ✓ |
 | 流式输出 | ✓ | ✓ | ✓ | ✓（SSE token 级别） |
+| stream_chunks（结构化 trace） | ✓ | ✓ | ✓ | ✓ |
+| trace: thinking | — | — | — | ✓ |
+| trace: tool_use / tool_result | ✓（messages-tuple） | —（API 未暴露） | ✓（hermes.tool.progress） | ✓ |
+| trace: subagent | — | — | — | ✓ |
+| trace: usage | — | — | ✓ | ✓ |
 | 动态选模型 | ✓ | ✓ | ✓ | — (settings.json) |
 | 缺省模型 | ✓ | ✓ | ✓ | — |
 | 无需预启动 HTTP | — | — | — | ✓ (server 内嵌) |
@@ -330,6 +335,17 @@ print(c.chat("我是谁？", session="who"))           # → "你是李四"
 c = ChatClient("claude-code", timeout=300)
 print(c.chat("1+1=?", session="cc"))              # → "2"
 
+# stream_chunks — 结构化 trace 采集
+from chat.base import StreamChunk
+from eval.trace import TraceCollector
+
+collector = TraceCollector()
+for chunk in c.stream_chunks("执行python: print(123)", session="trace"):
+    collector.feed(chunk)
+    if chunk.text:
+        print(chunk.text, end="")
+# trace = collector.to_dict()  → {"thinking": [...], "tool_calls": [...], ...}
+
 # 会话管理
 print(c.list_sessions())    # → ["who"]
 c.clear_session("who")
@@ -341,7 +357,9 @@ c.clear_session("who")
 
 ```
 tests/chat/
-├── test_base.py         # 异常类型 + ChatClient 参数验证
+├── test_base.py         # 异常类型 + TraceBlock/StreamChunk 数据模型 + ChatClient API
+├── test_async.py        # 异步 chat/stream 测试（nanobot + hermes + deer-flow）
+├── test_claude.py       # ClaudeBackend 测试（需 claude :9000 可达）
 ├── test_deerflow.py     # DeerFlowBackend 测试（需 deer-flow :8001 可达）
 ├── test_nanobot.py      # NanobotBackend 测试（需 nanobot :8900 可达）
 ├── test_hermes.py       # HermesBackend 测试（需 hermes :8642 可达）
@@ -350,19 +368,23 @@ tests/chat/
 
 ### 测试覆盖矩阵
 
-| 测试场景 | deer-flow | nanobot | hermes-agent |
-|---------|:---:|:---:|:---:|
-| 单次对话返回非空文本 | ✓ | ✓ | ✓ |
-| 流式对话逐 token 输出 | ✓ | ✓ | ✓ |
-| 多轮对话上下文保持 | ✓ | ✓ | ✓ |
-| 不同 session 完全隔离 | ✓ | ✓ | ✓ |
-| 不填 model 使用默认值 | ✓ | ✓ | ✓ |
-| 动态切换 model | ✓ | ✓ | ✓ |
-| list_sessions 追踪 | ✓ | ✓ | ✓ |
-| clear_session 清除 | ✓ | ✓ | ✓ |
-| unknown agent 报错 | — | — | — |
-| 端口不可达抛异常 | — | ✓ | ✓ |
-| 端口自动检测通过 | — | ✓ | ✓ |
+| 测试场景 | deer-flow | nanobot | hermes-agent | claude-code |
+|---------|:---:|:---:|:---:|:---:|
+| 单次对话返回非空文本 | ✓ | ✓ | ✓ | ✓ |
+| 流式对话逐 token 输出 | ✓ | ✓ | ✓ | ✓ |
+| 多轮对话上下文保持 | ✓ | ✓ | ✓ | ✓ |
+| 不同 session 完全隔离 | ✓ | ✓ | ✓ | ✓ |
+| stream_chunks 返回 StreamChunk | ✓ | ✓ | ✓ | ✓ |
+| stream_chunks 文本验证 | ✓ | ✓ | ✓ | ✓ |
+| trace: tool_use / tool_result | ✓ | skip | ✓ | ✓ |
+| trace: usage | — | — | ✓ | ✓ |
+| 不填 model 使用默认值 | ✓ | ✓ | ✓ | ✓ |
+| 动态切换 model | ✓ | ✓ | ✓ | ✓ |
+| list_sessions 追踪 | ✓ | ✓ | ✓ | ✓ |
+| clear_session 清除 | ✓ | ✓ | ✓ | ✓ |
+| unknown agent 报错 | — | — | — | — |
+| 端口不可达抛异常 | — | ✓ | ✓ | ✓ |
+| 端口自动检测通过 | — | ✓ | ✓ | ✓ |
 
 ### 运行测试
 

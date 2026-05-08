@@ -15,8 +15,16 @@ from claude_agent_sdk import (
     ClaudeSDKClient,
     ResultMessage,
     StreamEvent,
+    TaskNotificationMessage,
+    TaskProgressMessage,
+    TaskStartedMessage,
     TextBlock,
+    ThinkingBlock,
+    ToolResultBlock,
+    ToolUseBlock,
 )
+
+from chat.base import StreamChunk, TraceBlock  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +200,144 @@ class Session:
                 if msg.is_error:
                     errors = msg.errors or ["Unknown error"]
                     raise RuntimeError("; ".join(errors))
+
+    async def send_stream_chunks(
+        self,
+        message: str,
+        *,
+        timeout: float = 300,
+        allowed_tools: str | None = None,
+        cwd: str | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        """Send a message and yield StreamChunks with full trace data.
+
+        The caller MUST hold ``self.lock`` for the entire iteration.
+        """
+        self.add("user", message)
+        options = _build_options(
+            allowed_tools=allowed_tools,
+            cwd=cwd,
+            include_partial_messages=True,
+        )
+
+        text_parts: list[str] = []
+        gen = self._send_inner_chunks(message, options)
+        try:
+            while True:
+                try:
+                    chunk = await asyncio.wait_for(
+                        gen.__anext__(), timeout=timeout
+                    )
+                except StopAsyncIteration:
+                    break
+                if chunk.text:
+                    text_parts.append(chunk.text)
+                yield chunk
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"claude timed out after {timeout}s")
+        except Exception:
+            self.add("error", message)
+            raise
+
+        self.add("assistant", "".join(text_parts))
+
+    async def _send_inner_chunks(
+        self, message: str, options: ClaudeAgentOptions
+    ) -> AsyncIterator[StreamChunk]:
+        if self._client is None:
+            self._client = ClaudeSDKClient(options=options)
+            await self._client.connect(prompt=message)
+        else:
+            await self._client.query(message)
+
+        async for msg in self._client.receive_response():
+            blocks: list[TraceBlock] = []
+            text_parts: list[str] = []
+
+            if isinstance(msg, StreamEvent):
+                event = msg.event
+                event_type = event.get("type", "")
+                if event_type == "content_block_delta":
+                    delta = event.get("delta", {})
+                    delta_type = delta.get("type", "")
+                    if delta_type == "text_delta":
+                        t = delta.get("text", "")
+                        if t:
+                            text_parts.append(t)
+                    elif delta_type == "thinking_delta":
+                        blocks.append(TraceBlock(
+                            type="thinking",
+                            data={"thinking": delta.get("thinking", "")},
+                        ))
+                    elif delta_type == "input_json_delta":
+                        pass  # partial JSON — use ToolUseBlock for complete input
+
+            elif isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock):
+                        text_parts.append(block.text)
+                    elif isinstance(block, ThinkingBlock):
+                        blocks.append(TraceBlock(
+                            type="thinking",
+                            data={"thinking": block.thinking,
+                                  "signature": block.signature},
+                        ))
+                    elif isinstance(block, ToolUseBlock):
+                        blocks.append(TraceBlock(
+                            type="tool_use",
+                            data={"id": block.id, "name": block.name,
+                                  "input": block.input},
+                        ))
+                    elif isinstance(block, ToolResultBlock):
+                        blocks.append(TraceBlock(
+                            type="tool_result",
+                            data={"tool_use_id": block.tool_use_id,
+                                  "content": block.content,
+                                  "is_error": block.is_error},
+                        ))
+
+            elif isinstance(msg, TaskStartedMessage):
+                blocks.append(TraceBlock(
+                    type="subagent",
+                    data={"event": "started", "task_id": msg.task_id,
+                          "description": msg.description,
+                          "agent_type": msg.task_type},
+                ))
+            elif isinstance(msg, TaskProgressMessage):
+                blocks.append(TraceBlock(
+                    type="subagent",
+                    data={"event": "progress", "task_id": msg.task_id,
+                          "last_tool_name": msg.last_tool_name,
+                          "usage": dict(msg.usage) if msg.usage else None},
+                ))
+            elif isinstance(msg, TaskNotificationMessage):
+                blocks.append(TraceBlock(
+                    type="subagent",
+                    data={"event": msg.status, "task_id": msg.task_id,
+                          "summary": msg.summary,
+                          "usage": dict(msg.usage) if msg.usage else None},
+                ))
+
+            elif isinstance(msg, ResultMessage):
+                if msg.is_error:
+                    errors = msg.errors or ["Unknown error"]
+                    raise RuntimeError("; ".join(errors))
+                blocks.append(TraceBlock(
+                    type="usage",
+                    data={
+                        "total_cost_usd": msg.total_cost_usd,
+                        "num_turns": msg.num_turns,
+                        "duration_ms": msg.duration_ms,
+                        "duration_api_ms": msg.duration_api_ms,
+                        "stop_reason": msg.stop_reason,
+                        "usage": msg.usage,
+                    },
+                ))
+
+            yield StreamChunk(
+                text="".join(text_parts),
+                blocks=blocks if blocks else None,
+            )
 
     async def close(self) -> None:
         if self._client is not None:

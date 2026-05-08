@@ -9,6 +9,7 @@ from .runner import (
     default_grader,
 )
 from .task import EvalTask, load_and_run, load_tasks, register_grader, run_tasks
+from .trace import TraceCollector
 
 __all__ = [
     "AsyncEvalRunner",
@@ -17,6 +18,7 @@ __all__ = [
     "EvalTask",
     "GraderFn",
     "GraderOutput",
+    "TraceCollector",
     "default_grader",
     "load_and_run",
     "load_tasks",

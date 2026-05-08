@@ -81,6 +81,70 @@ class TestClaudeStream:
         assert all(isinstance(c, str) and len(c) > 0 for c in chunks)
 
 
+class TestClaudeTrace:
+    """stream_chunks() with full process trace data."""
+
+    def test_stream_chunks_yields_streamchunk(self, claude_client):
+        """stream_chunks() returns StreamChunk objects."""
+        from chat.base import StreamChunk
+
+        chunks = list(
+            claude_client._backend.stream_chunks(
+                "Say hello in one word.", session="trace-1"
+            )
+        )
+        assert len(chunks) >= 1
+        assert all(isinstance(c, StreamChunk) for c in chunks)
+        full_text = "".join(c.text for c in chunks)
+        assert len(full_text.strip()) > 0
+
+    def test_stream_chunks_has_usage(self, claude_client):
+        """stream_chunks() includes usage block with cost/tokens."""
+        from chat.base import StreamChunk
+
+        chunks = list(
+            claude_client._backend.stream_chunks(
+                "Say hi in one word.", session="trace-usage"
+            )
+        )
+        usage_blocks = [
+            b for c in chunks if c.blocks
+            for b in c.blocks if b.type == "usage"
+        ]
+        assert len(usage_blocks) >= 1, f"No usage block in: {chunks}"
+        usage = usage_blocks[0].data or {}
+        assert "total_cost_usd" in usage
+        assert "num_turns" in usage
+
+    def test_stream_chunks_public_api(self, claude_client):
+        """ChatClient.stream_chunks() public method works."""
+        from chat.base import StreamChunk
+
+        chunks = list(
+            claude_client.stream_chunks(
+                "Say hi in one word.", session="trace-public"
+            )
+        )
+        assert len(chunks) >= 1
+        assert all(isinstance(c, StreamChunk) for c in chunks)
+
+    def test_stream_chunks_tool_use_prompt(self, claude_client):
+        """A prompt requiring Python execution emits tool_use + tool_result blocks."""
+        chunks = list(
+            claude_client.stream_chunks(
+                "使用Python执行: print('hello_trace_test')",
+                session="trace-tool",
+            )
+        )
+        tool_blocks = [
+            b for c in chunks if c.blocks
+            for b in c.blocks if b.type in ("tool_use", "tool_result")
+        ]
+        assert len(tool_blocks) >= 1, f"No tool blocks in {chunks}"
+        tool_names = {b.data.get("name") for b in tool_blocks if b.type == "tool_use"}
+        assert tool_names, f"Expected tool blocks: {tool_blocks}"
+
+
 class TestClaudeSessionManagement:
     def test_list_and_clear(self, claude_client):
         c = claude_client

@@ -86,10 +86,12 @@ class AsyncEvalRunner:
         *,
         concurrency: int = 5,
         grader: GraderFn | None = default_grader,
+        trace: bool = False,
     ) -> None:
         self._chat = chat_fn
         self._concurrency = concurrency
         self._grader = grader
+        self._trace = trace
         self.results: list[EvalResult] = []
 
     async def run(self, dataset) -> AsyncIterator[EvalResult]:
@@ -105,8 +107,13 @@ class AsyncEvalRunner:
                 t0 = time.monotonic()
                 error = ""
                 answer = ""
+                trace_dict = None
                 try:
-                    answer = await self._chat(item.question)
+                    raw = await self._chat(item.question)
+                    if self._trace and isinstance(raw, tuple):
+                        answer, trace_dict = raw
+                    else:
+                        answer = raw
                 except Exception as exc:
                     error = f"{type(exc).__name__}: {exc}"
                 elapsed = time.monotonic() - t0
@@ -119,6 +126,12 @@ class AsyncEvalRunner:
                     success = go.success
                     score = go.score
                     grade_detail = go.detail
+
+                if trace_dict:
+                    if grade_detail is None:
+                        grade_detail = {"trace": trace_dict}
+                    else:
+                        grade_detail["trace"] = trace_dict
 
                 result = EvalResult(
                     id=item.id,

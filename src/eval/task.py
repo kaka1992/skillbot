@@ -69,6 +69,7 @@ class EvalTask:
     timeout: int = 120
     output: str | None = None
     grader: str | None = None  # grader name or module.path:fn
+    trace: bool = False  # enable trace collection (thinking + tool_use + subagent + usage)
 
     def output_path(self, output_dir: str) -> Path:
         return Path(output_dir) / f"{self.name}.jsonl"
@@ -112,6 +113,7 @@ def load_tasks(path: str) -> tuple[list[EvalTask], str]:
                 timeout=entry.get("timeout", 120),
                 output=entry.get("output"),
                 grader=entry.get("grader"),
+                trace=entry.get("trace", False),
             )
         )
     return tasks, output_dir
@@ -136,8 +138,23 @@ async def run_tasks(tasks: list[EvalTask], output_dir: str = "results") -> None:
 
         client = ChatClient(task.agent, model=task.model, timeout=task.timeout)
 
-        async def _chat(q: str) -> str:
-            return await client.async_chat(q, session=f"eval-{task.name}")
+        if task.trace:
+            from .trace import TraceCollector  # noqa: E402
+
+            async def _chat(q: str):
+                collector = TraceCollector()
+                parts: list[str] = []
+                for chunk in client._backend.stream_chunks(
+                    q, session=f"eval-{task.name}"
+                ):
+                    collector.feed(chunk)
+                    if chunk.text:
+                        parts.append(chunk.text)
+                trace_data = collector.to_dict()
+                return "".join(parts), (trace_data if trace_data else None)
+        else:
+            async def _chat(q: str) -> str:
+                return await client.async_chat(q, session=f"eval-{task.name}")
 
         # build dataset
         from .loader import EvalDataset  # noqa: E402
@@ -155,6 +172,7 @@ async def run_tasks(tasks: list[EvalTask], output_dir: str = "results") -> None:
             _chat,
             concurrency=task.concurrency,
             grader=grader,
+            trace=task.trace,
         )
         async for _result in runner.run(ds):
             pass  # progress printed by runner
