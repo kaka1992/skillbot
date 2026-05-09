@@ -1,103 +1,61 @@
-# Claude Code HTTP Server — claude-agent-sdk 实现
+# Claude Code HTTP Server
+
+## 文件结构
+
+```
+src/server/
+├── app.py            # FastAPI 核心 API + skill 端点
+├── session.py        # SDK Session + ClaudeSDKClient 生命周期
+├── webui/            # TypeScript 前端（独立构建，esbuild + serve）
+└── dev.md
+```
 
 ## 架构
 
 ```
-HTTP → FastAPI → SessionManager → ClaudeSDKClient → claude CLI 子进程
+WebUI :5175 ──CORS──▶ :9000 FastAPI → SessionManager → ClaudeSDKClient
 ```
 
-`session.py` 使用 `claude-agent-sdk`（Python 包）替代了原来的 `subprocess claude -p` 调用：
+`--no-webui` 时仅启动 :9000，WebUI 独立通过 `npm run start` 启动。
 
-- **前**: 每次请求 spawn 新 `claude -p` 进程，通过 prompt 注入实现多轮
-- **后**: `ClaudeSDKClient` 持久连接，SDK 原生支持多轮对话
+## Session（session.py）
 
-## 核心实现
+每个 `Session` 持有一个 `ClaudeSDKClient`，通过 `asyncio.Lock` 串行化请求。
 
-### Session（session.py）
-
-每个 `Session` 持有一个 `ClaudeSDKClient` 实例：
-
-| 方法 | 用途 | 说明 |
-|------|------|------|
-| `send()` | 非流式对话 | 首条用 `connect()`，后续用 `query()`，`receive_response()` 累积全文 |
-| `send_stream()` | SSE 流式对话 | 设置 `include_partial_messages=True`，`receive_response()` 逐 chunk yield |
-| `close()` | 清理 | `client.disconnect()` 关闭子进程 |
-
-**`send()`** — 返回完整文本：
-
-1. `client.connect(prompt=message)` 或 `client.query(message)`
-2. `receive_response()` 遍历 `AssistantMessage` → 提取 `TextBlock.text` → 拼接返回
-3. `asyncio.wait_for(coro, timeout)` 整体超时
-
-**`send_stream()`** — 渐进 yield 文本增量：
-
-1. 同上建立/复用连接，设置 `include_partial_messages=True`
-2. `receive_response()` 遍历 `StreamEvent` → 解析 `event.content_block_delta.text_delta`
-3. 逐 chunk yield，每个 chunk 独立超时（`asyncio.wait_for(gen.__anext__(), timeout)`）
-4. 流结束后将完整文本记录到 history
-
-`send()` 和 `send_stream()` 的 lock 都由调用方（app.py）持有。
-
-### ClaudeAgentOptions
+| 方法 | 产出 |
+|------|------|
+| `send()` | 全文 `str` |
+| `send_stream()` | `AsyncIterator[str]`，token 级增量 |
+| `send_stream_chunks()` | `AsyncIterator[StreamChunk]`，text + trace blocks |
 
 ```python
 ClaudeAgentOptions(
     allowed_tools=["Bash", "Read", ...],
-    permission_mode="bypassPermissions",     # 替换 --dangerously-skip-permissions
-    cwd="/working/dir",
-    env={"HOME": "/path/to/claude-home"},     # 隔离 claude 配置
-    setting_sources=["user"],                 # 仅加载 isolated HOME 的用户配置
+    permission_mode="bypassPermissions",
+    env={"HOME": str(claude_home)},
+    setting_sources=["user"],
     max_turns=50,
-    include_partial_messages=True,            # 仅 send_stream() 启用
+    include_partial_messages=True,      # send_stream / send_stream_chunks 需要
 )
 ```
 
-### SessionManager
+## SSE 端点
 
-内存管理 session 生命周期，`delete()` 异步清理 SDK client。
+| 端点 | trace 事件 type |
+|------|------|
+| `POST /sessions/{sid}/chat/stream` | `text`, `done`, `error` |
+| `POST /sessions/{sid}/chat/trace` | 额外: `thinking`, `tool_use`, `tool_result`, `subagent`, `usage` |
 
-## 流式输出（SSE）
+Trace 事件来源：`StreamEvent`（text_delta）→ text；`AssistantMessage`（ThinkingBlock / ToolUseBlock / ToolResultBlock）→ thinking / tool_use / tool_result；`TaskStartedMessage` / `TaskProgressMessage` / `TaskNotificationMessage` → subagent；`ResultMessage` → usage。
 
-`POST /sessions/{sid}/chat/stream` 返回 `text/event-stream`，token 级别渐进输出。
+## WebUI
 
-### SSE 事件格式
+TypeScript + esbuild 构建，`serve` 启动。构建和安装由 `install.sh` + `run.sh` 管理，详见 `scripts/dev.md`。
 
-| 事件 | 格式 | 说明 |
-|------|------|------|
-| 文本增量 | `data: {"text": "..."}\n\n` | 每个 token/文本块 |
-| 完成 | `data: {"type": "done"}\n\n` | 流正常结束 |
-| 错误 | `data: {"type": "error", "error": "..."}\n\n` | 超时或 SDK 错误 |
-
-### 流式调用链
-
+```bash
+cd src/server/webui
+npm install && npm run build && npm run start   # http://localhost:5175
 ```
-HTTP SSE → app.py chat_stream() → session.send_stream() → _send_inner_stream()
-          → client.receive_response() → StreamEvent → content_block_delta.text_delta
-```
-
-`send_stream()` 的 lock 贯穿整个流生命周期，流结束后释放。`receive_response()` 在遇到 `ResultMessage` 时自动终止。
-
-### 客户端消费
-
-```python
-from chat import ChatClient
-c = ChatClient("claude-code")
-for chunk in c.stream("讲个笑话", session="s1"):
-    print(chunk, end="")
-# → "1"\n"2"\n"3"  (逐 token 输出)
-```
-
-底层 `ClaudeBackend.stream()` 通过 `requests.post(stream=True)` + `iter_lines()` 解析 SSE。
-
-## SDK vs CLI 对比
-
-| | CLI (`subprocess`) | SDK (`claude-agent-sdk`) |
-|---|---|---|
-| 启动延迟 | ~3-5s（冷启动进程） | 进程内复用 |
-| 多轮对话 | prompt 注入历史 | SDK 原生 session |
-| 流式输出 | 不支持 | SSE（token 级别） |
-| 权限控制 | `--dangerously-skip-permissions` | `permission_mode="bypassPermissions"` |
-| 配置隔离 | `HOME` env var | `env={"HOME": ...}` |
 
 ## API
 
@@ -107,7 +65,13 @@ POST /sessions
 GET  /sessions
 GET  /sessions/{sid}
 DELETE /sessions/{sid}
-POST /sessions/{sid}/chat         {"message": "...", "timeout": 300, "allowed_tools": "..."}
-POST /sessions/{sid}/chat/stream  {"message": "...", "timeout": 300, "allowed_tools": "..."}
+POST /sessions/{sid}/chat         {"message": "...", "timeout": 300}
+POST /sessions/{sid}/chat/stream  {"message": "...", "timeout": 300}
+POST /sessions/{sid}/chat/trace   {"message": "...", "timeout": 300}
 GET  /sessions/{sid}/history
+GET  /skills
+GET  /skills/{name}
 ```
+
+- CORS: `allow_origins=["*"]`
+- `/skills` 从 `_resolve_claude_home()/.claude/skills/` 读取

@@ -185,17 +185,42 @@ cmd_install() {
 }
 
 _install_claude() {
-    if command -v claude &>/dev/null; then
-        echo "  [SKIP] claude already installed ($(claude --version 2>&1 | head -1))"
+    local agent_path
+    agent_path="$(get_agent_path "claude-code")"
+    local dest="${agent_path}/server"
+    local src="${PROJECT_DIR}/src/server"
+
+    if [[ -f "${dest}/app.py" && -d "${dest}/webui/node_modules" ]]; then
+        echo "  [SKIP] claude-code server already installed"
         return 0
     fi
-    if ! command -v npm &>/dev/null; then
-        echo "  [FAIL] npm not found — cannot install claude-code" >&2
-        exit 1
+
+    _copy_claude_files "$src" "$dest"
+
+    if [[ -f "${dest}/webui/package.json" ]]; then
+        if command -v npm &>/dev/null; then
+            echo "  [RUN] npm install (webui)"
+            (cd "${dest}/webui" && npm install)
+            echo "  [OK] webui dependencies installed"
+        else
+            echo "  [WARN] npm not found — webui dependencies skipped"
+        fi
     fi
-    echo "  [RUN] npm install -g @anthropic-ai/claude-code@latest"
-    npm install -g "@anthropic-ai/claude-code@latest"
-    echo "  [OK] claude-code installed ($(claude --version 2>&1 | head -1))"
+
+    echo "  [OK] claude-code server installed"
+}
+
+_copy_claude_files() {
+    local src="$1" dest="$2"
+    mkdir -p "${dest}/webui/src"
+    cp "${src}/app.py" "${dest}/"
+    cp "${src}/session.py" "${dest}/"
+    touch "${dest}/__init__.py"
+    cp "${src}/webui/index.html" "${dest}/webui/"
+    cp "${src}/webui/package.json" "${dest}/webui/"
+    cp "${src}/webui/tsconfig.json" "${dest}/webui/"
+    [[ -d "${src}/webui/src" ]] && cp -r "${src}/webui/src/"* "${dest}/webui/src/"
+    echo "  [CP] server files copied"
 }
 
 _install_webui() {
@@ -230,13 +255,21 @@ cmd_update() {
         echo "=== Updating ${agent} ==="
 
         if [[ "$agent" == "claude-code" ]]; then
-            if ! command -v claude &>/dev/null; then
-                echo "  [SKIP] claude not installed — run install first"
+            local agent_path
+            agent_path="$(get_agent_path "claude-code")"
+            if [[ ! -d "${agent_path}/server" ]]; then
+                echo "  [SKIP] claude-code server not found — run install first"
                 continue
             fi
-            echo "  [RUN] npm update -g @anthropic-ai/claude-code"
-            npm update -g "@anthropic-ai/claude-code"
-            echo "  [OK] claude-code updated ($(claude --version 2>&1 | head -1))"
+            _copy_claude_files "${PROJECT_DIR}/src/server" "${agent_path}/server"
+            if [[ -f "${agent_path}/server/webui/package.json" ]]; then
+                if command -v npm &>/dev/null; then
+                    echo "  [RUN] npm install (webui)"
+                    (cd "${agent_path}/server/webui" && npm install)
+                    echo "  [OK] webui dependencies updated"
+                fi
+            fi
+            echo "  [OK] claude-code updated"
             echo "=== ${agent} updated ==="
             continue
         fi
@@ -272,7 +305,18 @@ cmd_uninstall() {
     for agent in $(resolve_agents "${1:-}"); do
         if [[ "$agent" == "claude-code" ]]; then
             echo "=== Uninstalling ${agent} ==="
-            echo "  [SKIP] uninstall not supported for claude-code (use: npm uninstall -g @anthropic-ai/claude-code)"
+            local agent_path
+            agent_path="$(get_agent_path "claude-code")"
+            if [[ -d "${agent_path}/server" ]]; then
+                rm -rf "${agent_path}/server"
+                echo "  [OK] removed server dir"
+            fi
+            # also clean .claude config
+            if [[ -d "${agent_path}/.claude" ]]; then
+                rm -rf "${agent_path}/.claude"
+                echo "  [OK] removed .claude dir"
+            fi
+            echo "=== ${agent} uninstalled ==="
             continue
         fi
 
@@ -307,13 +351,42 @@ cmd_check() {
     local agent="${1:?usage: ${SCRIPT_NAME} check <agent>}"
     require_agent "$agent"
 
-    # claude-code: npm-based, check binary only
+    # claude-code: check server directory + webui
     if [[ "$agent" == "claude-code" ]]; then
         echo "=== Checking ${agent} ==="
-        if command -v claude &>/dev/null; then
-            echo "  [OK] claude-code installed ($(claude --version 2>&1 | head -1))"
+        local agent_path
+        agent_path="$(get_agent_path "claude-code")"
+        local dest="${agent_path}/server"
+        local errors=0
+
+        if [[ -f "${dest}/app.py" ]]; then
+            echo "  [OK] server: app.py exists"
         else
-            echo "  [FAIL] claude not found on PATH"
+            echo "  [FAIL] server: app.py missing"
+            errors=$((errors + 1))
+        fi
+
+        if [[ -f "${dest}/session.py" ]]; then
+            echo "  [OK] server: session.py exists"
+        else
+            echo "  [FAIL] server: session.py missing"
+            errors=$((errors + 1))
+        fi
+
+        if [[ -d "${dest}/webui/dist" ]]; then
+            echo "  [OK] webui: dist/ exists"
+        else
+            echo "  [WARN] webui: dist/ not built (run: cd ${dest}/webui && npm run build)"
+        fi
+
+        if [[ -d "${dest}/webui/node_modules" ]]; then
+            echo "  [OK] webui: node_modules exists"
+        else
+            echo "  [WARN] webui: node_modules missing (run: cd ${dest}/webui && npm install)"
+        fi
+
+        if [[ $errors -gt 0 ]]; then
+            echo "=== ${agent}: FAIL (${errors} errors) ==="
             exit 1
         fi
         echo "=== ${agent}: OK ==="

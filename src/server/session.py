@@ -28,14 +28,19 @@ from chat.base import StreamChunk, TraceBlock  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
-
 def _resolve_claude_home() -> Path:
     install_dir = os.environ.get("SKILL_BOT_AGENT_INSTALL_DIR", "")
     if install_dir:
         return Path(install_dir) / "claude-code"
-    return _PROJECT_ROOT / "agents" / "claude-code"
+
+    # running from agents/claude-code/server/ → home is ../  (install.sh copy)
+    here = Path(__file__).resolve()
+    agent_home = here.parents[1]
+    if (agent_home / ".claude").is_dir():
+        return agent_home
+
+    # running from src/server/ → home is ../../agents/claude-code/
+    return here.parents[2] / "agents" / "claude-code"
 
 
 def _ensure_claude_home(claude_home: Path) -> None:

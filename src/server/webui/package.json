@@ -1,0 +1,15 @@
+{
+  "name": "claude-server-webui",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/main.ts --bundle --outfile=dist/bundle.js --minify && cp index.html dist/",
+    "watch": "esbuild src/main.ts --bundle --outfile=dist/bundle.js --watch",
+    "start": "npx serve dist -l ${PORT:-5175} --no-clipboard"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "serve": "^14.2.0",
+    "typescript": "^5.7.0"
+  }
+}

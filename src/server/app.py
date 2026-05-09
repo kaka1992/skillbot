@@ -3,15 +3,19 @@
 import json
 import logging
 import os
+import re
 import sys
 import time
+from pathlib import Path
 from typing import Optional
 
+import yaml
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from .session import SessionManager
+from .session import SessionManager, _resolve_claude_home
 
 # ---- config -----------------------------------------------------------
 
@@ -20,13 +24,19 @@ HOST = os.environ.get("CLAUDE_SERVER_HOST", "127.0.0.1")
 TIMEOUT = int(os.environ.get("CLAUDE_SERVER_TIMEOUT", "300"))
 ALLOWED_TOOLS = os.environ.get("CLAUDE_SERVER_ALLOWED_TOOLS", "")
 WORK_DIR = os.environ.get("CLAUDE_SERVER_WORK_DIR", os.getcwd())
-
+SKILL_DIR = str(_resolve_claude_home() / ".claude" / "skills")
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 logger = logging.getLogger("claude-server")
 
 # ---- app --------------------------------------------------------------
 
 app = FastAPI(title="Claude Code HTTP Server", version="0.1.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 manager = SessionManager()
 
 
@@ -192,6 +202,53 @@ async def get_history(sid: str):
         {"role": m.role, "content": m.content, "time": m.time}
         for m in s.history
     ]
+
+
+# ---- skills -------------------------------------------------------------
+
+
+def _parse_frontmatter(text: str) -> tuple[dict, str]:
+    """Parse YAML frontmatter from ``---`` blocks, return (meta, body)."""
+    m = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
+    if not m:
+        return {}, text
+    try:
+        meta = yaml.safe_load(m.group(1)) or {}
+    except Exception:
+        meta = {}
+    return meta, text[m.end():]
+
+
+def _list_skills() -> list[dict]:
+    skills = []
+    skill_root = Path(SKILL_DIR)
+    if not skill_root.is_dir():
+        return skills
+    for md_file in sorted(skill_root.glob("*/SKILL.md")):
+        name = md_file.parent.name
+        text = md_file.read_text(encoding="utf-8")
+        meta, _ = _parse_frontmatter(text)
+        skills.append({
+            "name": meta.get("name", name),
+            "description": meta.get("description", ""),
+            "path": str(md_file.parent),
+        })
+    return skills
+
+
+@app.get("/skills")
+async def list_skills():
+    return _list_skills()
+
+
+@app.get("/skills/{name}")
+async def get_skill(name: str):
+    md = Path(SKILL_DIR) / name / "SKILL.md"
+    if not md.is_file():
+        raise HTTPException(404, f"Skill '{name}' not found")
+    text = md.read_text(encoding="utf-8")
+    meta, body = _parse_frontmatter(text)
+    return {"name": meta.get("name", name), "description": meta.get("description", ""), "body": body}
 
 
 # ---- main -------------------------------------------------------------

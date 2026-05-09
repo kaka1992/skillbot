@@ -86,7 +86,7 @@ _start_cmd() {
             ;;
         nanobot)      echo ".venv/bin/nanobot gateway" ;;
         hermes-agent) echo ".venv/bin/hermes gateway run --replace" ;;
-        claude-code)  echo "PYTHONPATH='${PROJECT_DIR}/src' ${PROJECT_DIR}/.venv/bin/python3 -c 'from server.app import main; main()'" ;;
+        claude-code)  echo "PYTHONPATH='${agent_path}:${PROJECT_DIR}/src' ${PROJECT_DIR}/.venv/bin/python3 -c 'from server.app import main; main()'" ;;
     esac
 }
 
@@ -112,16 +112,27 @@ _setup_deps() {
     esac
 }
 
-# Start webui for agents that have one (nanobot, hermes-agent)
+# WebUI port per agent (avoid port collision on 5173)
+_webui_port() {
+    case "$1" in
+        nanobot)      echo "5173" ;;
+        hermes-agent) echo "5174" ;;
+        claude-code)  echo "5175" ;;
+    esac
+}
+
+# Start webui for agents that have one (nanobot, hermes-agent, claude-code)
 _start_webui() {
     local agent="$1"
     local agent_path="$2"
     local log_dir="${PROJECT_DIR}/.run"
     local webui_dir=""
+    local port="$(_webui_port "$agent")"
 
     case "$agent" in
         nanobot)      webui_dir="webui" ;;
         hermes-agent) webui_dir="web" ;;
+        claude-code)  webui_dir="server/webui" ;;
         *)            return 0 ;;
     esac
 
@@ -129,6 +140,11 @@ _start_webui() {
        [[ ! -d "${agent_path}/${webui_dir}/node_modules" ]]; then
         echo "  [WARN] webui dependencies not installed, skipping"
         return 0
+    fi
+
+    # claude-code: build before serving static dist/
+    if [[ "$agent" == "claude-code" ]]; then
+        (cd "${agent_path}/${webui_dir}" && npm run build 2>/dev/null)
     fi
 
     # hermes-agent: start dashboard backend first (webui proxies /api to it)
@@ -145,16 +161,16 @@ _start_webui() {
         fi
     fi
 
-    if lsof -i :5173 -sTCP:LISTEN -t &>/dev/null; then
-        echo "  [INFO] webui already running on port 5173"
+    if lsof -i ":${port}" -sTCP:LISTEN -t &>/dev/null; then
+        echo "  [INFO] webui already running on port ${port}"
         return 0
     fi
 
     local webui_log="${log_dir}/${agent}-webui.log"
-    (cd "${agent_path}/${webui_dir}" && nohup npm run dev > "$webui_log" 2>&1 &)
+    (cd "${agent_path}/${webui_dir}" && PORT="$port" nohup npm run start > "$webui_log" 2>&1 &)
     sleep 2
-    if lsof -i :5173 -sTCP:LISTEN -t &>/dev/null; then
-        echo "  [OK] webui started (http://localhost:5173)"
+    if lsof -i ":${port}" -sTCP:LISTEN -t &>/dev/null; then
+        echo "  [OK] webui started (http://localhost:${port})"
     else
         echo "  [WARN] webui start pending, check: tail -f ${webui_log}"
     fi
@@ -472,9 +488,14 @@ cmd_start() {
     local start_cmd
     start_cmd="$(_start_cmd "$agent" "$no_webui")"
 
-    # claude-code is npm-global, no agent_path to cd into
+    # claude-code: PYTHONPATH uses agent_path to resolve 'server' package
     if [[ "$agent" == "claude-code" ]]; then
-        nohup bash -c "${env_preamble}cd '${PROJECT_DIR}' && $start_cmd" > "$log_file" 2>&1 &
+        local webui_env=""
+        if $no_webui; then
+            webui_env="CLAUDE_SERVER_NO_WEBUI=true "
+            echo "  [INFO] webui disabled (--no-webui)"
+        fi
+        nohup bash -c "${webui_env}${env_preamble}cd '${agent_path}' && $start_cmd" > "$log_file" 2>&1 &
     else
         nohup bash -c "${env_preamble}cd '$agent_path' && $start_cmd" > "$log_file" 2>&1 &
     fi
@@ -536,8 +557,8 @@ cmd_stop() {
             nanobot)
                 pkill -f "nanobot gateway" 2>/dev/null || true
                 # Also stop webui if running
-                if lsof -i :5173 -sTCP:LISTEN -t &>/dev/null; then
-                    lsof -i :5173 -sTCP:LISTEN -t 2>/dev/null | xargs kill 2>/dev/null || true
+                if lsof -i ":$(_webui_port "$agent")" -sTCP:LISTEN -t &>/dev/null; then
+                    lsof -i ":$(_webui_port "$agent")" -sTCP:LISTEN -t 2>/dev/null | xargs kill 2>/dev/null || true
                     [[ -f "${agent_path}/webui/node_modules/.vite" ]] && rm -rf "${agent_path}/webui/node_modules/.vite" 2>/dev/null || true
                     echo "  [OK] webui stopped"
                 fi
@@ -547,11 +568,15 @@ cmd_stop() {
                     lsof -i :9000 -sTCP:LISTEN -t 2>/dev/null | xargs kill 2>/dev/null || true
                     echo "  [OK] claude server stopped"
                 fi
+                if lsof -i ":$(_webui_port "$agent")" -sTCP:LISTEN -t &>/dev/null; then
+                    lsof -i ":$(_webui_port "$agent")" -sTCP:LISTEN -t 2>/dev/null | xargs kill 2>/dev/null || true
+                    echo "  [OK] webui stopped"
+                fi
                 ;;
             hermes-agent)
                 # Stop webui
-                if lsof -i :5173 -sTCP:LISTEN -t &>/dev/null; then
-                    lsof -i :5173 -sTCP:LISTEN -t 2>/dev/null | xargs kill 2>/dev/null || true
+                if lsof -i ":$(_webui_port "$agent")" -sTCP:LISTEN -t &>/dev/null; then
+                    lsof -i ":$(_webui_port "$agent")" -sTCP:LISTEN -t 2>/dev/null | xargs kill 2>/dev/null || true
                     echo "  [OK] webui stopped"
                 fi
                 # Stop dashboard
@@ -638,13 +663,13 @@ cmd_status() {
             nanobot)
                 local gw_pid webui_pid
                 gw_pid=$(lsof -i :18790 -sTCP:LISTEN -t 2>/dev/null | head -1 || true)
-                webui_pid=$(lsof -i :5173 -sTCP:LISTEN -t 2>/dev/null | head -1 || true)
+                webui_pid=$(lsof -i ":$(_webui_port "$agent")" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)
 
                 if [[ -n "$gw_pid" ]]; then
                     echo "  status:    RUNNING"
                     echo "  process:"
                     echo "    Gateway   pid ${gw_pid}  port 18790"
-                    [[ -n "$webui_pid" ]] && echo "    WebUI     pid ${webui_pid}  port 5173 (http://localhost:5173)"
+                    [[ -n "$webui_pid" ]] && echo "    WebUI     pid ${webui_pid}  port $(_webui_port "$agent") (http://localhost:$(_webui_port "$agent"))"
                 elif $running; then
                     echo "  status:    STARTING (pid file present, services pending)"
                 else
@@ -655,7 +680,7 @@ cmd_status() {
                 local hpid dash_pid webui_pid
                 hpid=$(cat "$pid_file" 2>/dev/null || true)
                 dash_pid=$(lsof -i :9119 -sTCP:LISTEN -t 2>/dev/null | head -1 || true)
-                webui_pid=$(lsof -i :5173 -sTCP:LISTEN -t 2>/dev/null | head -1 || true)
+                webui_pid=$(lsof -i ":$(_webui_port "$agent")" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)
 
                 # pid_file may be stale (nohup bash exits); fall back to pgrep
                 if [[ -n "$hpid" ]] && kill -0 "$hpid" 2>/dev/null; then
@@ -670,7 +695,7 @@ cmd_status() {
                     echo "  process:"
                     echo "    Gateway   pid ${hpid}"
                     [[ -n "$dash_pid" ]] && echo "    Dashboard pid ${dash_pid}  port 9119"
-                    [[ -n "$webui_pid" ]] && echo "    WebUI     pid ${webui_pid}  port 5173 (http://localhost:5173)"
+                    [[ -n "$webui_pid" ]] && echo "    WebUI     pid ${webui_pid}  port $(_webui_port "$agent") (http://localhost:$(_webui_port "$agent"))"
                 elif _is_running "$agent"; then
                     echo "  status:    STARTING"
                 else
@@ -717,7 +742,7 @@ cmd_clean() {
                     ;;
                 nanobot)
                     pkill -f "nanobot gateway" 2>/dev/null || true
-                    lsof -i :5173 -sTCP:LISTEN -t 2>/dev/null | xargs kill 2>/dev/null || true
+                    lsof -i ":$(_webui_port "$agent")" -sTCP:LISTEN -t 2>/dev/null | xargs kill 2>/dev/null || true
                     ;;
                 hermes-agent)
                     pkill -9 -f "hermes.*gateway" 2>/dev/null || true

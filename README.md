@@ -12,7 +12,8 @@
 ./scripts/run.sh start deer-flow deepseek-v4-flash
 ./scripts/run.sh start nanobot deepseek-v4-flash --no-webui
 ./scripts/run.sh start hermes-agent deepseek-v4-flash
-./scripts/run.sh start claude-code              # HTTP Server :9000
+./scripts/run.sh start claude-code              # HTTP Server :9000 + WebUI :5175
+./scripts/run.sh start claude-code --no-webui    # 仅 API，跳过 WebUI
 
 # 查看状态
 ./scripts/run.sh status
@@ -32,7 +33,8 @@ skillbot/
 ├── src/
 │   ├── chat/         # 统一 Python chat 客户端（同步 + 异步）
 │   ├── eval/         # JSONL 驱动的 agent 评测框架
-│   └── server/       # Claude Code HTTP 服务端（claude-agent-sdk + SSE）
+│   ├── server/       # Claude Code HTTP 服务端（claude-agent-sdk + SSE + CORS）
+│   │   └── webui/     # TypeScript WebUI（独立构建/启动，esbuild + serve）
 ├── conf/
 │   ├── .env          # 项目级环境配置（API key 等）
 │   └── agent_conf/   # 各 agent 配置模板
@@ -48,7 +50,7 @@ skillbot/
 | [deer-flow](https://github.com/bytedance/deer-flow) | 8001 | 3000/2026 (Next.js+Nginx) | LangGraph SSE | ✓ |
 | [nanobot](https://github.com/HKUDS/nanobot) | 18790 | 5173 (Vite) | OpenAI REST :8900 | ✓ |
 | [hermes-agent](https://github.com/nousresearch/hermes-agent) | — | 5173 (Vite) | OpenAI REST :8642 | ✓ |
-| [claude-code (SDK + SSE)](https://github.com/anthropics/claude-agent-sdk-python) | — | — | HTTP :9000 | ✓ |
+| [claude-code (SDK + SSE)](https://github.com/anthropics/claude-agent-sdk-python) | — | 5175 (serve) | HTTP :9000 | ✓ |
 
 ## CLI 命令
 
@@ -205,7 +207,6 @@ bash scripts/eval.sh list tasks.yaml                          # 列出 task
 ```bash
 DEEPSEEK_API_KEY=sk-xxx
 SKILL_BOT_SKILL_PATH=skills/*           # skill 同步路径
-SKILL_BOT_SKILL_DIR=/custom/skills      # 可选，覆盖默认源目录
 ```
 
 `install.sh` 和 `run.sh` 启动时自动加载。
@@ -232,9 +233,9 @@ uv venv && uv pip install -e ".[dev]"
 PYTHONPATH="src" .venv/bin/pytest tests/ -v
 
 # 按模块测试
-PYTHONPATH="src" .venv/bin/pytest tests/chat/ -v    # ~57 测试
-PYTHONPATH="src" .venv/bin/pytest tests/eval/ -v    # ~83 测试
-PYTHONPATH="src" .venv/bin/pytest tests/server/ -v  # ~24 测试
+PYTHONPATH="src" .venv/bin/pytest tests/chat/ -v    # 58 测试
+PYTHONPATH="src" .venv/bin/pytest tests/eval/ -v    # 83 测试
+PYTHONPATH="src" .venv/bin/pytest tests/server/ -v  # 24 测试
 ```
 
 ## License
