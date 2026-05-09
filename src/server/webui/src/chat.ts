@@ -1,5 +1,13 @@
 import { getHistory, streamChat } from "./api";
 
+interface Msg { role: string; content: string; }
+
+interface SessionState {
+  messages: Msg[];
+  scrollTop: number;
+  inputText: string;
+}
+
 export class ChatView {
   private msgEl: HTMLElement;
   private inputEl: HTMLTextAreaElement;
@@ -7,7 +15,9 @@ export class ChatView {
   private indicatorEl: HTMLElement;
   private sid: string | null = null;
   private ctrl: AbortController | null = null;
-  private welcomeEl: HTMLElement | null = null;
+  private messages: Msg[] = [];
+  private sessions: Map<string, SessionState> = new Map();
+  onActivity: (() => void) | null = null;  // called when messages change
 
   constructor(container: HTMLElement) {
     container.innerHTML = `
@@ -26,19 +36,22 @@ export class ChatView {
     this.sendBtn = document.getElementById("btn-send") as HTMLButtonElement;
     this.indicatorEl = document.getElementById("session-indicator")!;
 
-    this.showWelcome();
+    this.renderWelcome();
 
     this.inputEl.onkeydown = (e) => {
-      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); this.doSend(); }
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+        e.preventDefault(); this.doSend();
+      }
     };
     this.sendBtn.onclick = () => this.doSend();
 
-    // mobile: collapse sidebar when a session is loaded
     const btnToggle = document.getElementById("btn-toggle-sidebar")!;
     btnToggle.onclick = () => document.getElementById("sidebar")!.classList.toggle("collapsed");
   }
 
-  private showWelcome(): void {
+  // ---- render ----
+
+  private renderWelcome(): void {
     this.msgEl.innerHTML = `
       <div class="welcome-screen">
         <div class="logo">&gt; claude _</div>
@@ -47,91 +60,142 @@ export class ChatView {
     `;
   }
 
-  async loadSession(sid: string): Promise<void> {
-    this.sid = sid;
-    this.indicatorEl.innerHTML = `Session <span>${sid.slice(0, 12)}</span>`;
-    this.inputEl.disabled = false;
-    this.sendBtn.disabled = false;
+  private renderMessages(): void {
     this.msgEl.innerHTML = "";
+    for (const m of this.messages) {
+      this.appendMsgEl(m.role, m.content);
+    }
+    this.msgEl.scrollTop = this.msgEl.scrollHeight;
+  }
 
+  private appendMsgEl(role: string, content: string): HTMLElement {
+    const label = role === "user" ? "You" : "Claude";
+    const div = document.createElement("div");
+    div.className = `message ${role}`;
+    const body = content || `<div class="typing-dots"><span></span><span></span><span></span></div>`;
+    div.innerHTML = `<span class="role">${label}</span><div class="bubble">${body}</div>`;
+    this.msgEl.appendChild(div);
+    return div.querySelector(".bubble")!;
+  }
+
+  // ---- session management ----
+
+  async loadSession(sid: string): Promise<void> {
+    // save current session: capture partial stream text, abort stream
+    if (this.sid && this.sid !== sid) {
+      this.captureStreamingText();
+      if (this.ctrl) { this.ctrl.abort(); this.ctrl = null; }
+      this.sessions.set(this.sid, {
+        messages: this.messages.map(m => ({ ...m })),
+        scrollTop: this.msgEl.scrollTop,
+        inputText: this.inputEl.value,
+      });
+    }
+
+    // restore target session
+    const saved = this.sessions.get(sid);
+    this.sid = sid;
+    this.ctrl = null;
+    this.indicatorEl.innerHTML = `Session <span>${sid.slice(0, 12)}</span>`;
+
+    if (saved) {
+      this.messages = saved.messages.map(m => ({ ...m }));
+      this.inputEl.value = saved.inputText;
+      this.renderMessages();
+      this.msgEl.scrollTop = saved.scrollTop;
+      this.setInputState(false);
+      return;
+    }
+
+    // first load — fetch history from server
+    this.messages = [];
+    this.msgEl.innerHTML = "";
+    this.setInputState(false);
     try {
       const msgs = await getHistory(sid);
       if (msgs.length === 0) {
-        this.showWelcome();
+        this.renderWelcome();
         return;
       }
-      for (const m of msgs) {
-        this.addMessage(m.role, m.content);
-      }
+      this.messages = msgs.map(m => ({ role: m.role, content: m.content }));
+      this.renderMessages();
     } catch {
-      this.showWelcome();
+      this.renderWelcome();
     }
-    this.scrollBottom();
   }
+
+  /** Read current DOM text into messages[last] for the active stream. */
+  private captureStreamingText(): void {
+    const last = this.messages[this.messages.length - 1];
+    if (!last || last.role !== "assistant" || last.content) return;
+    const bubbles = this.msgEl.querySelectorAll(".message.assistant .bubble");
+    const domBubble = bubbles[bubbles.length - 1];
+    if (domBubble && !domBubble.querySelector(".typing-dots")) {
+      last.content = domBubble.textContent || "";
+    }
+    if (!last.content) last.content = "";
+  }
+
+  private setInputState(disabled: boolean): void {
+    this.inputEl.disabled = disabled;
+    this.sendBtn.disabled = disabled;
+  }
+
+  // ---- send ----
 
   private doSend(): void {
     if (!this.sid || this.ctrl) return;
     const text = this.inputEl.value.trim();
     if (!text) return;
     this.inputEl.value = "";
-    this.inputEl.disabled = true;
-    this.sendBtn.disabled = true;
 
-    // clear welcome
-    if (this.msgEl.querySelector(".welcome-screen")) {
-      this.msgEl.innerHTML = "";
-    }
+    this.messages.push({ role: "user", content: text });
+    this.messages.push({ role: "assistant", content: "" });
+    this.renderMessages();
+    this.setInputState(true);
 
-    this.addMessage("user", text);
-
-    // assistant message with streaming indicator
-    const asstDiv = document.createElement("div");
-    asstDiv.className = "message assistant";
-    asstDiv.innerHTML = `
-      <span class="role">Claude</span>
-      <div class="bubble"><div class="typing-dots"><span></span><span></span><span></span></div></div>
-    `;
-    this.msgEl.appendChild(asstDiv);
-    const bubble = asstDiv.querySelector(".bubble")!;
-    this.scrollBottom();
+    const bubbles = this.msgEl.querySelectorAll(".message.assistant .bubble");
+    const bubble = bubbles[bubbles.length - 1] as HTMLElement;
+    const msgIdx = this.messages.length - 1;
 
     this.ctrl = streamChat(
       this.sid, text,
       (token) => {
-        // replace dots on first token
-        if (bubble.querySelector(".typing-dots")) {
-          bubble.textContent = "";
-        }
+        this.messages[msgIdx].content += token;
+        if (bubble.querySelector(".typing-dots")) bubble.textContent = "";
         bubble.textContent += token;
-        this.scrollBottom();
+        this.msgEl.scrollTop = this.msgEl.scrollHeight;
       },
       () => {
         this.ctrl = null;
-        this.inputEl.disabled = false;
-        this.sendBtn.disabled = false;
+        this.setInputState(false);
         this.inputEl.focus();
-        if (!bubble.textContent) bubble.innerHTML = `<span style="color:var(--text-muted)">(empty response)</span>`;
+        const m = this.messages[msgIdx];
+        if (!m.content) {
+          m.content = "(empty response)";
+          bubble.innerHTML = `<span style="color:var(--text-muted)">(empty response)</span>`;
+        }
+        this.saveSession();
+        this.onActivity?.();
       },
       (err) => {
+        this.messages[msgIdx].content += `\n[Error: ${err}]`;
         if (bubble.querySelector(".typing-dots")) bubble.textContent = "";
         bubble.innerHTML += `<div style="color:var(--red);margin-top:6px;font-size:12px">Error: ${err}</div>`;
         this.ctrl = null;
-        this.inputEl.disabled = false;
-        this.sendBtn.disabled = false;
+        this.setInputState(false);
+        this.saveSession();
+        this.onActivity?.();
       },
     );
   }
 
-  private addMessage(role: string, content: string): void {
-    const label = role === "user" ? "You" : "Claude";
-    const div = document.createElement("div");
-    div.className = `message ${role}`;
-    div.innerHTML = `<span class="role">${label}</span><div class="bubble"></div>`;
-    div.querySelector(".bubble")!.textContent = content;
-    this.msgEl.appendChild(div);
-  }
-
-  private scrollBottom(): void {
-    this.msgEl.scrollTop = this.msgEl.scrollHeight;
+  private saveSession(): void {
+    if (!this.sid) return;
+    this.sessions.set(this.sid, {
+      messages: this.messages.map(m => ({ ...m })),
+      scrollTop: this.msgEl.scrollTop,
+      inputText: this.inputEl.value,
+    });
   }
 }

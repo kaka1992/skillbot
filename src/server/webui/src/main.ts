@@ -10,6 +10,9 @@ function init(): void {
     (sid: string) => chatView.loadSession(sid),
   );
 
+  // refresh session list when messages are sent/received
+  chatView.onActivity = () => { sessionPanel.refresh(); };
+
   new SkillPanel(document.getElementById("sidebar-bottom")!);
 
   // mobile sidebar toggle

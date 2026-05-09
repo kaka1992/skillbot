@@ -23,7 +23,8 @@ PORT = int(os.environ.get("CLAUDE_SERVER_PORT", "9000"))
 HOST = os.environ.get("CLAUDE_SERVER_HOST", "127.0.0.1")
 TIMEOUT = int(os.environ.get("CLAUDE_SERVER_TIMEOUT", "300"))
 ALLOWED_TOOLS = os.environ.get("CLAUDE_SERVER_ALLOWED_TOOLS", "")
-WORK_DIR = os.environ.get("CLAUDE_SERVER_WORK_DIR") or str(_resolve_claude_home())
+WORK_DIR = os.environ.get("CLAUDE_SERVER_WORK_DIR") or str(_resolve_claude_home() / "run")
+os.makedirs(WORK_DIR, exist_ok=True)
 SKILL_DIR = str(_resolve_claude_home() / ".claude" / "skills")
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 logger = logging.getLogger("claude-server")
@@ -147,6 +148,7 @@ async def chat_stream(sid: str, body: ChatRequest):
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*",
         },
     )
 
@@ -189,6 +191,7 @@ async def chat_trace(sid: str, body: ChatRequest):
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*",
         },
     )
 

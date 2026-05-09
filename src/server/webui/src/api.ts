@@ -1,7 +1,6 @@
 import type { HistoryMessage, SessionInfo, SkillDetail, SkillInfo } from "./types";
 
-declare var API_BASE: string | undefined;
-const BASE = (typeof API_BASE !== "undefined" ? API_BASE : "") || "http://127.0.0.1:9000";
+const BASE = "";
 
 export async function createSession(): Promise<SessionInfo> {
   const r = await fetch(`${BASE}/sessions`, { method: "POST" });

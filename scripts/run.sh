@@ -42,7 +42,6 @@ _conf_type() {
         deer-flow)    echo "agent" ;;
         nanobot)      echo "home" ;;
         hermes-agent) echo "home" ;;
-        claude-code)  echo "home" ;;
     esac
 }
 
@@ -50,7 +49,6 @@ _conf_home_dir() {
     case "$1" in
         nanobot)      echo ".nanobot" ;;
         hermes-agent) echo ".hermes" ;;
-        claude-code)  echo ".claude" ;;
     esac
 }
 
@@ -142,7 +140,7 @@ _start_webui() {
         return 0
     fi
 
-    # claude-code: build before serving static dist/
+    # claude-code: build + proxy server (API :9000 proxied through :5175)
     if [[ "$agent" == "claude-code" ]]; then
         (cd "${agent_path}/${webui_dir}" && npm run build 2>/dev/null)
     fi
@@ -214,6 +212,8 @@ get_agent_path() {
 
 get_agent_conf_dest() {
     local name="$1"
+    # claude-code: config in .claude/ under agent_path (isolated home)
+    [[ "$name" == "claude-code" ]] && { echo "$(get_agent_path "$name")/.claude"; return; }
     local ctype
     ctype="$(_conf_type "$name")"
     case "$ctype" in
@@ -566,6 +566,9 @@ cmd_stop() {
             claude-code)
                 if lsof -i :9000 -sTCP:LISTEN -t &>/dev/null; then
                     lsof -i :9000 -sTCP:LISTEN -t 2>/dev/null | xargs kill 2>/dev/null || true
+                    sleep 1
+                    # kill orphaned SDK-spawned claude subprocesses
+                    pkill -f "_bundled/claude" 2>/dev/null || true
                     echo "  [OK] claude server stopped"
                 fi
                 if lsof -i ":$(_webui_port "$agent")" -sTCP:LISTEN -t &>/dev/null; then
@@ -748,6 +751,11 @@ cmd_clean() {
                     pkill -9 -f "hermes.*gateway" 2>/dev/null || true
                     sleep 1
                     ;;
+                claude-code)
+                    lsof -i :9000 -sTCP:LISTEN -t 2>/dev/null | xargs kill 2>/dev/null || true
+                    pkill -f "_bundled/claude" 2>/dev/null || true
+                    lsof -i ":$(_webui_port "$agent")" -sTCP:LISTEN -t 2>/dev/null | xargs kill 2>/dev/null || true
+                    ;;
             esac
             echo "  [OK] stopped running instance"
         fi
@@ -762,7 +770,28 @@ cmd_clean() {
         local agent_path
         agent_path="$(get_agent_path "$agent")"
 
-        if [[ "$(_conf_type "$agent")" == "home" ]]; then
+        # claude-code: clean config + runtime, keep server/
+        if [[ "$agent" == "claude-code" ]]; then
+            # config files
+            local claude_dir="${agent_path}/.claude"
+            if [[ -d "$claude_dir" ]]; then
+                for f in settings.json .env; do
+                    [[ -f "${claude_dir}/${f}" ]] && rm -f "${claude_dir}/${f}" && echo "  [OK] removed config: ${claude_dir}/${f}"
+                done
+                # runtime caches
+                for d in sessions backups shell-snapshots session-env; do
+                    [[ -d "${claude_dir}/${d}" ]] && rm -rf "${claude_dir}/${d}" && echo "  [OK] removed cache: ${claude_dir}/${d}"
+                done
+            fi
+            # working directory (app.py WORK_DIR)
+            local run_dir="${agent_path}/run"
+            [[ -d "$run_dir" ]] && rm -rf "$run_dir" && echo "  [OK] removed run/"
+            # session tracking + generated dirs
+            [[ -f "${agent_path}/.claude.json" ]] && rm -f "${agent_path}/.claude.json"
+            for d in go Library; do
+                [[ -d "${agent_path}/${d}" ]] && rm -rf "${agent_path}/${d}"
+            done
+        elif [[ "$(_conf_type "$agent")" == "home" ]]; then
             if [[ -n "$conf_dest" && -d "$conf_dest" ]]; then
                 rm -rf "$conf_dest"
                 echo "  [OK] removed config dir: ${conf_dest}"
@@ -782,15 +811,14 @@ cmd_clean() {
             fi
         fi
 
-        # Remove runtime cache data in agent path
-        if [[ -d "$agent_path" ]]; then
+        # Remove runtime cache data in agent path (non-claude agents)
+        if [[ "$agent" != "claude-code" && -d "$agent_path" ]]; then
             for d in .deer-flow .cache __pycache__ logs; do
                 if [[ -d "${agent_path}/${d}" ]]; then
                     rm -rf "${agent_path}/${d}"
                     echo "  [OK] removed cache: ${agent_path}/${d}"
                 fi
             done
-            # deer-flow stores runtime data in backend/.deer-flow (checkpoints, users, memory)
             if [[ -d "${agent_path}/backend/.deer-flow" ]]; then
                 rm -rf "${agent_path}/backend/.deer-flow"
                 echo "  [OK] removed cache: ${agent_path}/backend/.deer-flow"

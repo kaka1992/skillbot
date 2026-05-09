@@ -55,7 +55,7 @@ install.sh install nanobot
 # hermes-agent: git clone + uv venv + pip install + dashboard + webui npm install
 install.sh install hermes-agent
 
-# claude-code: 复制 src/server/*.py + webui/* 到 agents/claude-code/server/ + npm install
+# claude-code: 复制 src/server/*.py + webui/*（含 server.js） 到 agents/claude-code/server/ + npm install
 install.sh install claude-code
 
 # 卸载
@@ -87,7 +87,7 @@ install.sh check claude-code                  # server/*.py / webui/dist / webui
 | deer-flow | Next.js（集成在 make dev-daemon） | make install | make dev-daemon |
 | nanobot | webui/ (Vite + React) | npm install | npm run dev |
 | hermes-agent | web/ (Vite + React) | npm install | npm run dev |
-| claude-code | server/webui/ (TypeScript + esbuild + serve) | npm install | npm run build && npx serve dist -l 5175 |
+| claude-code | server/webui/ (TypeScript + esbuild + node proxy) | npm install | npm run build && node server.js |
 
 ---
 
@@ -123,7 +123,7 @@ run.sh start <agent> [model] [--no-webui]
 | deer-flow | `make -C backend gateway` 仅 Gateway(8001)，跳过 Frontend(3000)+Nginx(2026) |
 | nanobot | 仅 Gateway(18790)，跳过 WebUI Vite(5173) |
 | hermes-agent | 仅 Gateway，跳过 Dashboard(9119)+WebUI(5174) |
-| claude-code | 仅 HTTP Server(9000)，跳过 WebUI serve(5175) |
+| claude-code | 仅 HTTP Server(9000)，跳过 WebUI 代理(5175) |
 
 claude-code 的 `--no-webui` 通过 `CLAUDE_SERVER_NO_WEBUI=true` 环境变量传递给 Python 进程。
 
@@ -208,7 +208,7 @@ run.sh sync deer-flow skills/*
 | deer-flow | 8001 | 3000 / 2026 (Nginx) | — | — |
 | nanobot | 18790 | 5173 (Vite) | — | 8900 |
 | hermes-agent | — | 5174 (Vite) | 9119 | 8642 |
-| claude-code | — | 5175 (serve) | — | 9000 |
+| claude-code | — | 5175 (node proxy) | — | 9000 |
 
 ---
 

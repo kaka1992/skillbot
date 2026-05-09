@@ -6,17 +6,22 @@
 src/server/
 ├── app.py            # FastAPI 核心 API + skill 端点
 ├── session.py        # SDK Session + ClaudeSDKClient 生命周期
-├── webui/            # TypeScript 前端（独立构建，esbuild + serve）
+├── webui/            # TypeScript 前端（esbuild 构建 + node 代理）
+│   ├── server.js     # 静态文件 + API 反向代理（端口 5175）
+│   ├── package.json
+│   ├── tsconfig.json
+│   ├── index.html
+│   └── src/          # *.ts 源文件
 └── dev.md
 ```
 
 ## 架构
 
 ```
-WebUI :5175 ──CORS──▶ :9000 FastAPI → SessionManager → ClaudeSDKClient
+Browser :5175 → server.js (proxy) → :9000 FastAPI → SessionManager → ClaudeSDKClient
 ```
 
-`--no-webui` 时仅启动 :9000，WebUI 独立通过 `npm run start` 启动。
+`server.js` 将 `/sessions*`、`/skills*`、`/health` 代理到 `:9000`，其他请求返回 `dist/` 静态文件。同源部署，无需 CORS。`--no-webui` 时仅启动 :9000。
 
 ## Session（session.py）
 
@@ -35,7 +40,7 @@ ClaudeAgentOptions(
     env={"HOME": str(claude_home)},
     setting_sources=["user"],
     max_turns=50,
-    include_partial_messages=True,      # send_stream / send_stream_chunks 需要
+    include_partial_messages=True,
 )
 ```
 
@@ -44,18 +49,20 @@ ClaudeAgentOptions(
 | 端点 | trace 事件 type |
 |------|------|
 | `POST /sessions/{sid}/chat/stream` | `text`, `done`, `error` |
-| `POST /sessions/{sid}/chat/trace` | 额外: `thinking`, `tool_use`, `tool_result`, `subagent`, `usage` |
-
-Trace 事件来源：`StreamEvent`（text_delta）→ text；`AssistantMessage`（ThinkingBlock / ToolUseBlock / ToolResultBlock）→ thinking / tool_use / tool_result；`TaskStartedMessage` / `TaskProgressMessage` / `TaskNotificationMessage` → subagent；`ResultMessage` → usage。
+| `POST /sessions/{sid}/chat/trace` | `text`, `thinking`, `tool_use`, `tool_result`, `subagent`, `usage` |
 
 ## WebUI
 
-TypeScript + esbuild 构建，`serve` 启动。构建和安装由 `install.sh` + `run.sh` 管理，详见 `scripts/dev.md`。
+TypeScript + esbuild 构建，`server.js`（Node.js 无依赖代理）启动。
 
 ```bash
 cd src/server/webui
-npm install && npm run build && npm run start   # http://localhost:5175
+npm install
+npm run build   # esbuild → dist/
+npm run start   # node server.js → http://localhost:5175
 ```
+
+`server.js` 将 API 请求代理到 `:9000`，避免 CORS 问题。
 
 ## API
 
@@ -73,5 +80,5 @@ GET  /skills
 GET  /skills/{name}
 ```
 
-- CORS: `allow_origins=["*"]`
 - `/skills` 从 `_resolve_claude_home()/.claude/skills/` 读取
+- WORK_DIR 默认为 `_resolve_claude_home()/run/`，自动创建

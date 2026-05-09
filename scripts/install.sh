@@ -219,6 +219,7 @@ _copy_claude_files() {
     cp "${src}/webui/index.html" "${dest}/webui/"
     cp "${src}/webui/package.json" "${dest}/webui/"
     cp "${src}/webui/tsconfig.json" "${dest}/webui/"
+    cp "${src}/webui/server.js" "${dest}/webui/"
     [[ -d "${src}/webui/src" ]] && cp -r "${src}/webui/src/"* "${dest}/webui/src/"
     echo "  [CP] server files copied"
 }
