@@ -29,7 +29,8 @@ skillbot/
 ├── scripts/
 │   ├── install.sh    # agent 安装 / 更新 / 卸载 / 检查
 │   ├── run.sh        # agent 启动 / 停止 / 状态 / 清理 / skill 同步
-│   └── eval.sh       # 批量评测执行器（YAML 配置驱动）
+│   ├── eval.sh       # 批量评测执行器（YAML 配置驱动）
+│   └── jupyter.sh     # Jupyter 集成（%%agent cell magic）
 ├── src/
 │   ├── chat/         # 统一 Python chat 客户端（同步 + 异步）
 │   ├── eval/         # JSONL 驱动的 agent 评测框架
@@ -80,6 +81,25 @@ skillbot/
 ./scripts/eval.sh run  tasks.yaml -t <name>    # 运行指定 task
 ./scripts/eval.sh run  tasks.yaml -o results/  # 指定输出目录
 ./scripts/eval.sh list tasks.yaml              # 列出 task
+```
+
+### jupyter.sh
+
+```bash
+./scripts/jupyter.sh                    # 启动 notebook (port 8888)
+./scripts/jupyter.sh lab                # 启动 JupyterLab
+./scripts/jupyter.sh notebook --port 9999
+```
+
+新建 notebook 选择 "skillbot (Python 3.12)" kernel，直接使用：
+
+```
+%%agent
+1+1=?
+
+%%agent deer-flow --skill stock-data-fetch
+获取600519最近30天行情数据
+# → 文字 + 图表输出，stock_df DataFrame 注入 namespace
 ```
 
 ## Python API

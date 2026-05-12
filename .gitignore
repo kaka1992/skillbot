@@ -108,3 +108,7 @@ $RECYCLE.BIN/
 
 ### Skillbot ###
 agents/
+.jupyter
+.ipynb_checkpoints
+dist
+.claude

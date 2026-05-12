@@ -26,6 +26,10 @@ nanobot = [
 eval = [
     "pyyaml>=6.0",
 ]
+jupyter = [
+    "ipython>=8.0",
+    "pandas>=2.0",
+]
 deerflow = []  # LangGraph REST API on port 8001, no extra deps needed
 
 [tool.pytest.ini_options]

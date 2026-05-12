@@ -280,3 +280,50 @@ results/
 ├── geo-claude.report.txt
 └── summary.txt               # 跨 task 汇总报告
 ```
+
+---
+
+## Step4: Jupyter 集成 jupyter.sh
+
+### 命令签名
+
+```bash
+jupyter.sh [lab|notebook] [options]
+```
+
+### 功能
+
+启动 Jupyter 并自动注册 `%%agent` cell magic。脚本执行：
+1. 安装依赖（ipython + jupyter + notebook + jupyterlab + pandas + ipykernel）
+2. 注册 "skillbot (Python 3.12)" kernel（使用 .venv Python + 自动加载 %%agent）
+3. 创建 IPython profile + 启动脚本
+4. 启动 Jupyter（工作目录：`.jupyter/run/`）
+
+### %%agent magic
+
+```
+%%agent [<agent>] [--timeout N]
+
+默认使用 claude-code，可通过参数切换 agent。
+
+%%agent
+1+1=?
+
+%%agent deer-flow --timeout 120
+生成斐波那契数列
+
+%%agent --skill stock-data-fetch
+获取600519最近30天行情数据
+```
+
+### 会话关联
+
+同一个 `.ipynb` 文件共享同一个 agent session（多轮对话上下文保持）。Kernel 重启时自动清理 session。
+
+### 输出格式
+
+Agent 返回结果按标准化格式解析：
+- 纯文本 → 直接输出
+- `csv:变量名` fenced block → DataFrame 注入 namespace
+- `image` fenced block → 直接渲染
+- `file:文件名` fenced block → 注入文件内容字符串

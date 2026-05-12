@@ -109,7 +109,11 @@ async def chat(sid: str, body: ChatRequest):
                 cwd=WORK_DIR,
             )
         except RuntimeError as e:
+            logger.exception("Chat error for session %s", sid)
             raise HTTPException(500, str(e))
+        except Exception:
+            logger.exception("Unexpected chat error for session %s", sid)
+            raise HTTPException(500, "Internal server error")
 
         elapsed = round(time.monotonic() - t0, 2)
         return ChatResponse(session_id=sid, reply=text, elapsed=elapsed)

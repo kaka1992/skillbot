@@ -116,6 +116,7 @@ class Session:
         except asyncio.TimeoutError:
             raise RuntimeError(f"claude timed out after {timeout}s")
         except Exception:
+            logger.exception("Session %s error", self.sid)
             self.add("error", message)
             raise
 
@@ -178,6 +179,7 @@ class Session:
         except asyncio.TimeoutError:
             raise RuntimeError(f"claude timed out after {timeout}s")
         except Exception:
+            logger.exception("Session %s error", self.sid)
             self.add("error", message)
             raise
 
@@ -241,6 +243,7 @@ class Session:
         except asyncio.TimeoutError:
             raise RuntimeError(f"claude timed out after {timeout}s")
         except Exception:
+            logger.exception("Session %s error", self.sid)
             self.add("error", message)
             raise
 
