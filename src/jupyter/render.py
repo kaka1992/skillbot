@@ -1,37 +1,65 @@
 """Render parsed agent output into Jupyter cell."""
 
 from io import StringIO
+from pathlib import Path
 
 from IPython.display import Image, display
 
+from .namespace import Namespace
 from .parser import ParsedResult
 
 
-def render_output(shell, result: ParsedResult) -> None:
-    """Print text, display images, inject DataFrames into user_ns."""
-    # 1. text — auto-print
-    if result.text:
-        print(result.text)
+def _load_csv(name: str, content: str, ns: Namespace) -> None:
+    """Try to load CSV from content (inline) or filesystem path."""
+    import pandas as pd
 
-    # 2. csv → DataFrame
-    for name, content in result.csv.items():
+    path_hint = content.strip()
+    for path in (Path(path_hint), Path(path_hint.strip('\'"'))):
         try:
-            import pandas as pd
-            df = pd.read_csv(StringIO(content))
-            shell.user_ns[name] = df
-            print(f"[{name}] {df.shape[0]} rows × {df.shape[1]} cols")
-        except Exception as e:
-            shell.user_ns[name] = content
-            print(f"[{name}] csv parse error: {e}")
-
-    # 3. images → direct display
-    for img in result.images:
-        try:
-            display(Image(data=img))
+            if path.is_file():
+                df = pd.read_csv(str(path))
+                var_name = path.stem
+                ns.inject(var_name, df)
+                print(f"[{var_name}] {df.shape[0]} rows × {df.shape[1]} cols (from {path})")
+                return
         except Exception:
             pass
 
-    # 4. files → inject raw content as variable
+    try:
+        df = pd.read_csv(StringIO(content))
+        var_name = name.rsplit(".", 1)[0]
+        ns.inject(var_name, df)
+        print(f"[{var_name}] {df.shape[0]} rows × {df.shape[1]} cols")
+    except Exception as e:
+        ns.inject(name, content)
+        print(f"[{name}] csv parse error: {e}")
+
+
+def render_output(shell_or_ns, result: ParsedResult, skip_text: bool = False) -> None:
+    """Print text, display images, inject DataFrames + code into user_ns."""
+    if isinstance(shell_or_ns, Namespace):
+        ns = shell_or_ns
+    else:
+        ns = Namespace(shell_or_ns)
+
+    if result.text and not skip_text:
+        print(result.text)
+
+    if result.code:
+        ns.set_next_input(result.code)
+
+    for name, content in result.csv.items():
+        _load_csv(name, content, ns)
+
+    for img_bytes in result.images:
+        try:
+            display(Image(img_bytes, format="png", embed=True))
+        except Exception:
+            pass
+
     for name, content in result.files.items():
-        shell.user_ns[name] = content
-        print(f"[{name}] file loaded ({len(content)} bytes)")
+        if name.endswith(".csv"):
+            _load_csv(name, content, ns)
+        else:
+            ns.inject(name, content)
+            print(f"[{name}] file loaded ({len(content)} bytes)")

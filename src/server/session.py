@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from claude_agent_sdk import (
+    AgentDefinition,
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
@@ -57,7 +58,6 @@ def _ensure_claude_home(claude_home: Path) -> None:
 def _build_options(
     allowed_tools: str | None = None,
     cwd: str | None = None,
-    include_partial_messages: bool = False,
 ) -> ClaudeAgentOptions:
     claude_home = _resolve_claude_home()
     _ensure_claude_home(claude_home)
@@ -73,7 +73,24 @@ def _build_options(
         env={"HOME": str(claude_home)},
         setting_sources=["user"],
         max_turns=50,
-        include_partial_messages=include_partial_messages,
+        include_partial_messages=True,
+        agents={
+            "general-purpose": AgentDefinition(
+                description="General-purpose agent for complex multi-step tasks",
+                prompt="You are a capable agent. Complete the assigned task thoroughly and report results.",
+                tools=["Read", "Write", "Edit", "Bash", "Grep", "Glob"],
+            ),
+            "coding": AgentDefinition(
+                description="Coding specialist for writing and refactoring code",
+                prompt="You are a coding specialist. Write clean, working code. Explain your approach briefly then produce the implementation.",
+                tools=["Read", "Write", "Edit", "Bash", "Grep", "Glob"],
+            ),
+            "code-reviewer": AgentDefinition(
+                description="Reviews code for bugs, style, and security issues",
+                prompt="You are a code reviewer. Analyze the code carefully. Report bugs, style violations, and security concerns.",
+                tools=["Read", "Grep", "Glob"],
+            ),
+        },
     )
 
 
@@ -158,11 +175,7 @@ class Session:
         The caller MUST hold ``self.lock`` for the entire iteration.
         """
         self.add("user", message)
-        options = _build_options(
-            allowed_tools=allowed_tools,
-            cwd=cwd,
-            include_partial_messages=True,
-        )
+        options = _build_options(allowed_tools=allowed_tools, cwd=cwd)
 
         full_text_parts: list[str] = []
         gen = self._send_inner_stream(message, options)
@@ -221,11 +234,7 @@ class Session:
         The caller MUST hold ``self.lock`` for the entire iteration.
         """
         self.add("user", message)
-        options = _build_options(
-            allowed_tools=allowed_tools,
-            cwd=cwd,
-            include_partial_messages=True,
-        )
+        options = _build_options(allowed_tools=allowed_tools, cwd=cwd)
 
         text_parts: list[str] = []
         gen = self._send_inner_chunks(message, options)
@@ -269,21 +278,18 @@ class Session:
                     delta = event.get("delta", {})
                     delta_type = delta.get("type", "")
                     if delta_type == "text_delta":
-                        t = delta.get("text", "")
-                        if t:
+                        if t := delta.get("text", ""):
                             text_parts.append(t)
                     elif delta_type == "thinking_delta":
                         blocks.append(TraceBlock(
                             type="thinking",
                             data={"thinking": delta.get("thinking", "")},
                         ))
-                    elif delta_type == "input_json_delta":
-                        pass  # partial JSON — use ToolUseBlock for complete input
 
             elif isinstance(msg, AssistantMessage):
                 for block in msg.content:
                     if isinstance(block, TextBlock):
-                        text_parts.append(block.text)
+                        pass  # text from StreamEvent deltas
                     elif isinstance(block, ThinkingBlock):
                         blocks.append(TraceBlock(
                             type="thinking",

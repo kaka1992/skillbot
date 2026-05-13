@@ -49,3 +49,13 @@ class TestBlockParser:
     def test_empty_input(self):
         r = parse("")
         assert r.text == ""
+
+    def test_python_block(self):
+        r = parse("code:\n```python\nprint(1)\n```\n")
+        assert r.code == "print(1)"
+
+    def test_python_block_between_text(self):
+        r = parse("before\n```python\nx=1\n```\nafter")
+        assert r.code == "x=1"
+        assert "before" in r.text
+        assert "after" in r.text

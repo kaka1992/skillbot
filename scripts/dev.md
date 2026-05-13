@@ -78,7 +78,7 @@ install.sh check claude-code                  # server/*.py / webui/dist / webui
 | deer-flow | git clone https://github.com/bytedance/deer-flow | ${agent_path}/ | config.yaml .env | ${agent_path}/skills/custom |
 | nanobot | git clone https://github.com/HKUDS/nanobot | ~/.nanobot/ | config.json | ${agent_path}/nanobot/skills |
 | hermes-agent | git clone https://github.com/nousresearch/hermes-agent | ~/.hermes/ | config.yaml .env | ${agent_path}/skills/custom |
-| claude-code | cp src/server/*.py → ${agent_path}/server/ | ${agent_path}/.claude/ | settings.json .env | ${agent_path}/.claude/skills |
+| claude-code | cp src/server/*.py → ${agent_path}/server/ | ${agent_path}/.claude/ | settings.json .env | ${agent_path}/.claude/skills（内置 subagent: general-purpose, coding, code-reviewer） |
 
 ### WebUI 安装策略
 
@@ -302,28 +302,53 @@ jupyter.sh [lab|notebook] [options]
 ### %%agent magic
 
 ```
-%%agent [<agent>] [--timeout N]
+%%agent [--timeout N] [--code]
 
-默认使用 claude-code，可通过参数切换 agent。
+默认使用 claude-code，参数：
+  --timeout N    超时秒数（默认 600）
+  --code         仅生成代码，填入下一 cell
+```
 
+示例：
+
+```
 %%agent
 1+1=?
 
-%%agent deer-flow --timeout 120
-生成斐波那契数列
+%%agent --code
+write a sort function
+# → 下一 cell 自动填入代码
 
-%%agent --skill stock-data-fetch
-获取600519最近30天行情数据
+%%agent --timeout 1200
+complex multi-step analysis
 ```
+
+### 流式输出
+
+文本逐 token 显示，tool 调用实时展示 `[Bash]`，thinking 摘要灰色显示。
+
+### 变量上下文
+
+每次调用自动读取 shell namespace 中的用户变量（DataFrame/list/dict/str），注入 prompt 末尾。首次调用全量，后续增量（仅新变量 + 新 cell）。
+
+### 单元追踪
+
+通过 `post_run_cell` hook 自动记录所有 cell 执行（含非 `%%agent` 的普通 cell），为 agent 提供完整的执行历史上下文。
 
 ### 会话关联
 
-同一个 `.ipynb` 文件共享同一个 agent session（多轮对话上下文保持）。Kernel 重启时自动清理 session。
+同一个 `.ipynb` 文件共享同一个 agent session（session key = MD5(notebook_path)）。Kernel 重启时 `atexit` 自动清理 session。
 
 ### 输出格式
 
-Agent 返回结果按标准化格式解析：
-- 纯文本 → 直接输出
-- `csv:变量名` fenced block → DataFrame 注入 namespace
-- `image` fenced block → 直接渲染
-- `file:文件名` fenced block → 注入文件内容字符串
+| Block | 行为 |
+|------|------|
+| 纯文本 | streaming 逐 token 输出 |
+| `python` | 填入下一 cell（不执行） |
+| `csv:name` / `file:name.csv` | → DataFrame |
+| `image` | 内联渲染 |
+| `file:name` | → 字符串变量 |
+
+### 日志
+
+每次调用记录到 `.run/agent-YYYYMMDD.log`（文本格式），含 session、变量、prompt、result、耗时。

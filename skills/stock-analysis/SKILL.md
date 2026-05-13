@@ -100,7 +100,7 @@ description: |
 file_read("references/analysis-prompt-template.md")
 ```
 
-2. 读取[stock-data-fetch] skill.md中的csv数据描述信息与对应的csv文件
+2. 读取[stock-data-fetch] references/file_format.md中的csv数据描述信息与对应的csv文件
 3. 按照框架，对每只股票进行综合分析：
    - 技术面权重 60%：看 MA 排列、MACD 信号、RSI 区间、量能状态、乖离率
    - 消息面权重 30%：新闻情绪与技术面交叉验证

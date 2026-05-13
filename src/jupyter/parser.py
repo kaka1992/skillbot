@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass, field
 
 _FENCE = re.compile(
-    r"^```(csv|image|file)(?::(\S+))?\s*\n(.*?)\n```",
+    r"^```(csv|image|file|python)(?::(\S+))?\s*\n(.*?)\n```",
     re.MULTILINE | re.DOTALL,
 )
 
@@ -13,9 +13,10 @@ _FENCE = re.compile(
 @dataclass
 class ParsedResult:
     text: str = ""
-    csv: dict[str, str] = field(default_factory=dict)        # name → csv_content
-    images: list[bytes] = field(default_factory=list)        # decoded PNG bytes
-    files: dict[str, str] = field(default_factory=dict)       # name → content
+    csv: dict[str, str] = field(default_factory=dict)
+    images: list[bytes] = field(default_factory=list)
+    files: dict[str, str] = field(default_factory=dict)
+    code: str = ""
 
 
 def parse(text: str) -> ParsedResult:
@@ -44,6 +45,8 @@ def parse(text: str) -> ParsedResult:
                 result.images.append(content.encode())
         elif block_type == "file":
             result.files[label or "file"] = content
+        elif block_type == "python":
+            result.code = content
 
         pos = m.end()
 

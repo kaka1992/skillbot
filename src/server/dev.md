@@ -41,8 +41,32 @@ ClaudeAgentOptions(
     setting_sources=["user"],
     max_turns=50,
     include_partial_messages=True,
+    agents={
+        "general-purpose": AgentDefinition(
+            description="General-purpose agent for complex multi-step tasks",
+            tools=["Read", "Write", "Edit", "Bash", "Grep", "Glob"],
+        ),
+        "coding": AgentDefinition(
+            description="Coding specialist for writing and refactoring code",
+            tools=["Read", "Write", "Edit", "Bash", "Grep", "Glob"],
+        ),
+        "code-reviewer": AgentDefinition(
+            description="Reviews code for bugs, style, and security issues",
+            tools=["Read", "Grep", "Glob"],
+        ),
+    },
 )
 ```
+
+### Subagent
+
+主 agent 通过 `Task` 工具 spawn 子 agent，`MAX_CONCURRENT_SUBAGENTS = 3`。子 agent 生命周期事件通过 trace 端点暴露：
+
+| 事件 | 消息类型 | 字段 |
+|------|------|------|
+| 启动 | `TaskStartedMessage` | `task_id`, `agent_type`, `description` |
+| 进度 | `TaskProgressMessage` | `task_id`, `usage`, `last_tool_name` |
+| 完成 | `TaskNotificationMessage` | `task_id`, `status`, `summary` |
 
 ## SSE 端点
 
@@ -50,6 +74,18 @@ ClaudeAgentOptions(
 |------|------|
 | `POST /sessions/{sid}/chat/stream` | `text`, `done`, `error` |
 | `POST /sessions/{sid}/chat/trace` | `text`, `thinking`, `tool_use`, `tool_result`, `subagent`, `usage` |
+| `POST /sessions/{sid}/chat/stream` | `text`, `done`, `error` |
+
+### Trace 事件来源
+
+| type | 来源 |
+|------|------|
+| `text` | `StreamEvent.content_block_delta.text_delta` |
+| `thinking` | `ThinkingBlock` / `content_block_delta.thinking_delta` |
+| `tool_use` | `ToolUseBlock`（id, name, input） |
+| `tool_result` | `ToolResultBlock`（tool_use_id, content, is_error） |
+| `subagent` | `TaskStartedMessage` / `TaskProgressMessage` / `TaskNotificationMessage` |
+| `usage` | `ResultMessage`（total_cost_usd, num_turns, usage） |
 
 ## WebUI
 
@@ -72,9 +108,9 @@ POST /sessions
 GET  /sessions
 GET  /sessions/{sid}
 DELETE /sessions/{sid}
-POST /sessions/{sid}/chat         {"message": "...", "timeout": 300}
-POST /sessions/{sid}/chat/stream  {"message": "...", "timeout": 300}
-POST /sessions/{sid}/chat/trace   {"message": "...", "timeout": 300}
+POST /sessions/{sid}/chat         {"message": "...", "timeout": 600}
+POST /sessions/{sid}/chat/stream  {"message": "...", "timeout": 600}
+POST /sessions/{sid}/chat/trace   {"message": "...", "timeout": 600}
 GET  /sessions/{sid}/history
 GET  /skills
 GET  /skills/{name}

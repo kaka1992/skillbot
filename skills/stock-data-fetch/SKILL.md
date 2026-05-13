@@ -18,21 +18,19 @@ description: |
 
 # Stock Data Fetch Skill
 
-你是一位专业的股票数据获取工具，通过 Python 脚本获取真实市场数据，并计算技术指标（MA/MACD/RSI/量能/乖离率）等，为用户提供股票数据支持。
+你是一位专业的股票数据获取工具，通过 Python 脚本获取真实市场数据，并计算技术指标（MA/MACD/RSI/量能/乖离率）等，并将数据存到到指定路径。
 
-**核心原则**：你自己就是 AI 分析引擎，不调用外部 LLM。Python 脚本只负责"取数据 + 算指标"，你负责"分析判断 + 出报告"。
+**核心原则**：不调用外部 LLM。Python 脚本只负责"取数据 + 算指标"，你负责存储数据到指定目录，并告诉用户文件路径，不要读取文件。
 
 ## 工作流
 
 ```
 用户输入（股票代码/名称）与分析日期范围
-      │
-      ▼
 [STEP 1] 解析输入 → 识别市场、标准化代码+日期范围
-      │
-      ▼
-[STEP 2] 运行 Python 数据脚本 → JSON（行情 + 技术指标 + 评分）
-      │   Read references/stock_data_fetcher.py → Write /tmp/ → Bash 执行
+[STEP 2] 运行 Python 数据脚本
+      │   执行 references/stock_data_fetcher.py
+[STEP 3] print输出文件名称
+      │   ls ${WORK_DIR}/data
 ```
 
 ## STEP 1: 解析输入
@@ -123,69 +121,15 @@ source <SKILL_DIR>/references/.env 2>/dev/null || true
 | `--output` | stderr | stderr / csv |
 | `--output-dir` | ./output | CSV 输出目录 |
 
-5. 输出文件：
-   - `${WORK_DIR}/data/{CODE}_ohlcv.csv` — OHLCV 历史数据
-   - `${WORK_DIR}/data/analysis_summary.csv` — 技术指标汇总
-   - `${WORK_DIR}/run.log` — 运行日志
-   - stdout 仅输出执行状态（成功/失败、文件路径），**不输出具体数据**
 
-## 输出格式
-
-### `{CODE}_ohlcv.csv`
-
-历史 K 线数据，每行一个交易日：
-
-```csv
-code,date,open,high,low,close,volume,amount,pct_chg
-600519,2026-04-15,242.0,248.5,240.8,246.3,82340000,1987200000,2.15
-600519,2026-04-16,246.5,252.0,245.1,250.8,91560000,2296500000,-1.83
+## Step3 print输出文件名称
+```bash
+ls ${WORK_DIR}/data
 ```
+- `${WORK_DIR}/data/{CODE}_ohlcv.csv` — OHLCV 历史数据
+- `${WORK_DIR}/data/analysis_summary.csv` — 技术指标汇总
+- `${WORK_DIR}/data/run.log` — 运行日志
 
-| 字段 | 中文 | 说明 |
-|------|------|------|
-| `code` | 股票代码 | A股6位数字、港股HK+5位、美股字母 |
-| `date` | 交易日期 | YYYY-MM-DD |
-| `open` | 开盘价 | 当日第一笔成交价 |
-| `high` | 最高价 | 当日最高成交价 |
-| `low` | 最低价 | 当日最低成交价 |
-| `close` | 收盘价 | 当日最后一笔成交价 |
-| `volume` | 成交量 | 股数 |
-| `amount` | 成交额 | 仅A股/港股提供，美股为空 |
-| `pct_chg` | 涨跌幅 | 百分比，正数上涨负数下跌 |
-
-### `analysis_summary.csv`
-
-所有股票的技术指标汇总，每行一只股票：
-
-```csv
-analysis_date,code,name,market,data_source,total_bars,price,change_pct,MA5,MA10,MA20,MA60,ma_alignment,MACD_DIF,MACD_DEA,MACD_hist,MACD_signal,RSI6,RSI12,RSI24,RSI_zone,vol_ratio,vol_trend,bias_ma5,bias_ma10,bias_ma20,support_ma5,support_ma10,trend_score,trend_signal
-2026-05-03,600519,贵州茅台,cn_a,akshare,120,2486.5,1.23,2470.3,2455.8,2420.1,2350.6,bullish,15.23,14.81,0.84,golden_cross,62.5,58.3,52.1,strong,1.05,normal,0.65,1.42,2.73,True,False,72,买入
-```
-
-| 分组 | 字段 | 中文 | 说明 |
-|------|------|------|------|
-| 基础 | `analysis_date` | 分析日期 | 数据抓取日期 |
-| | `code` | 股票代码 | |
-| | `name` | 股票名称 | |
-| | `market` | 市场 | cn_a / cn_hk / us |
-| | `data_source` | 数据源 | tushare / efinance / akshare / yfinance |
-| | `total_bars` | 数据条数 | 获取到的K线条数 |
-| 实时 | `price` | 最新价 | |
-| | `change_pct` | 涨跌幅 | % |
-| MA | `MA5/10/20/60` | 均线 | 5/10/20/60日均价 |
-| | `ma_alignment` | 均线排列 | bullish 多头 / bearish 空头 / consolidation 缠绕 |
-| MACD | `MACD_DIF` | DIF | 快线 |
-| | `MACD_DEA` | DEA | 慢线 |
-| | `MACD_hist` | 柱状图 | 2×(DIF-DEA) |
-| | `MACD_signal` | MACD信号 | golden_cross金叉 / death_cross死叉 / bullish / bearish |
-| RSI | `RSI6/12/24` | 相对强弱 | 6/12/24日RSI值 |
-| | `RSI_zone` | RSI区间 | overbought超买(≥80) / strong强势 / neutral / weak弱势 / oversold超卖(≤20) |
-| 量能 | `vol_ratio` | 量比 | 当日量/5日均量 |
-| | `vol_trend` | 量能趋势 | heavy_volume_up放量涨 / shrink_pullback缩量回调 / normal |
-| 乖离率 | `bias_ma5/10/20` | 乖离率 | (收盘价-MA)/MA×100% |
-| 支撑 | `support_ma5/10` | 均线支撑 | True/False |
-| 评分 | `trend_score` | 综合评分 | 0-100，分数越高越看多 |
-| | `trend_signal` | 综合信号 | 强烈买入 / 买入 / 持有 / 观望 / 卖出 / 强烈卖出 |
 
 ## 错误处理
 
@@ -198,8 +142,6 @@ analysis_date,code,name,market,data_source,total_bars,price,change_pct,MA5,MA10,
 | 脚本执行超时 | 设置 120s 超时，超时则报告已获取的部分结果             |
 
 ## 注意事项
-
-
 
 - 脚本支持**分级降级策略**，零配置即可运行，配置 API Key 后数据更精准：
 

@@ -770,27 +770,28 @@ cmd_clean() {
         local agent_path
         agent_path="$(get_agent_path "$agent")"
 
-        # claude-code: clean config + runtime, keep server/
+        # claude-code: remove everything except server/ + .claude/skills/
         if [[ "$agent" == "claude-code" ]]; then
-            # config files
             local claude_dir="${agent_path}/.claude"
-            if [[ -d "$claude_dir" ]]; then
-                for f in settings.json .env; do
-                    [[ -f "${claude_dir}/${f}" ]] && rm -f "${claude_dir}/${f}" && echo "  [OK] removed config: ${claude_dir}/${f}"
-                done
-                # runtime caches
-                for d in sessions backups shell-snapshots session-env; do
-                    [[ -d "${claude_dir}/${d}" ]] && rm -rf "${claude_dir}/${d}" && echo "  [OK] removed cache: ${claude_dir}/${d}"
-                done
+            # save skills/ temporarily, wipe .claude/, restore skills/
+            if [[ -d "${claude_dir}/skills" ]]; then
+                mv "${claude_dir}/skills" "${agent_path}/.skills-tmp" 2>/dev/null
             fi
-            # working directory (app.py WORK_DIR)
-            local run_dir="${agent_path}/run"
-            [[ -d "$run_dir" ]] && rm -rf "$run_dir" && echo "  [OK] removed run/"
-            # session tracking + generated dirs
-            [[ -f "${agent_path}/.claude.json" ]] && rm -f "${agent_path}/.claude.json"
-            for d in go Library; do
-                [[ -d "${agent_path}/${d}" ]] && rm -rf "${agent_path}/${d}"
+            rm -rf "$claude_dir" 2>/dev/null
+            mkdir -p "$claude_dir"
+            if [[ -d "${agent_path}/.skills-tmp" ]]; then
+                mv "${agent_path}/.skills-tmp" "${claude_dir}/skills"
+            fi
+            # wipe everything else in agent_path except server/ + .claude/
+            shopt -s dotglob 2>/dev/null || true
+            for item in "$agent_path"/*; do
+                local name; name="$(basename "$item")"
+                [[ "$name" == "." || "$name" == ".." ]] && continue
+                [[ "$name" == "server" || "$name" == ".claude" ]] && continue
+                rm -rf "$item"
             done
+            shopt -u dotglob 2>/dev/null || true
+            echo "  [OK] cleaned (kept server/ + .claude/skills/)"
         elif [[ "$(_conf_type "$agent")" == "home" ]]; then
             if [[ -n "$conf_dest" && -d "$conf_dest" ]]; then
                 rm -rf "$conf_dest"

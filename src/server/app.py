@@ -21,7 +21,7 @@ from .session import SessionManager, _resolve_claude_home
 
 PORT = int(os.environ.get("CLAUDE_SERVER_PORT", "9000"))
 HOST = os.environ.get("CLAUDE_SERVER_HOST", "127.0.0.1")
-TIMEOUT = int(os.environ.get("CLAUDE_SERVER_TIMEOUT", "300"))
+TIMEOUT = int(os.environ.get("CLAUDE_SERVER_TIMEOUT", "600"))
 ALLOWED_TOOLS = os.environ.get("CLAUDE_SERVER_ALLOWED_TOOLS", "")
 WORK_DIR = os.environ.get("CLAUDE_SERVER_WORK_DIR") or str(_resolve_claude_home() / "run")
 os.makedirs(WORK_DIR, exist_ok=True)
