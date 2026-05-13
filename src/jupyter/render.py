@@ -46,7 +46,7 @@ def render_output(shell_or_ns, result: ParsedResult, skip_text: bool = False) ->
         print(result.text)
 
     if result.code:
-        ns.set_next_input(result.code)
+        ns.set_next_input(f"# %%agent code\n{result.code}")
 
     for name, content in result.csv.items():
         _load_csv(name, content, ns)

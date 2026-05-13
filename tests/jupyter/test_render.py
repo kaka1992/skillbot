@@ -34,7 +34,7 @@ class TestRender:
         s = FakeShell()
         r = ParsedResult(code="print(1)")
         render_output(s, r)
-        assert s._next_input == "print(1)"
+        assert "print(1)" in s._next_input
 
     def test_csv_to_dataframe(self, capsys):
         s = FakeShell()
@@ -65,7 +65,7 @@ class TestRender:
         s = FakeShell()
         r = ParsedResult(text="Here is code.", code="print(1)")
         render_output(s, r, skip_text=True)
-        assert s._next_input == "print(1)"
+        assert "print(1)" in s._next_input
 
     def test_image_display(self):
         """Image blocks should not crash — display is handled by IPython."""
@@ -105,4 +105,5 @@ class TestRender:
         assert "df" in s.user_ns
         assert s.user_ns["df"].shape == (2, 2)
         assert s.user_ns["log.txt"] == "processed 100 rows"
-        assert s._next_input == "print('done')"
+        assert "# %%agent code" in s._next_input
+        assert "print('done')" in s._next_input
