@@ -84,7 +84,7 @@ _LOG_DIR = Path(__file__).resolve().parents[2] / ".run"
 _LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _log_agent(session: str, ctx: str, vars_: list[str], cells: list[dict],
+def _log_agent(session: str, vars_: list[str], cells: list[dict],
                prompt: str, result: str, elapsed: float, error: str = "") -> None:
     """Write a human-readable log entry."""
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -105,8 +105,6 @@ def _log_agent(session: str, ctx: str, vars_: list[str], cells: list[dict],
             if c.get("output"):
                 out = c["output"][:100].replace("\n", "\\n")
                 lines.append(f"      → {out}")
-    if ctx:
-        lines.append(f"  context: {ctx[:300]}")
     lines.append(f"  {'─'*50}")
     lines.append(f"  prompt: {prompt[:300]}")
     if error:
@@ -215,14 +213,14 @@ class AgentMagic(Magics):
         try:
             raw = _stream_output(prompt, timeout)
         except Exception as e:
-            _log_agent(_session_id, ctx, sorted(self.ns.vars().keys()),
+            _log_agent(_session_id, sorted(self.ns.vars().keys()),
                        self.ns._cells, cell, "", round(time.time() - t0, 1),
                        error=str(e))
             print(f"\033[91mError: {e}\033[0m")
             return
 
         elapsed = round(time.time() - t0, 1)
-        _log_agent(_session_id, ctx, sorted(self.ns.vars().keys()),
+        _log_agent(_session_id, sorted(self.ns.vars().keys()),
                    self.ns._cells, cell, raw, elapsed)
 
         if raw.strip():
