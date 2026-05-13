@@ -20,7 +20,6 @@ from .render import render_output
 SYSTEM_PROMPT = """\
 Return results in this format:
 - Explanatory text outside fenced blocks (plain text, no code fences).
-- Runnable Python code as ```python blocks.
 - Images as ```image blocks (base64-encoded PNG).
 - CSV data as ```file:filename.csv blocks.
 - Other files as ```file:filename blocks.
@@ -209,7 +208,7 @@ class AgentMagic(Magics):
         if code_only:
             prompt = f"{CODE_PROMPT}\n\n{cell}"
         else:
-            prompt = f"{cell}\n\n{ctx}" if ctx else cell
+            prompt = f"{ctx}\n\n{cell}" if ctx else cell
 
         t0 = time.time()
         raw = ""
@@ -228,6 +227,6 @@ class AgentMagic(Magics):
 
         if raw.strip():
             result = parse(raw)
-            render_output(self.ns, result, skip_text=True)
+            render_output(self.ns, result, skip_text=True, inject_code=code_only)
 
         self.ns.track_cell(cell, raw.strip()[:200])

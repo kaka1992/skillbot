@@ -35,7 +35,7 @@ def _load_csv(name: str, content: str, ns: Namespace) -> None:
         print(f"[{name}] csv parse error: {e}")
 
 
-def render_output(shell_or_ns, result: ParsedResult, skip_text: bool = False) -> None:
+def render_output(shell_or_ns, result: ParsedResult, skip_text: bool = False, inject_code: bool = False) -> None:
     """Print text, display images, inject DataFrames + code into user_ns."""
     if isinstance(shell_or_ns, Namespace):
         ns = shell_or_ns
@@ -45,7 +45,7 @@ def render_output(shell_or_ns, result: ParsedResult, skip_text: bool = False) ->
     if result.text and not skip_text:
         print(result.text)
 
-    if result.code:
+    if result.code and inject_code:
         ns.set_next_input(f"# %%agent code\n{result.code}")
 
     for name, content in result.csv.items():

@@ -33,8 +33,14 @@ class TestRender:
     def test_code_injection(self):
         s = FakeShell()
         r = ParsedResult(code="print(1)")
-        render_output(s, r)
+        render_output(s, r, inject_code=True)
         assert "print(1)" in s._next_input
+
+    def test_code_not_injected_without_flag(self):
+        s = FakeShell()
+        r = ParsedResult(code="print(1)")
+        render_output(s, r)
+        assert s._next_input == ""  # not injected
 
     def test_csv_to_dataframe(self, capsys):
         s = FakeShell()
@@ -64,7 +70,7 @@ class TestRender:
     def test_python_block_output(self, capsys):
         s = FakeShell()
         r = ParsedResult(text="Here is code.", code="print(1)")
-        render_output(s, r, skip_text=True)
+        render_output(s, r, skip_text=True, inject_code=True)
         assert "print(1)" in s._next_input
 
     def test_image_display(self):
@@ -101,7 +107,7 @@ class TestRender:
             images=[png],
             files={"log.txt": "processed 100 rows"},
         )
-        render_output(s, r, skip_text=True)
+        render_output(s, r, skip_text=True, inject_code=True)
         assert "df" in s.user_ns
         assert s.user_ns["df"].shape == (2, 2)
         assert s.user_ns["log.txt"] == "processed 100 rows"
