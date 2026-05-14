@@ -9,7 +9,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from IPython.core.magic import Magics, cell_magic, magics_class
+from IPython.core.magic import Magics, cell_magic, line_magic, magics_class
 
 from .namespace import Namespace
 from .parser import parse
@@ -58,10 +58,9 @@ def _session_key() -> str:
 
 
 def _init_session(agent: str, timeout: int) -> None:
-    """Create client + stable session, seed system prompt. Idempotent."""
+    """Create client + stable session, seed system prompt."""
     global _client, _session_id
-    if _client is not None:
-        return
+    _cleanup_session()
     from chat import ChatClient
     _client = ChatClient(agent, timeout=timeout)
     _session_id = _session_key()
@@ -174,6 +173,7 @@ class AgentMagic(Magics):
         super().__init__(shell)
         self.ns = Namespace(shell)
         _init_session(self._agent, self._timeout)
+        self.ns.delta()  # establish baseline snapshot
         # track ALL cell executions (not just %%agent)
         shell.events.register("post_run_cell", self._on_cell_run)
 
@@ -187,6 +187,25 @@ class AgentMagic(Magics):
             return
         output = str(info.result) if getattr(info, "result", None) else ""
         self.ns.track_cell(code.strip(), output.strip())
+
+    @line_magic
+    def agent_config(self, line: str) -> None:
+        """Configure agent: %agent_config <agent> [--timeout N]"""
+        args = shlex.split(line)
+        agent = self._agent
+        timeout = self._timeout
+        i = 0
+        while i < len(args):
+            if args[i] == "--timeout" and i + 1 < len(args):
+                timeout = int(args[i + 1]); i += 2
+            else:
+                agent = args[i]; i += 1
+        changed = agent != self._agent or timeout != self._timeout
+        self._agent = agent
+        self._timeout = timeout
+        if changed:
+            _init_session(self._agent, self._timeout)
+        print(f"agent: {self._agent}, timeout: {self._timeout}s")
 
     @cell_magic
     def agent(self, line: str, cell: str) -> None:
@@ -206,7 +225,7 @@ class AgentMagic(Magics):
         if src not in sys.path:
             sys.path.insert(0, src)
 
-        ctx = self.ns.context() if not self.ns._seen else self.ns.delta()
+        ctx = self.ns.delta()
         prompt = f"{ctx}\n\n{cell}" if ctx else cell
 
         t0 = time.time()

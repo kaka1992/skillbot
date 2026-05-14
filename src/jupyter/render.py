@@ -42,8 +42,6 @@ def _load_csv(name: str, content: str, ns: Namespace) -> None:
 
 def render_output(ns: Namespace, result: ParsedResult, skip_text: bool = False, inject_code: bool = False) -> None:
     """Print text, display images, inject DataFrames + code into user_ns."""
-    print(result)
-
     if result.text and not skip_text:
         print(result.text)
 

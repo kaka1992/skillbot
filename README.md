@@ -92,20 +92,59 @@ skillbot/
 ./scripts/jupyter.sh notebook --port 9999
 ```
 
-新建 notebook 选择 "skillbot (Python 3.12)" kernel，直接使用：
+新建 notebook 选择 "skillbot (Python 3.12)" kernel，`%%agent` 自动可用。
+
+**配置 agent：**
+
+```
+%agent_config nanobot                 # 切换到 nanobot
+%agent_config claude-code --timeout 1200  # 切换 + 修改超时
+```
+
+不调用 `%agent_config` 时默认使用 `claude-code`，切换 agent 自动重建 session。
+
+**用法：**
 
 ```
 %%agent
 1+1=?
+# → 流式进度（工具调用）+ 解析后打印结果文本
 
 %%agent --code
-write a sort function
-# → 下一 cell 自动填入代码
+write a function to sort a list
+# → 流式显示代码 + 代码注入下一 cell（不自动执行）
+
+%%agent --timeout 1200
+complex multi-step analysis
+# → 单次超时 1200s
 
 %%agent
 使用 stock_df 绘制收盘价走势
-# → 文字 + 图表 + stock_df DataFrame 注入 namespace
+# → agent 可访问 stock_df 变量信息，生成的图表自动内联显示
 ```
+
+| Flag | 效果 |
+|------|------|
+| `--timeout N` | 本次调用超时秒数（默认 600） |
+| `--code` | 代码模式：流式输出 + 代码填入下一 cell |
+
+**Agent 输出（JSON 格式）：**
+
+```json
+{
+  "text": "markdown 解释文本",
+  "files": ["/tmp/chart.png", "/tmp/data.csv"],
+  "code": "print('hello')"
+}
+```
+
+| 字段 | 行为 |
+|------|------|
+| `text` | 输出到 cell |
+| `files[]` | `.csv` → DataFrame，`.png/.jpg/.svg` → 内联图片，其他 → 文件内容注入变量 |
+| `code` | `--code` 模式下填入下一 cell |
+
+**变量上下文：** 每次 `%%agent` 调用自动收集 shell 中用户变量信息（DataFrame shape、list 长度等）和近期 cell 执行记录，注入 prompt 供 agent 参考。首次 `%%agent` 后只发送增量变更。
 
 ## Python API
 

@@ -15,9 +15,14 @@ src/jupyter/
 ## 架构
 
 ```
+__init__ (extension 加载时)
+  ├── Namespace(shell) → 创建 ns
+  ├── _init_session(_agent, _timeout) → ChatClient + seed SYSTEM_PROMPT
+  └── ns.delta() → 建立 baseline 快照
+
 %%agent cell
   ↓ AgentMagic.agent()
-  ├── Namespace.context()/delta() → 变量上下文
+  ├── ns.delta() → 增量上下文（新变量 + 新 cell）
   ├── _stream_output(show_text) → 流式进度 (--code 模式逐 token 输出)
   ├── parse(raw) → JSON → ParsedResult(text, files, code)
   │   └── 解析失败 → ValueError → 打印错误
@@ -37,6 +42,9 @@ bash scripts/jupyter.sh notebook --port 9999
 ## 用法
 
 ```
+%agent_config nanobot                 # 切换 agent
+%agent_config claude-code --timeout 1200
+
 %%agent
 1+1=?
 
@@ -47,16 +55,19 @@ write a function to sort a list
 complex analysis task
 ```
 
-| Flag | 效果 |
+| Magic | 说明 |
 |------|------|
-| `--timeout N` | 超时秒数（默认 600） |
-| `--code` | 流式显示文本 + 解析后代码注入下一 cell |
+| `%agent_config <agent> [--timeout N]` | 配置 agent 类型和超时（持久生效，切换时重建 session） |
+| `%%agent` | 调用 agent 执行 cell 内容 |
+| `%%agent --code` | 流式显示文本 + 解析后代码注入下一 cell |
+| `%%agent --timeout N` | 本次调用超时秒数（默认 600，不影响全局配置） |
 
 ## 会话
 
 - session key = `MD5(notebook_path)[:12]`，同一 `.ipynb` 共享 session
 - Kernel 重启时 `atexit` 清理 session
-- `SYSTEM_PROMPT` 首次注入（JSON 格式指令），后续仅发用户内容
+- 默认 agent = `claude-code`，可通过 `%agent_config` 切换（自动清理旧 session + 重建新 session）
+- `SYSTEM_PROMPT` 在 session 创建时注入（JSON 格式指令）
 
 ## Agent 输出格式
 
@@ -87,14 +98,14 @@ Agent 输出 JSON（包裹在 `json` fenced block 中）：
 | `ns.vars()` | 查询用户变量 |
 | `ns.inject(name, val)` | 写入变量 |
 | `ns.remove(name)` | 删除变量 |
-| `ns.context()` | 全量上下文（首次调用） |
+| `ns.context()` | 全量上下文（公开 API，返回当前完整快照） |
 | `ns.delta()` | 增量上下文（仅新变量 + 新 cell） |
 | `ns.track_cell(code, output)` | 记录 cell 执行 |
 | `ns.set_next_input(code)` | 注入下一 cell 代码 |
 
 ## 变量上下文
 
-每次 `%%agent` 调用时自动将 shell 中的用户变量信息注入 prompt：
+`__init__` 时调用 `ns.delta()` 建立 baseline。每次 `%%agent` 调用时用 `ns.delta()` 获取增量上下文（新变量 + 新 cell），注入 prompt：
 
 ```
 Available variables:
@@ -102,7 +113,9 @@ Available variables:
   name: str len=5
 ```
 
-首调用使用 `context()`（全量），后续使用 `delta()`（增量）。非 agent 的普通 cell 执行通过 `post_run_cell` hook 自动追踪。
+非 agent 的普通 cell 执行通过 `post_run_cell` hook 自动追踪。
+
+`ns.context()` 保留为公开 API，返回全量上下文（不依赖 baseline）。
 
 ## 日志
 
