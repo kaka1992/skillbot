@@ -1,11 +1,11 @@
-"""BlockParser — extract text / csv / image / file from fenced blocks."""
+"""BlockParser — extract JSON from agent output into ParsedResult."""
 
-import base64
+import json
 import re
 from dataclasses import dataclass, field
 
-_FENCE = re.compile(
-    r"^```(csv|image|file|python)(?::(\S+))?\s*\n(.*?)\n```",
+_JSON_FENCE = re.compile(
+    r"```json\s*\n(.*?)\n```",
     re.MULTILINE | re.DOTALL,
 )
 
@@ -20,41 +20,22 @@ class ParsedResult:
 
 
 def parse(text: str) -> ParsedResult:
-    """Parse fenced blocks from agent output, return structured result."""
+    """Parse JSON block from agent output into ParsedResult.
+
+    Raises ValueError if no JSON block found or JSON is invalid.
+    """
+    m = _JSON_FENCE.search(text)
+    if not m:
+        raise ValueError(f"No JSON block found in agent output:\n{text[:500]}")
+
+    try:
+        data = json.loads(m.group(1))
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON in agent output: {e}\n{m.group(1)[:500]}")
+
     result = ParsedResult()
-    pos = 0
-
-    for m in _FENCE.finditer(text):
-        # capture text before this block
-        before = text[pos:m.start()].strip()
-        if before:
-            if result.text:
-                result.text += "\n\n"
-            result.text += before
-
-        block_type = m.group(1)
-        label = m.group(2) or ""
-        content = m.group(3)
-
-        if block_type == "csv":
-            result.csv[label or "df"] = content
-        elif block_type == "image":
-            try:
-                result.images.append(base64.b64decode(content))
-            except Exception:
-                result.images.append(content.encode())
-        elif block_type == "file":
-            result.files[label or "file"] = content
-        elif block_type == "python":
-            result.code = content
-
-        pos = m.end()
-
-    # trailing text after last fence
-    after = text[pos:].strip()
-    if after:
-        if result.text:
-            result.text += "\n\n"
-        result.text += after
-
+    result.text = data.get("text", "")
+    result.code = data.get("code", "")
+    for path in data.get("files", []):
+        result.files[path] = path
     return result

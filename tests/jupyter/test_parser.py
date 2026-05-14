@@ -1,61 +1,85 @@
-"""Tests for BlockParser."""
+"""Tests for BlockParser — JSON format."""
 
 import sys
 sys.path.insert(0, "src")
 
-from jupyter.parser import parse
+import pytest
+from jupyter.parser import parse, ParsedResult
 
 
-class TestBlockParser:
-    def test_text_only(self):
-        r = parse("Hello world")
-        assert r.text == "Hello world"
-        assert r.csv == {}
-        assert r.images == []
-        assert r.files == {}
-
-    def test_csv_block(self):
-        r = parse("text\n```csv:df\nx,y\n1,2\n3,4\n```\nmore")
-        assert r.csv == {"df": "x,y\n1,2\n3,4"}
-        assert "text" in r.text
-        assert "more" in r.text
-
-    def test_csv_without_label_defaults_to_df(self):
-        r = parse("```csv\na,b\n1,2\n```")
-        assert r.csv == {"df": "a,b\n1,2"}
-
-    def test_image_block(self):
-        r = parse("```image\ndGVzdA==\n```")
-        assert len(r.images) == 1
-        assert r.images[0] == b"test"
-
-    def test_file_block(self):
-        r = parse("```file:config.json\n{}\n```")
-        assert r.files == {"config.json": "{}"}
-
-    def test_multiple_blocks(self):
-        r = parse(
-            "intro\n"
-            "```csv:data\na,b\n1,2\n```\n"
-            "middle\n"
-            "```csv:more\nc,d\n3,4\n```\n"
-            "outro"
-        )
-        assert list(r.csv.keys()) == ["data", "more"]
-        assert "intro" in r.text
-        assert "middle" in r.text
-        assert "outro" in r.text
-
-    def test_empty_input(self):
-        r = parse("")
-        assert r.text == ""
-
-    def test_python_block(self):
-        r = parse("code:\n```python\nprint(1)\n```\n")
+class TestJsonParser:
+    def test_all_fields(self):
+        r = parse("""```json
+{"text": "Here is the result", "files": ["/tmp/chart.png", "/tmp/data.csv"], "code": "print(1)"}
+```""")
+        assert r.text == "Here is the result"
+        assert r.files == {"/tmp/chart.png": "/tmp/chart.png", "/tmp/data.csv": "/tmp/data.csv"}
         assert r.code == "print(1)"
 
-    def test_python_block_between_text(self):
-        r = parse("before\n```python\nx=1\n```\nafter")
-        assert r.code == "x=1"
-        assert "before" in r.text
-        assert "after" in r.text
+    def test_text_only(self):
+        r = parse("""```json
+{"text": "hello world"}
+```""")
+        assert r.text == "hello world"
+        assert r.files == {}
+        assert r.code == ""
+
+    def test_files_only(self):
+        r = parse("""```json
+{"files": ["/tmp/data.csv"]}
+```""")
+        assert r.text == ""
+        assert r.files == {"/tmp/data.csv": "/tmp/data.csv"}
+        assert r.code == ""
+
+    def test_code_only(self):
+        r = parse("""```json
+{"code": "x = 1 + 1"}
+```""")
+        assert r.text == ""
+        assert r.files == {}
+        assert r.code == "x = 1 + 1"
+
+    def test_empty_json(self):
+        r = parse("""```json
+{}
+```""")
+        assert r.text == ""
+        assert r.files == {}
+        assert r.code == ""
+
+    def test_no_json_block(self):
+        with pytest.raises(ValueError, match="No JSON block found"):
+            parse("hello world, no json here")
+
+    def test_invalid_json(self):
+        with pytest.raises(ValueError, match="Invalid JSON"):
+            parse("""```json
+{broken json!!!
+```""")
+
+    def test_empty_input(self):
+        with pytest.raises(ValueError, match="No JSON block found"):
+            parse("")
+
+    def test_text_outside_block_is_ignored(self):
+        """Only JSON block content is used; surrounding text is ignored."""
+        r = parse("""some preamble
+```json
+{"text": "the real answer"}
+```
+some trailing text""")
+        assert r.text == "the real answer"
+
+    def test_multiple_files(self):
+        r = parse("""```json
+{"files": ["/tmp/a.png", "/tmp/b.csv", "/tmp/c.txt"]}
+```""")
+        assert len(r.files) == 3
+        assert r.files["/tmp/a.png"] == "/tmp/a.png"
+
+    def test_text_with_newlines(self):
+        r = parse("""```json
+{"text": "line 1\\n\\nline 2"}
+```""")
+        assert r.text == "line 1\n\nline 2"

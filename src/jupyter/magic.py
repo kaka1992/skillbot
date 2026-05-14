@@ -18,16 +18,19 @@ from .render import render_output
 # ---- prompt templates ----
 
 SYSTEM_PROMPT = """\
-Return results in this format:
-- Explanatory text outside fenced blocks (plain text, no code fences).
-- Images as ```image blocks (base64-encoded PNG).
-- CSV data as ```file:filename.csv blocks.
-- Other files as ```file:filename blocks.
+Return results as a JSON object wrapped in a ```json fenced block:
+```json
+{
+  "text": "explanatory markdown text",
+  "files": ["/tmp/chart.png", "/tmp/data.csv"],
+  "code": "print('hello')"
+}
+```
+- "text": explanatory text (optional)
+- "files": list of file paths created by tools (optional)
+- "code": executable Python code (optional)
+Include only non-empty fields.
 """
-
-CODE_PROMPT = "Return ONLY a single ```python block with executable code. No explanations, no markdown outside the fence."
-
-# ---- session state ----
 
 _client: object | None = None
 _session_id: str | None = None
@@ -119,7 +122,7 @@ def _log_agent(session: str, vars_: list[str], cells: list[dict],
         f.write("\n".join(lines))
 
 
-def _stream_output(prompt: str, timeout: int | None = None) -> str:
+def _stream_output(prompt: str, timeout: int | None = None, show_text: bool = True) -> str:
     """Stream agent response via ``stream_chunks()``, display progress."""
     if timeout is not None:
         _client._backend._timeout = timeout
@@ -131,8 +134,9 @@ def _stream_output(prompt: str, timeout: int | None = None) -> str:
     for chunk in _client._backend.stream_chunks(prompt, session=_session_id):
         if chunk.text:
             raw += chunk.text
-            sys.stdout.write(chunk.text)
-            sys.stdout.flush()
+            if show_text:
+                sys.stdout.write(chunk.text)
+                sys.stdout.flush()
 
         if chunk.blocks:
             for b in chunk.blocks:
@@ -203,15 +207,12 @@ class AgentMagic(Magics):
             sys.path.insert(0, src)
 
         ctx = self.ns.context() if not self.ns._seen else self.ns.delta()
-        if code_only:
-            prompt = f"{CODE_PROMPT}\n\n{cell}"
-        else:
-            prompt = f"{ctx}\n\n{cell}" if ctx else cell
+        prompt = f"{ctx}\n\n{cell}" if ctx else cell
 
         t0 = time.time()
         raw = ""
         try:
-            raw = _stream_output(prompt, timeout)
+            raw = _stream_output(prompt, timeout, show_text=code_only)
         except Exception as e:
             _log_agent(_session_id, sorted(self.ns.vars().keys()),
                        self.ns._cells, cell, "", round(time.time() - t0, 1),
@@ -224,7 +225,11 @@ class AgentMagic(Magics):
                    self.ns._cells, cell, raw, elapsed)
 
         if raw.strip():
-            result = parse(raw)
-            render_output(self.ns, result, skip_text=True, inject_code=code_only)
+            try:
+                result = parse(raw)
+            except ValueError as e:
+                print(f"\033[91mParse error: {e}\033[0m")
+                return
+            render_output(self.ns, result, skip_text=code_only, inject_code=code_only)
 
         self.ns.track_cell(cell, raw.strip()[:200])
