@@ -34,7 +34,7 @@ skillbot/
 ├── src/
 │   ├── chat/         # 统一 Python chat 客户端（同步 + 异步）
 │   ├── eval/         # JSONL 驱动的 agent 评测框架
-│   ├── jupyter/      # Jupyter 集成（%%agent magic + 变量上下文）
+│   ├── jupyter/      # Jupyter 集成（%%agent magic + JSON 解析 + 变量上下文）
 │   ├── server/       # Claude Code HTTP 服务端（claude-agent-sdk + SSE + subagent）
 │   │   └── webui/     # TypeScript WebUI（esbuild + node proxy）
 ├── conf/
@@ -51,7 +51,7 @@ skillbot/
 |-------|:---:|:---:|:---:|:---:|
 | [deer-flow](https://github.com/bytedance/deer-flow) | 8001 | 3000/2026 (Next.js+Nginx) | LangGraph SSE | ✓ |
 | [nanobot](https://github.com/HKUDS/nanobot) | 18790 | 5173 (Vite) | OpenAI REST :8900 | ✓ |
-| [hermes-agent](https://github.com/nousresearch/hermes-agent) | — | 5173 (Vite) | OpenAI REST :8642 | ✓ |
+| [hermes-agent](https://github.com/nousresearch/hermes-agent) | — | 5174 (Vite) | OpenAI REST :8642 | ✓ |
 | [claude-code (SDK + SSE)](https://github.com/anthropics/claude-agent-sdk-python) | — | 5175 (node proxy) | HTTP :9000 | ✓ |
 
 ## CLI 命令
@@ -260,7 +260,7 @@ PYTHONPATH="src" .venv/bin/pytest tests/ -v
 # 按模块测试
 PYTHONPATH="src" .venv/bin/pytest tests/chat/ -v    # 58 测试
 PYTHONPATH="src" .venv/bin/pytest tests/eval/ -v    # 83 测试
-PYTHONPATH="src" .venv/bin/pytest tests/jupyter/ -v # 32 测试
+PYTHONPATH="src" .venv/bin/pytest tests/jupyter/ -v # 48 测试
 PYTHONPATH="src" .venv/bin/pytest tests/server/ -v  # 24 测试
 ```
 

@@ -7,8 +7,8 @@ src/jupyter/
 ├── __init__.py      # load_ipython_extension, 注册 %%agent
 ├── magic.py         # AgentMagic: streaming, session, logging
 ├── namespace.py     # Namespace: 变量/单元/上下文管理
-├── parser.py        # BlockParser: text/csv/image/file/python
-├── render.py        # render_output: DataFrame 注入 + 代码 + 渲染
+├── parser.py        # JSON parser → ParsedResult
+├── render.py        # render_output: DataFrame/图片/文件/代码注入
 └── dev.md
 ```
 
@@ -18,9 +18,10 @@ src/jupyter/
 %%agent cell
   ↓ AgentMagic.agent()
   ├── Namespace.context()/delta() → 变量上下文
-  ├── _stream_output() → 逐 token 输出 + thinking/tool 进度
-  ├── BlockParser.parse() → text/csv/image/file/python
-  └── render_output() → print + inject DataFrame + next cell code
+  ├── _stream_output(show_text) → 流式进度 (--code 模式逐 token 输出)
+  ├── parse(raw) → JSON → ParsedResult(text, files, code)
+  │   └── 解析失败 → ValueError → 打印错误
+  └── render_output(ns, result) → print(text) + display + inject
 ```
 
 ## 启动
@@ -46,22 +47,36 @@ write a function to sort a list
 complex analysis task
 ```
 
+| Flag | 效果 |
+|------|------|
+| `--timeout N` | 超时秒数（默认 600） |
+| `--code` | 流式显示文本 + 解析后代码注入下一 cell |
+
 ## 会话
 
 - session key = `MD5(notebook_path)[:12]`，同一 `.ipynb` 共享 session
 - Kernel 重启时 `atexit` 清理 session
-- `SYSTEM_PROMPT` 首次注入，后续仅发用户内容
+- `SYSTEM_PROMPT` 首次注入（JSON 格式指令），后续仅发用户内容
 
-## 输出格式
+## Agent 输出格式
 
-| Block | 标记 | 行为 |
-|------|------|------|
-| 纯文本 | fence 外 | streaming 输出 |
-| `python` | ` ```python ` | 填入下一 cell（不执行） |
-| `csv:<name>` | ` ```csv:name ` | → DataFrame → `user_ns[name]` |
-| `file:<name>.csv` | ` ```file:name.csv ` | → DataFrame（文件系统优先，inline fallback） |
-| `file:<name>` | ` ```file:name ` | → `user_ns[name]`（字符串） |
-| `image` | ` ```image ` | 内联渲染 |
+Agent 输出 JSON（包裹在 `json` fenced block 中）：
+
+```json
+{
+  "text": "markdown 解释文本",
+  "files": ["/tmp/chart.png", "/tmp/data.csv"],
+  "code": "print('hello')"
+}
+```
+
+| JSON field | 行为 |
+|------|------|
+| `text` | 文本输出到 cell（普通模式 render 打印，--code 模式流式已显示） |
+| `files[]` | 文件路径列表，按扩展名处理：`.csv` → DataFrame，`.png/.jpg/.svg` → 内联图片，其他 → 读文件内容注入变量 |
+| `code` | `--code` 模式下填入下一 cell |
+
+解析失败直接 `raise ValueError`，上层 catch 并打印 `Parse error`。
 
 ## Namespace（变量管理）
 
