@@ -261,7 +261,7 @@ PYTHONPATH="src" .venv/bin/pytest tests/ -v
 PYTHONPATH="src" .venv/bin/pytest tests/chat/ -v    # 58 测试
 PYTHONPATH="src" .venv/bin/pytest tests/eval/ -v    # 83 测试
 PYTHONPATH="src" .venv/bin/pytest tests/jupyter/ -v # 48 测试
-PYTHONPATH="src" .venv/bin/pytest tests/server/ -v  # 24 测试
+PYTHONPATH="src" .venv/bin/pytest tests/server/ -v  # 27 测试
 ```
 
 ## License
