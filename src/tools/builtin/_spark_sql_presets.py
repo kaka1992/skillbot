@@ -25,12 +25,16 @@ SPARK_ANALYZE_QUERY = ToolPreset(
     parameters={
         "type": "object",
         "properties": {
-            "sql": {"type": "string", "description": "Spark SQL statement to analyze"},
+            "sql": {"type": "str", "description": "Spark SQL statement to analyze"},
         },
         "required": ["sql"],
     },
     returns={
-        "plan": ReturnProperty(type="str", description="Query execution plan text"),
+        "success": ReturnProperty(type="str", description="Request status"),
+        "command": ReturnProperty(type="str", description="Request command"),
+        "data": ReturnProperty(type="object", description="Result data", properties={
+            "plan": ReturnProperty(type="str", description="Query execution plan text"),
+        })
     },
     group="spark",
 )
@@ -41,16 +45,21 @@ SPARK_ANALYZE_QUERY = ToolPreset(
 
 SPARK_SUBMIT_QUERY = ToolPreset(
     name="spark_submit_query",
-    description="Submit a Spark SQL query asynchronously and return a query ID for tracking",
+    description="Submit a Spark SQL query asynchronously and return a job ID for tracking",
     parameters={
         "type": "object",
         "properties": {
-            "sql": {"type": "string", "description": "Spark SQL statement to execute"},
+            "sql": {"type": "str", "description": "Spark SQL statement to execute"},
         },
         "required": ["sql"],
     },
     returns={
-        "job_id": ReturnProperty(type="str", description="Unique query tracking ID"),
+        "success": ReturnProperty(type="str", description="Request status"),
+        "command": ReturnProperty(type="str", description="Request command"),
+        "data": ReturnProperty(type="object", description="Result data", properties={
+            "job_id":ReturnProperty(type="str", description="Unique query tracking ID"),
+            "status": ReturnProperty(type="str", description="Submitted status"),
+        })
     },
     group="spark",
 )
@@ -61,20 +70,25 @@ SPARK_SUBMIT_QUERY = ToolPreset(
 
 SPARK_GET_JOB_STATUS = ToolPreset(
     name="spark_get_job_status",
-    description="Check the execution status of a Spark query by query ID",
+    description="Check the execution status of a Spark query by Job ID",
     parameters={
         "type": "object",
         "properties": {
-            "query_id": {"type": "string", "description": "Query ID from spark_submit_query"},
+            "job_id": {"type": "str", "description": "Job ID from spark_submit_query"},
         },
-        "required": ["query_id"],
+        "required": ["job_id"],
     },
     returns={
-        "job_id": ReturnProperty(type="str", description="Query ID"),
-        "status": ReturnProperty(type="str", description="One of: RUNNING, FINISHED, FAILED, CANCELLED"),
-        "sql": ReturnProperty(type="str", description="Submitted SQL text (truncated to 200 chars)"),
-        "start_time": ReturnProperty(type="str", description="ISO-8601 start timestamp"),
-        "error": ReturnProperty(type="str", description="Error message if status is FAILED"),
+        "success": ReturnProperty(type="str", description="Request status"),
+        "command": ReturnProperty(type="str", description="Request command"),
+        "data": ReturnProperty(type="object", description="Result data", properties={
+            "job_id": ReturnProperty(type="str", description="Unique query tracking ID"),
+            "status": ReturnProperty(type="str", description="Job status"),
+            "query_log_url": ReturnProperty(type="str", description="Query log file URL"),
+            "engine_type": ReturnProperty(type="str", description="Query engine type"),
+            "result_url": ReturnProperty(type="str", description="Result data file URL"),
+            "log_url": ReturnProperty(type="str", description="Submitted log file URL"),
+        })
     },
     group="spark",
 )
@@ -89,45 +103,27 @@ SPARK_GET_QUERY_RESULT = ToolPreset(
     parameters={
         "type": "object",
         "properties": {
-            "query_id": {"type": "string", "description": "Query ID from spark_submit_query"},
-            "limit": {"type": "integer", "description": "Max rows to return", "default": 100},
+            "job_id": {"type": "str", "description": "Job ID from spark_submit_query"},
+            "limit": {"type": "int", "description": "Max rows for sample to return", "default": 100},
+            "output": {"type": "str", "description": "Output result file path"},
+            "output_format": {"type": "str", "description": "Output format (e.g. csv, table, json)", "default": "csv"},
+            "output_encoding": {"type": "str", "description": "Output encoding (e.g. utf-8, gbk)", "default": "utf-8"},
         },
         "required": ["query_id"],
     },
     returns={
-        "columns": ReturnProperty(
+        "success": ReturnProperty(type="str", description="Request status"),
+        "command": ReturnProperty(type="str", description="Request command"),
+        "data": ReturnProperty(type="object", description="Result data", properties={
+            "job_id":ReturnProperty(type="str", description="Unique query tracking ID"),
+            "sample_data":ReturnProperty(type="array", description="Sample data with json array format", items=ReturnProperty(
             type="array",
             items=ReturnProperty(type="str"),
-            description="Column names",
-        ),
-        "rows": ReturnProperty(
-            type="array",
-            items=ReturnProperty(type="object"),
-            description="Data rows as dicts",
-        ),
-        "row_count": ReturnProperty(type="int", description="Number of rows returned"),
-    },
-    group="spark",
-)
-
-# ----------------------------------------------------------------
-# spark_download_result_file
-# ----------------------------------------------------------------
-
-SPARK_DOWNLOAD_RESULT_FILE = ToolPreset(
-    name="spark_download_result_file",
-    description="Download the full result of a Spark query as a CSV file",
-    parameters={
-        "type": "object",
-        "properties": {
-            "query_id": {"type": "string", "description": "Query ID from spark_submit_query"},
-            "output_dir": {"type": "string", "description": "Output directory", "default": "/tmp"},
-        },
-        "required": ["query_id"],
-    },
-    returns={
-        "file": ReturnProperty(type="str", description="Absolute path to the CSV file"),
-        "format": ReturnProperty(type="str", description="Output format (always 'csv')"),
+        )),
+            "content_row_count":ReturnProperty(type="int", description="Return sample data count"),
+            "result_url":ReturnProperty(type="str", description="Result data file URL"),
+            "output_path": ReturnProperty(type="str", description="Output result data file path"),
+        })
     },
     group="spark",
 )
@@ -138,17 +134,21 @@ SPARK_DOWNLOAD_RESULT_FILE = ToolPreset(
 
 SPARK_CANCEL_JOB = ToolPreset(
     name="spark_cancel_job",
-    description="Cancel a running Spark query by query ID",
+    description="Cancel a running Spark query by Job ID",
     parameters={
         "type": "object",
         "properties": {
-            "query_id": {"type": "string", "description": "Query ID from spark_submit_query"},
+            "job_id": {"type": "string", "description": "Job ID from spark_submit_query"},
         },
-        "required": ["query_id"],
+        "required": ["job_id"],
     },
     returns={
-        "job_id": ReturnProperty(type="str", description="Query ID"),
-        "cancelled": ReturnProperty(type="bool", description="Whether the job was cancelled"),
+        "success": ReturnProperty(type="str", description="Request status"),
+        "command": ReturnProperty(type="str", description="Request command"),
+        "data": ReturnProperty(type="object", description="Result data", properties={
+            "job_id":ReturnProperty(type="str", description="Unique query tracking ID"),
+            "cancel_requested": ReturnProperty(type="str", description="Cancel requested status"),
+        })
     },
     group="spark",
 )

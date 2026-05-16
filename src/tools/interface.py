@@ -17,7 +17,7 @@ from typing import Any, Literal, NotRequired, TypedDict
 class ParamProperty(TypedDict, total=False):
     """JSON Schema property descriptor for tool input parameters."""
 
-    type: str  # "string" | "integer" | "number" | "boolean" | "array" | "object"
+    type: str  # "str" | "int" | "float" | "bool" | "array" | "object"
     description: str
     default: Any
     items: dict[str, Any]  # array item schema
