@@ -119,3 +119,32 @@ class TestSqlRunnerResult:
         runner = SqlRunner()
         result = runner.result("abc123", limit=50)
         assert result["data"]["content_row_count"] == 1
+
+
+class TestAgentConfigTools:
+    def test_tools_section_parsed(self):
+        """Verify YAML tools section is parsed without crashing."""
+        import yaml
+        yaml_str = """
+tools:
+  paths:
+    - /tmp/nonexistent_tools/
+  preferences:
+    presets:
+      spark_analyze_query: v2
+    groups:
+      spark: databricks
+"""
+        cfg = yaml.safe_load(yaml_str) or {}
+        tools_cfg = cfg.get("tools") or {}
+        assert tools_cfg["paths"] == ["/tmp/nonexistent_tools/"]
+        assert tools_cfg["preferences"]["presets"]["spark_analyze_query"] == "v2"
+        assert tools_cfg["preferences"]["groups"]["spark"] == "databricks"
+
+    def test_tools_section_optional(self):
+        """Verify missing tools section is handled gracefully."""
+        import yaml
+        cfg = yaml.safe_load("agent: claude-code") or {}
+        tools_cfg = cfg.get("tools") or {}
+        assert tools_cfg.get("paths") is None
+        assert tools_cfg.get("preferences") is None
