@@ -13,6 +13,7 @@ from pathlib import Path
 from IPython.core.magic import Magics, cell_magic, line_magic, magics_class
 
 from .namespace import Namespace
+from .sql import SqlRunner
 from .parser import parse
 from .render import render_output
 
@@ -84,6 +85,29 @@ def _parse_kv(args: list[str]) -> dict[str, str]:
             remaining.remove(item)
     args[:] = remaining
     return result
+
+
+def _sql_progress(phase: str, data: dict | None = None) -> None:
+    """Print spark query progress to stdout with flush for real-time streaming."""
+    if data is None:
+        data = {}
+    if phase == "analyze":
+        plan = data.get("plan", "")
+        print(f"\n[analyze] plan:\n{plan}")
+    elif phase == "submit":
+        print(f"[submit] job_id: {data.get('job_id', '')}")
+    elif phase == "poll":
+        status = data.get("status", "?")
+        elapsed = data.get("elapsed", 0)
+        print(f"\r[poll] {status} ({elapsed}s)  ", end="")
+        sys.stdout.flush()
+    elif phase == "result":
+        print(f"\n[result] {data.get('row_count', 0)} rows fetched")
+    elif phase == "error":
+        print(f"\n\033[91m[{data.get('stage', '?')}] {data.get('message', '')}\033[0m",
+              file=sys.stderr)
+    elif phase == "submit_ok":
+        print(f"[submit] job_id: {data.get('job_id', '')}")
 
 
 def _init_session(agent: str, timeout: int) -> None:
@@ -200,11 +224,17 @@ class AgentMagic(Magics):
 
     def __init__(self, shell):
         super().__init__(shell)
+        self._sql_var_counter = 0
         self.ns = Namespace(shell)
         _init_session(self._agent, self._timeout)
         self.ns.delta()  # establish baseline snapshot
         # track ALL cell executions (not just %%agent)
         shell.events.register("post_run_cell", self._on_cell_run)
+
+    def _next_sql_var(self) -> str:
+        """Return next default variable name (var_1, var_2, ...)."""
+        self._sql_var_counter += 1
+        return f"var_{self._sql_var_counter}"
 
     def _on_cell_run(self, result):
         """Hook: capture cell code + output for namespace context."""
@@ -261,6 +291,119 @@ class AgentMagic(Magics):
         if changed:
             _init_session(self._agent, self._timeout)
         print(f"agent: {self._agent}, timeout: {self._timeout}s")
+
+    @line_magic
+    def sql(self, line: str) -> None:
+        """%sql status|result|cancel [options] — manage Spark query jobs."""
+        args = shlex.split(line)
+        sub = args[0] if args else ""
+        job_id = _pop_flag(args, "--job_id")
+        limit = _pop_flag(args, "--limit", convert=int) or 100
+
+        if not job_id:
+            print("\033[91m--job_id is required\033[0m", file=sys.stderr)
+            return
+
+        runner = SqlRunner()
+        try:
+            if sub == "status":
+                result = runner.status(job_id, on_progress=_sql_progress)
+                data = result.get("data", {})
+                print(f"job_id: {data.get('job_id', job_id)}")
+                print(f"status: {data.get('status', '?')}")
+                print(f"engine:  {data.get('engine_type', '?')}")
+            elif sub == "cancel":
+                result = runner.cancel(job_id, on_progress=_sql_progress)
+                data = result.get("data", {})
+                requested = data.get("cancel_requested", "false")
+                print(f"job_id: {data.get('job_id', job_id)}  cancel_requested: {requested}")
+            elif sub == "result":
+                import pandas as pd
+                result = runner.result(job_id, limit=limit)
+                data = result.get("data", {})
+                sample = data.get("sample_data", [])
+                if sample:
+                    cols = sample[0] if sample else []
+                    rows = sample[1:] if len(sample) > 1 else []
+                    df = pd.DataFrame(rows, columns=cols)
+                    var_name = f"result_{job_id[:8]}"
+                    self.ns.inject(var_name, df)
+                    print(f"[{var_name}] {len(rows)} rows x {len(cols)} cols")
+            else:
+                print(f"\033[91munknown subcommand: {sub}. Use: status | cancel | result\033[0m",
+                      file=sys.stderr)
+        except RuntimeError as e:
+            print(f"\033[91m{e}\033[0m", file=sys.stderr)
+
+    @cell_magic
+    def sql(self, line: str, cell: str) -> None:
+        """%%sql — Spark SQL query in Jupyter.
+
+        Usage::
+
+            %%sql [--var df1] [--timeout 600] [--poll 30]
+            select * from table
+
+            %%sql submit
+            select * from table
+
+            %%sql result --job_id xxx [--limit 100]
+        """
+        import pandas as pd
+
+        args = shlex.split(line)
+        mode = args[0] if args and not args[0].startswith("--") else "query"
+
+        runner = SqlRunner()
+
+        if mode == "submit":
+            try:
+                result = runner.submit(cell, on_progress=_sql_progress)
+                job_id = result.get("data", {}).get("job_id", "")
+                print(f"job submitted: {job_id}")
+            except RuntimeError as e:
+                print(f"\033[91m{e}\033[0m", file=sys.stderr)
+
+        elif mode == "result":
+            job_id = _pop_flag(args, "--job_id")
+            limit = _pop_flag(args, "--limit", convert=int) or 100
+            if not job_id:
+                print("\033[91m--job_id is required\033[0m", file=sys.stderr)
+                return
+            try:
+                result = runner.result(job_id, limit=limit)
+                data = result.get("data", {})
+                sample = data.get("sample_data", [])
+                if sample:
+                    cols = sample[0] if sample else []
+                    rows = sample[1:] if len(sample) > 1 else []
+                    df = pd.DataFrame(rows, columns=cols)
+                    var_name = f"result_{job_id[:8]}"
+                    self.ns.inject(var_name, df)
+                    print(f"[{var_name}] {len(rows)} rows x {len(cols)} cols")
+            except RuntimeError as e:
+                print(f"\033[91m{e}\033[0m", file=sys.stderr)
+
+        else:  # mode == "query" (direct)
+            var_name = _pop_flag(args, "--var")
+            timeout = _pop_flag(args, "--timeout", convert=int) or 600
+            poll = _pop_flag(args, "--poll", convert=int) or 30
+
+            runner = SqlRunner(poll_interval=poll, timeout=timeout)
+            try:
+                result = runner.query(cell, on_progress=_sql_progress)
+                data = result.get("data", {})
+                sample = data.get("sample_data", [])
+                if sample:
+                    cols = sample[0] if sample else []
+                    rows = sample[1:] if len(sample) > 1 else []
+                    df = pd.DataFrame(rows, columns=cols)
+                    if not var_name:
+                        var_name = self._next_sql_var()
+                    self.ns.inject(var_name, df)
+                    print(f"[{var_name}] {len(rows)} rows x {len(cols)} cols")
+            except (RuntimeError, TimeoutError) as e:
+                print(f"\033[91m{e}\033[0m", file=sys.stderr)
 
     @cell_magic
     def agent(self, line: str, cell: str) -> None:
