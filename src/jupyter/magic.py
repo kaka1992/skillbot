@@ -16,6 +16,7 @@ from .namespace import Namespace
 from .sql import SqlRunner
 from .parser import parse
 from .render import render_output
+from tools import ToolRegistry
 
 # ---- prompt templates ----
 
@@ -267,6 +268,29 @@ class AgentMagic(Magics):
                 print(f"[agent_config] config file not found: {config_path}", file=sys.stderr)
             except yaml.YAMLError as e:
                 print(f"[agent_config] YAML parse error: {e}", file=sys.stderr)
+
+        # 2.5. 加载第三方 tools + 设定偏好
+        tools_cfg = cfg.get("tools") or {}
+        for path in tools_cfg.get("paths") or []:
+            try:
+                discovered = ToolRegistry.discover(path)
+                if discovered:
+                    names = ", ".join(t.name for t in discovered)
+                    print(f"[agent_config] loaded from {path}: {names}")
+            except Exception as e:
+                print(f"[agent_config] failed to load tools from {path}: {e}", file=sys.stderr)
+
+        preferences = tools_cfg.get("preferences") or {}
+        for preset_name, impl_name in (preferences.get("presets") or {}).items():
+            try:
+                ToolRegistry.set_preferred(preset_name, impl_name)
+            except KeyError as e:
+                print(f"[agent_config] preference error: {e}", file=sys.stderr)
+        for group_name, impl_name in (preferences.get("groups") or {}).items():
+            try:
+                ToolRegistry.set_preferred_for_group(group_name, impl_name)
+            except KeyError as e:
+                print(f"[agent_config] preference error: {e}", file=sys.stderr)
 
         agent = agent or cfg.get("agent") or self._agent
         timeout = timeout or cfg.get("timeout") or self._timeout
