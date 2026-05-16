@@ -4,6 +4,7 @@ import atexit
 import hashlib
 import os
 import shlex
+import yaml
 import sys
 import time
 from datetime import datetime
@@ -218,16 +219,42 @@ class AgentMagic(Magics):
 
     @line_magic
     def agent_config(self, line: str) -> None:
-        """Configure agent: %agent_config <agent> [--timeout N]"""
+        """Configure agent: %agent_config [--config PATH] [--agent NAME] [--timeout N] [--KEY=VALUE ...]"""
         args = shlex.split(line)
-        agent = self._agent
-        timeout = self._timeout
-        i = 0
-        while i < len(args):
-            if args[i] == "--timeout" and i + 1 < len(args):
-                timeout = int(args[i + 1]); i += 2
-            else:
-                agent = args[i]; i += 1
+
+        # 1. 解析命令行参数
+        config_path = _pop_flag(args, "--config")
+        agent = _pop_flag(args, "--agent")
+        timeout = _pop_flag(args, "--timeout", convert=int)
+        env_vars = _parse_kv(args)
+
+        # 2. 加载 YAML（命令行未指定时使用默认值）
+        cfg: dict = {}
+        if config_path:
+            try:
+                cfg = yaml.safe_load(Path(config_path).read_text()) or {}
+            except FileNotFoundError:
+                print(f"[agent_config] config file not found: {config_path}", file=sys.stderr)
+            except yaml.YAMLError as e:
+                print(f"[agent_config] YAML parse error: {e}", file=sys.stderr)
+
+        agent = agent or cfg.get("agent") or self._agent
+        timeout = timeout or cfg.get("timeout") or self._timeout
+
+        # 合并 YAML env + CLI KV（后者覆盖前者）
+        merged_env: dict = {**(cfg.get("env") or {}), **env_vars}
+
+        # agent 合法性检查
+        from chat import _AGENTS
+
+        if agent not in _AGENTS:
+            print(f"[agent_config] unknown agent '{agent}', valid: {', '.join(sorted(_AGENTS))}", file=sys.stderr)
+            agent = self._agent
+
+        # 3. 注入 env + 重建 session
+        if merged_env:
+            os.environ.update({k: str(v) for k, v in merged_env.items()})
+
         changed = agent != self._agent or timeout != self._timeout
         self._agent = agent
         self._timeout = timeout
