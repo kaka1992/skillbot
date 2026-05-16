@@ -34,7 +34,7 @@ skillbot/
 ├── src/
 │   ├── chat/         # 统一 Python chat 客户端（同步 + 异步）
 │   ├── eval/         # JSONL 驱动的 agent 评测框架
-│   ├── jupyter/      # Jupyter 集成（%%agent magic + JSON 解析 + 变量上下文）
+│   ├── jupyter/      # Jupyter 集成（%%agent + %%sql magic + JSON 解析 + 变量上下文）
 │   ├── server/       # Claude Code HTTP 服务端（claude-agent-sdk + SSE + subagent）
 │   │   └── webui/     # TypeScript WebUI（esbuild + node proxy）
 ├── conf/
@@ -103,6 +103,16 @@ skillbot/
 
 不调用 `%agent_config` 时默认使用 `claude-code`，切换 agent 自动重建 session。
 
+支持 `--config <yaml>` 加载配置、`--agent` 指定 agent、`--KEY=VALUE` 注入环境变量：
+
+```
+%agent_config --config conf/jupyter_agent.yaml
+%agent_config --agent deer-flow --timeout 300
+%agent_config --SPARK_REMOTE=sc://host --API_TOKEN=abc
+```
+
+通过 YAML 配置可加载第三方 tool 实现并设定实现偏好（`tools.paths` / `tools.preferences`）。
+
 **用法：**
 
 ```
@@ -145,6 +155,27 @@ complex multi-step analysis
 | `code` | `--code` 模式下填入下一 cell |
 
 **变量上下文：** 每次 `%%agent` 调用自动收集 shell 中用户变量信息（DataFrame shape、list 长度等）和近期 cell 执行记录，注入 prompt 供 agent 参考。首次 `%%agent` 后只发送增量变更。
+
+### Spark SQL Magic
+
+`%%sql` cell magic 和 `%sql` line magic 提供 Spark SQL 查询能力，基于 Tool 框架的 spark preset，与具体实现解耦：
+
+```
+# 直接查询（analyze → submit → poll → result 流式进度）
+%%sql --var df1 --timeout 600 --poll 30
+select * from table
+
+# 提交异步任务
+%%sql submit
+select * from table
+
+# 任务管理（行魔法）
+%sql status --job_id xxxx
+%sql cancel --job_id xxxx
+%sql result --job_id xxxx --limit 100
+```
+
+查询结果自动注入为 DataFrame 变量（默认 `var_1`、`var_2`...）。poll 阶段 `\r` + `flush` 实现单行实时刷新。
 
 ## Python API
 
@@ -194,6 +225,43 @@ asyncio.run(main())
 | nanobot | `X-Nanobot-Session-ID` 请求头 | API session 持久化 |
 | hermes-agent | `X-Hermes-Session-Id` 请求头 | state.db 持久化 |
 | claude-code | `session` → server-side session | `ClaudeSDKClient` 持久连接 |
+
+## Tool 框架
+
+通用工具接口与注册机制，支持接口与实现分离、多实现共存、偏好路由、运行时依赖检查。
+
+```python
+from tools import ToolRegistry, ToolPreset, ToolResult, ToolRequirement, ReturnProperty, impl
+
+# 定义接口（纯契约，零依赖）
+PRESET = ToolPreset(
+    name="my_tool",
+    description="...",
+    parameters={"type": "object", "properties": {...}},
+    returns={"key": ReturnProperty(type="str", description="...")},
+    group="my_group",
+)
+
+# 绑定默认实现（含运行时依赖）
+@impl(PRESET, requires=[
+    ToolRequirement(type="env", key="MY_ENV", description="API endpoint"),
+    ToolRequirement(type="import", key="my_pkg", description="My package"),
+])
+async def my_tool(params: dict) -> ToolResult:
+    return ToolResult(data={"key": "value"})
+
+# 备选实现
+@impl(PRESET, impl_name="v2")
+async def my_tool_v2(params: dict) -> ToolResult: ...
+
+# 偏好切换
+ToolRegistry.set_preferred_for_group("my_group", "v2")
+tool = ToolRegistry.get("my_tool")  # → v2 实现
+
+# 运行时检查
+ToolRegistry.discover("path/to/tools/")   # 自动 check_requirements + 冲突检测
+ToolRegistry.check_all()                  # → {tool_name: [errors]} 空=全部 OK
+```
 
 ## 评测框架
 
@@ -297,9 +365,10 @@ uv venv && uv pip install -e ".[dev]"
 PYTHONPATH="src" .venv/bin/pytest tests/ -v
 
 # 按模块测试
+PYTHONPATH="src" .venv/bin/pytest tests/tools/ -v   # 55 测试
 PYTHONPATH="src" .venv/bin/pytest tests/chat/ -v    # 58 测试
 PYTHONPATH="src" .venv/bin/pytest tests/eval/ -v    # 83 测试
-PYTHONPATH="src" .venv/bin/pytest tests/jupyter/ -v # 48 测试
+PYTHONPATH="src" .venv/bin/pytest tests/jupyter/ -v # 57 测试
 PYTHONPATH="src" .venv/bin/pytest tests/server/ -v  # 27 测试
 ```
 
