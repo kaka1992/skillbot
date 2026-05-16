@@ -57,6 +57,34 @@ def _session_key() -> str:
     return hashlib.md5(_notebook_path().encode()).hexdigest()[:12]
 
 
+def _pop_flag(args: list[str], name: str, convert: type = str):
+    """Pop ``name`` and its value from *args*, returning the converted value or None."""
+    try:
+        i = args.index(name)
+    except ValueError:
+        return None
+    if i + 1 >= len(args):
+        return None
+    val = args.pop(i + 1)
+    args.pop(i)
+    if convert is int:
+        return int(val)
+    return val
+
+
+def _parse_kv(args: list[str]) -> dict[str, str]:
+    """Parse remaining ``--KEY=VALUE`` items from *args*, returning a dict."""
+    result = {}
+    remaining = list(args)
+    for item in args[:]:
+        if item.startswith("--") and "=" in item:
+            key, val = item[2:].split("=", 1)
+            result[key] = val
+            remaining.remove(item)
+    args[:] = remaining
+    return result
+
+
 def _init_session(agent: str, timeout: int) -> None:
     """Create client + stable session, seed system prompt."""
     global _client, _session_id
