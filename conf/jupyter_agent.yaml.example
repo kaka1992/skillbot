@@ -14,3 +14,15 @@ env:
   # SPARK_REMOTE: sc://localhost:15002
   # API_TOKEN: your-token-here
   # DEBUG: "true"
+
+# 第三方工具实现配置（可选）
+tools:
+  # 代码目录列表
+  paths:
+    # - /path/to/databricks_tools/
+  # 实现偏好
+  preferences:
+    presets:                     # per-preset
+      # spark_analyze_query: databricks
+    groups:                      # per-group
+      # spark: databricks
