@@ -16,7 +16,6 @@ from tools.interface import ToolRequirement, ToolResult
 from tools.builtin._spark_sql_presets import (
     SPARK_ANALYZE_QUERY,
     SPARK_CANCEL_JOB,
-    SPARK_DOWNLOAD_RESULT_FILE,
     SPARK_GET_JOB_STATUS,
     SPARK_GET_QUERY_RESULT,
     SPARK_SUBMIT_QUERY,
@@ -41,11 +40,11 @@ def _get_spark():
     return _spark
 
 
-def _run_query(query_id: str, sql: str) -> None:
-    rec = _query_store[query_id]
+def _run_query(job_id: str, sql: str) -> None:
+    rec = _query_store[job_id]
     try:
         spark = _get_spark()
-        spark.sparkContext.setJobGroup(query_id, sql)
+        spark.sparkContext.setJobGroup(job_id, sql)
         df = spark.sql(sql)
         rec["df"] = df
         rec["result"] = df.collect()
@@ -68,7 +67,11 @@ async def spark_analyze_query(params: dict) -> ToolResult:
         plan = df._jdf.queryExecution().toString() if hasattr(df, "_jdf") else df.explain(extended=True)
     except Exception as e:
         return ToolResult(error=str(e))
-    return ToolResult(data={"plan": plan})
+    return ToolResult(data={
+        "success": "true",
+        "command": "spark_analyze_query",
+        "data": {"plan": plan},
+    })
 
 
 # ----------------------------------------------------------------
@@ -77,8 +80,8 @@ async def spark_analyze_query(params: dict) -> ToolResult:
 
 @impl(SPARK_SUBMIT_QUERY, requires=_SPARK_REQUIRES)
 async def spark_submit_query(params: dict) -> ToolResult:
-    query_id = uuid.uuid4().hex[:8]
-    _query_store[query_id] = {
+    job_id = uuid.uuid4().hex[:8]
+    _query_store[job_id] = {
         "sql": params["sql"],
         "status": "RUNNING",
         "thread": None,
@@ -87,10 +90,14 @@ async def spark_submit_query(params: dict) -> ToolResult:
         "error": None,
         "start_time": datetime.now().isoformat(),
     }
-    t = threading.Thread(target=_run_query, args=(query_id, params["sql"]), daemon=True)
-    _query_store[query_id]["thread"] = t
+    t = threading.Thread(target=_run_query, args=(job_id, params["sql"]), daemon=True)
+    _query_store[job_id]["thread"] = t
     t.start()
-    return ToolResult(data={"job_id": query_id})
+    return ToolResult(data={
+        "success": "true",
+        "command": "spark_submit_query",
+        "data": {"job_id": job_id, "status": "RUNNING"},
+    })
 
 
 # ----------------------------------------------------------------
@@ -99,20 +106,25 @@ async def spark_submit_query(params: dict) -> ToolResult:
 
 @impl(SPARK_GET_JOB_STATUS, requires=_SPARK_REQUIRES)
 async def spark_get_job_status(params: dict) -> ToolResult:
-    query_id = params["query_id"]
-    rec = _query_store.get(query_id)
+    job_id = params["job_id"]
+    rec = _query_store.get(job_id)
     if rec is None:
-        return ToolResult(error=f"Query ID not found: {query_id}")
+        return ToolResult(error=f"Job ID not found: {job_id}")
 
     t = rec["thread"]
     alive = t.is_alive() if t else False
     status = "RUNNING" if alive else rec["status"]
     return ToolResult(data={
-        "job_id": query_id,
-        "status": status,
-        "sql": rec["sql"][:200],
-        "start_time": rec["start_time"],
-        "error": rec.get("error"),
+        "success": "true",
+        "command": "spark_get_job_status",
+        "data": {
+            "job_id": job_id,
+            "status": status,
+            "query_log_url": "",
+            "engine_type": "spark",
+            "result_url": "",
+            "log_url": "",
+        },
     })
 
 
@@ -122,11 +134,13 @@ async def spark_get_job_status(params: dict) -> ToolResult:
 
 @impl(SPARK_GET_QUERY_RESULT, requires=_SPARK_REQUIRES)
 async def spark_get_query_result(params: dict) -> ToolResult:
-    query_id = params["query_id"]
+    job_id = params["job_id"]
     limit = params["limit"]
-    rec = _query_store.get(query_id)
+    output = params.get("output")
+
+    rec = _query_store.get(job_id)
     if rec is None:
-        return ToolResult(error=f"Query ID not found: {query_id}")
+        return ToolResult(error=f"Job ID not found: {job_id}")
     if rec["status"] == "RUNNING":
         return ToolResult(error="Query still running")
     if rec["status"] == "FAILED":
@@ -136,39 +150,33 @@ async def spark_get_query_result(params: dict) -> ToolResult:
 
     rows = rec["result"]
     if rows is None or len(rows) == 0:
-        return ToolResult(data={"columns": [], "rows": [], "row_count": 0})
+        return ToolResult(data={
+            "success": "true",
+            "command": "spark_get_query_result",
+            "data": {
+                "job_id": job_id,
+                "sample_data": [],
+                "content_row_count": 0,
+                "result_url": "",
+                "output_path": output or "",
+            },
+        })
 
-    cols = list(rows[0].asDict().keys()) if hasattr(rows[0], "asDict") else []
-    row_dicts = [r.asDict() if hasattr(r, "asDict") else r for r in rows]
+    row_dicts = [r.asDict() if hasattr(r, "asDict") else r for r in rows[:limit]]
+    cols = list(row_dicts[0].keys())
+    sample_data = [cols] + [list(r.values()) for r in row_dicts]
+
     return ToolResult(data={
-        "columns": cols,
-        "rows": row_dicts,
-        "row_count": len(rows),
+        "success": "true",
+        "command": "spark_get_query_result",
+        "data": {
+            "job_id": job_id,
+            "sample_data": sample_data,
+            "content_row_count": len(row_dicts),
+            "result_url": "",
+            "output_path": output or "",
+        },
     })
-
-
-# ----------------------------------------------------------------
-# spark_download_result_file
-# ----------------------------------------------------------------
-
-@impl(SPARK_DOWNLOAD_RESULT_FILE, requires=_SPARK_REQUIRES)
-async def spark_download_result_file(params: dict) -> ToolResult:
-    query_id = params["query_id"]
-    output_dir = params["output_dir"]
-    rec = _query_store.get(query_id)
-    if rec is None:
-        return ToolResult(error=f"Query ID not found: {query_id}")
-    if rec["status"] != "FINISHED":
-        return ToolResult(error=f"Query not finished (status: {rec['status']})")
-
-    df = rec.get("df")
-    if df is None:
-        return ToolResult(error="No DataFrame available for download")
-
-    file_path = os.path.join(output_dir, f"{query_id}.csv")
-    os.makedirs(output_dir, exist_ok=True)
-    df.write.csv(file_path, header=True, mode="overwrite")
-    return ToolResult(data={"file": file_path, "format": "csv"})
 
 
 # ----------------------------------------------------------------
@@ -177,18 +185,26 @@ async def spark_download_result_file(params: dict) -> ToolResult:
 
 @impl(SPARK_CANCEL_JOB, requires=_SPARK_REQUIRES)
 async def spark_cancel_job(params: dict) -> ToolResult:
-    query_id = params["query_id"]
-    rec = _query_store.get(query_id)
+    job_id = params["job_id"]
+    rec = _query_store.get(job_id)
     if rec is None:
-        return ToolResult(error=f"Query ID not found: {query_id}")
+        return ToolResult(error=f"Job ID not found: {job_id}")
     if rec["status"] != "RUNNING":
-        return ToolResult(data={"job_id": query_id, "status": rec["status"], "cancelled": False})
+        return ToolResult(data={
+            "success": "true",
+            "command": "spark_cancel_job",
+            "data": {"job_id": job_id, "cancel_requested": "false"},
+        })
 
     try:
         spark = _get_spark()
-        spark.sparkContext.cancelJobGroup(query_id)
+        spark.sparkContext.cancelJobGroup(job_id)
     except Exception as e:
         return ToolResult(error=str(e))
     rec["status"] = "CANCELLED"
-    return ToolResult(data={"job_id": query_id, "cancelled": True})
+    return ToolResult(data={
+        "success": "true",
+        "command": "spark_cancel_job",
+        "data": {"job_id": job_id, "cancel_requested": "true"},
+    })
 
