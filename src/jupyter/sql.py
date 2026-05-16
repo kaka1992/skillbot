@@ -83,14 +83,19 @@ class SqlRunner:
             raise
 
         # 3. poll
-        elapsed = 0
-        while elapsed < self._timeout:
+        t0 = time.time()
+        while True:
+            elapsed = int(time.time() - t0)
+            if elapsed >= self._timeout:
+                emit("error", {"stage": "poll", "message": f"timeout after {self._timeout}s"})
+                raise TimeoutError(
+                    f"timeout after {self._timeout}s, check: %sql status --job_id {job_id}"
+                )
             time.sleep(self._poll_interval)
-            elapsed += self._poll_interval
             try:
                 r = asyncio.run(self._call(_PRESET_STATUS, {"job_id": job_id}))
                 status = r.get("data", {}).get("status", "UNKNOWN")
-                emit("poll", {"job_id": job_id, "status": status, "elapsed": elapsed})
+                emit("poll", {"job_id": job_id, "status": status, "elapsed": int(time.time() - t0)})
             except Exception as e:
                 emit("error", {"stage": "poll", "message": str(e)})
                 raise
@@ -104,11 +109,6 @@ class SqlRunner:
             if status == "CANCELLED":
                 emit("error", {"stage": "poll", "message": "query cancelled"})
                 raise RuntimeError("query cancelled")
-        else:
-            emit("error", {"stage": "poll", "message": f"timeout after {self._timeout}s"})
-            raise TimeoutError(
-                f"timeout after {self._timeout}s, check: %sql status --job_id {job_id}"
-            )
 
         # 4. result
         emit("result")
@@ -125,7 +125,7 @@ class SqlRunner:
         """Submit a query, return job metadata."""
         self._check_available()
         if on_progress:
-            on_progress("submit")
+            on_progress("submit", None)
         try:
             r = asyncio.run(self._call(_PRESET_SUBMIT, {"sql": sql}))
             data = r.get("data", {})
