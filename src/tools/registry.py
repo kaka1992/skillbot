@@ -155,6 +155,9 @@ class ToolRegistry:
                 cls.remove(tool.name)
                 new_tools.remove(tool)
 
+        # detect name conflicts from third-party tool loading
+        _warn_discover_conflicts(new_tools)
+
         return new_tools
 
     # ---- query ----
@@ -193,6 +196,32 @@ class ToolRegistry:
     @classmethod
     def get_preset(cls, name: str) -> ToolPreset | None:
         return cls._presets.get(name)
+
+
+def _warn_discover_conflicts(new_tools: list[ToolDef]) -> None:
+    """Warn about preset name conflicts and group/preset name collisions."""
+    # preset name conflicts: same preset name registered by multiple modules
+    seen: dict[str, str] = {}  # preset_name -> first impl's group
+    for tool in new_tools:
+        name = tool.name
+        if name in seen:
+            print(
+                f"[ToolRegistry] preset name conflict: '{name}' "
+                f"overwritten by '{tool.group}' impl (was '{seen[name]}')",
+                file=sys.stderr,
+            )
+        seen[name] = tool.group
+
+    # group/preset name collision: a tool's group matches another tool's preset name
+    all_presets = {p.name for p in ToolRegistry.list_presets()}
+    for tool in new_tools:
+        if tool.group in all_presets and tool.name != tool.group:
+            print(
+                f"[ToolRegistry] group/preset name collision: "
+                f"group '{tool.group}' matches preset '{tool.group}', "
+                f"use explicit presets:/groups: in preferences to disambiguate",
+                file=sys.stderr,
+            )
 
 
 def _wrap_with_defaults(execute: Callable, preset: ToolPreset) -> Callable:
