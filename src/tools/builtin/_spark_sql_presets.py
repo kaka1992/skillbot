@@ -13,7 +13,7 @@ Example alternative implementation::
     ToolRegistry.register_impl("spark_analyze_query", "databricks", my_databricks_fn)
 """
 
-from tools.interface import ToolPreset
+from tools.interface import ReturnProperty, ToolPreset
 
 # ----------------------------------------------------------------
 # spark_analyze_query
@@ -28,6 +28,9 @@ SPARK_ANALYZE_QUERY = ToolPreset(
             "sql": {"type": "string", "description": "Spark SQL statement to analyze"},
         },
         "required": ["sql"],
+    },
+    returns={
+        "plan": ReturnProperty(type="str", description="Query execution plan text"),
     },
     group="spark",
 )
@@ -46,6 +49,9 @@ SPARK_SUBMIT_QUERY = ToolPreset(
         },
         "required": ["sql"],
     },
+    returns={
+        "job_id": ReturnProperty(type="str", description="Unique query tracking ID"),
+    },
     group="spark",
 )
 
@@ -63,6 +69,13 @@ SPARK_GET_JOB_STATUS = ToolPreset(
         },
         "required": ["query_id"],
     },
+    returns={
+        "job_id": ReturnProperty(type="str", description="Query ID"),
+        "status": ReturnProperty(type="str", description="One of: RUNNING, FINISHED, FAILED, CANCELLED"),
+        "sql": ReturnProperty(type="str", description="Submitted SQL text (truncated to 200 chars)"),
+        "start_time": ReturnProperty(type="str", description="ISO-8601 start timestamp"),
+        "error": ReturnProperty(type="str", description="Error message if status is FAILED"),
+    },
     group="spark",
 )
 
@@ -77,9 +90,22 @@ SPARK_GET_QUERY_RESULT = ToolPreset(
         "type": "object",
         "properties": {
             "query_id": {"type": "string", "description": "Query ID from spark_submit_query"},
-            "limit": {"type": "integer", "description": "Max rows to return (default 100)"},
+            "limit": {"type": "integer", "description": "Max rows to return", "default": 100},
         },
         "required": ["query_id"],
+    },
+    returns={
+        "columns": ReturnProperty(
+            type="array",
+            items=ReturnProperty(type="str"),
+            description="Column names",
+        ),
+        "rows": ReturnProperty(
+            type="array",
+            items=ReturnProperty(type="object"),
+            description="Data rows as dicts",
+        ),
+        "row_count": ReturnProperty(type="int", description="Number of rows returned"),
     },
     group="spark",
 )
@@ -95,9 +121,13 @@ SPARK_DOWNLOAD_RESULT_FILE = ToolPreset(
         "type": "object",
         "properties": {
             "query_id": {"type": "string", "description": "Query ID from spark_submit_query"},
-            "output_dir": {"type": "string", "description": "Output directory (default /tmp)"},
+            "output_dir": {"type": "string", "description": "Output directory", "default": "/tmp"},
         },
         "required": ["query_id"],
+    },
+    returns={
+        "file": ReturnProperty(type="str", description="Absolute path to the CSV file"),
+        "format": ReturnProperty(type="str", description="Output format (always 'csv')"),
     },
     group="spark",
 )
@@ -115,6 +145,10 @@ SPARK_CANCEL_JOB = ToolPreset(
             "query_id": {"type": "string", "description": "Query ID from spark_submit_query"},
         },
         "required": ["query_id"],
+    },
+    returns={
+        "job_id": ReturnProperty(type="str", description="Query ID"),
+        "cancelled": ReturnProperty(type="bool", description="Whether the job was cancelled"),
     },
     group="spark",
 )

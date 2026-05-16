@@ -22,7 +22,7 @@ async def web_search(params: dict) -> ToolResult:
     from urllib.parse import quote_plus
 
     url = f"https://html.duckduckgo.com/html/?q={quote_plus(params['query'])}"
-    # placeholder — real implementation would fetch + parse
-    return ToolResult(
-        content=f"Search results for: {params['query']} (DuckDuckGo: {url})",
-    )
+    return ToolResult(data={
+        "text": f"Search results for: {params['query']}",
+        "url": url,
+    })

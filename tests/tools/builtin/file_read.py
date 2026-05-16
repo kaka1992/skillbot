@@ -23,9 +23,13 @@ async def file_read(params: dict) -> ToolResult:
 
     path = Path(params["path"])
     if not path.is_file():
-        return ToolResult(content="", error=f"File not found: {params['path']}")
+        return ToolResult(error=f"File not found: {params['path']}")
     try:
         content = path.read_text()
-        return ToolResult(content=content[:5000])
+        return ToolResult(data={
+            "text": content[:5000],
+            "path": str(path),
+            "size": path.stat().st_size,
+        })
     except Exception as e:
-        return ToolResult(content="", error=str(e))
+        return ToolResult(error=str(e))

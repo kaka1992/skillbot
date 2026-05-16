@@ -112,3 +112,4 @@ agents/
 .ipynb_checkpoints
 dist
 .claude
+docs/superpowers

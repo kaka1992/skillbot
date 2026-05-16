@@ -1,9 +1,9 @@
-"""Spark SQL tools via PySpark Connect.
+"""Spark SQL tools via PySpark Connect — default implementation.
 
 Environment: ``SPARK_REMOTE`` — Spark Connect endpoint (default ``sc://localhost:15002``).
 
-Each query runs in a background thread to enable async lifecycle management.
-Results are stored in an in-memory QueryStore.
+Presets live in ``_spark_sql_presets.py`` so that alternative implementations
+can import the contracts without pulling in this module.
 """
 
 import os
@@ -11,15 +11,28 @@ import threading
 import uuid
 from datetime import datetime
 
-from tools import ToolResult, register
+from tools import impl
+from tools.interface import ToolRequirement, ToolResult
+from tools.builtin._spark_sql_presets import (
+    SPARK_ANALYZE_QUERY,
+    SPARK_CANCEL_JOB,
+    SPARK_DOWNLOAD_RESULT_FILE,
+    SPARK_GET_JOB_STATUS,
+    SPARK_GET_QUERY_RESULT,
+    SPARK_SUBMIT_QUERY,
+)
 
 _SPARK_REMOTE = os.environ.get("SPARK_REMOTE", "sc://localhost:15002")
 _spark = None
 _query_store: dict[str, dict] = {}
 
+_SPARK_REQUIRES = [
+    ToolRequirement(type="env", key="SPARK_REMOTE", description="Spark Connect endpoint"),
+    ToolRequirement(type="import", key="pyspark", description="PySpark library"),
+]
+
 
 def _get_spark():
-    """Lazy-init SparkSession over Spark Connect."""
     global _spark
     if _spark is None:
         from pyspark.sql import SparkSession
@@ -29,7 +42,6 @@ def _get_spark():
 
 
 def _run_query(query_id: str, sql: str) -> None:
-    """Background thread: execute SQL and store result/error."""
     rec = _query_store[query_id]
     try:
         spark = _get_spark()
@@ -47,18 +59,7 @@ def _run_query(query_id: str, sql: str) -> None:
 # spark_analyze_query
 # ----------------------------------------------------------------
 
-@register(
-    name="spark_analyze_query",
-    description="Validate a Spark SQL query and show its execution plan without running it",
-    parameters={
-        "type": "object",
-        "properties": {
-            "sql": {"type": "string", "description": "Spark SQL statement to analyze"},
-        },
-        "required": ["sql"],
-    },
-    group="spark",
-)
+@impl(SPARK_ANALYZE_QUERY, requires=_SPARK_REQUIRES)
 async def spark_analyze_query(params: dict) -> ToolResult:
     sql = params["sql"]
     try:
@@ -66,26 +67,15 @@ async def spark_analyze_query(params: dict) -> ToolResult:
         df = spark.sql(sql)
         plan = df._jdf.queryExecution().toString() if hasattr(df, "_jdf") else df.explain(extended=True)
     except Exception as e:
-        return ToolResult(content="", error=str(e))
-    return ToolResult(content=f"SQL analysis:\n{plan}")
+        return ToolResult(error=str(e))
+    return ToolResult(data={"plan": plan})
 
 
 # ----------------------------------------------------------------
 # spark_submit_query
 # ----------------------------------------------------------------
 
-@register(
-    name="spark_submit_query",
-    description="Submit a Spark SQL query asynchronously and return a query ID for tracking",
-    parameters={
-        "type": "object",
-        "properties": {
-            "sql": {"type": "string", "description": "Spark SQL statement to execute"},
-        },
-        "required": ["sql"],
-    },
-    group="spark",
-)
+@impl(SPARK_SUBMIT_QUERY, requires=_SPARK_REQUIRES)
 async def spark_submit_query(params: dict) -> ToolResult:
     query_id = uuid.uuid4().hex[:8]
     _query_store[query_id] = {
@@ -100,152 +90,105 @@ async def spark_submit_query(params: dict) -> ToolResult:
     t = threading.Thread(target=_run_query, args=(query_id, params["sql"]), daemon=True)
     _query_store[query_id]["thread"] = t
     t.start()
-    return ToolResult(content=f"Query submitted.\nQuery ID: {query_id}")
+    return ToolResult(data={"job_id": query_id})
 
 
 # ----------------------------------------------------------------
 # spark_get_job_status
 # ----------------------------------------------------------------
 
-@register(
-    name="spark_get_job_status",
-    description="Check the execution status of a Spark query by query ID",
-    parameters={
-        "type": "object",
-        "properties": {
-            "query_id": {"type": "string", "description": "Query ID from spark_submit_query"},
-        },
-        "required": ["query_id"],
-    },
-    group="spark",
-)
+@impl(SPARK_GET_JOB_STATUS, requires=_SPARK_REQUIRES)
 async def spark_get_job_status(params: dict) -> ToolResult:
     query_id = params["query_id"]
     rec = _query_store.get(query_id)
     if rec is None:
-        return ToolResult(content="", error=f"Query ID not found: {query_id}")
+        return ToolResult(error=f"Query ID not found: {query_id}")
 
     t = rec["thread"]
     alive = t.is_alive() if t else False
     status = "RUNNING" if alive else rec["status"]
-    lines = [
-        f"Query: {query_id}",
-        f"Status: {status}",
-        f"SQL: {rec['sql'][:200]}",
-        f"Started: {rec['start_time']}",
-    ]
-    if rec.get("error"):
-        lines.append(f"Error: {rec['error']}")
-    return ToolResult(content="\n".join(lines))
+    return ToolResult(data={
+        "job_id": query_id,
+        "status": status,
+        "sql": rec["sql"][:200],
+        "start_time": rec["start_time"],
+        "error": rec.get("error"),
+    })
 
 
 # ----------------------------------------------------------------
 # spark_get_query_result
 # ----------------------------------------------------------------
 
-@register(
-    name="spark_get_query_result",
-    description="Get the result rows of a completed Spark query",
-    parameters={
-        "type": "object",
-        "properties": {
-            "query_id": {"type": "string", "description": "Query ID from spark_submit_query"},
-            "limit": {"type": "integer", "description": "Max rows to return (default 100)"},
-        },
-        "required": ["query_id"],
-    },
-    group="spark",
-)
+@impl(SPARK_GET_QUERY_RESULT, requires=_SPARK_REQUIRES)
 async def spark_get_query_result(params: dict) -> ToolResult:
     query_id = params["query_id"]
-    limit = params.get("limit", 100)
+    limit = params["limit"]
     rec = _query_store.get(query_id)
     if rec is None:
-        return ToolResult(content="", error=f"Query ID not found: {query_id}")
+        return ToolResult(error=f"Query ID not found: {query_id}")
     if rec["status"] == "RUNNING":
-        return ToolResult(content=f"Query {query_id} is still running. Check status first.")
+        return ToolResult(error="Query still running")
     if rec["status"] == "FAILED":
-        return ToolResult(content="", error=rec.get("error", "Unknown error"))
+        return ToolResult(error=rec.get("error", "Unknown error"))
     if rec["status"] == "CANCELLED":
-        return ToolResult(content="", error="Query was cancelled")
+        return ToolResult(error="Query was cancelled")
 
     rows = rec["result"]
     if rows is None or len(rows) == 0:
-        return ToolResult(content="(no rows)")
-    cols = rows[0].asDict().keys() if hasattr(rows[0], "asDict") else []
-    header = " | ".join(cols)
-    sep = "-+-".join("-" * len(c) for c in cols)
-    lines = [header, sep]
-    for row in rows[:limit]:
-        d = row.asDict() if hasattr(row, "asDict") else row
-        lines.append(" | ".join(str(d.get(c, "")) for c in cols))
-    return ToolResult(content=f"Query result ({min(len(rows), limit)} of {len(rows)} rows):\n" + "\n".join(lines))
+        return ToolResult(data={"columns": [], "rows": [], "row_count": 0})
+
+    cols = list(rows[0].asDict().keys()) if hasattr(rows[0], "asDict") else []
+    row_dicts = [r.asDict() if hasattr(r, "asDict") else r for r in rows]
+    return ToolResult(data={
+        "columns": cols,
+        "rows": row_dicts,
+        "row_count": len(rows),
+    })
 
 
 # ----------------------------------------------------------------
 # spark_download_result_file
 # ----------------------------------------------------------------
 
-@register(
-    name="spark_download_result_file",
-    description="Download the full result of a Spark query as a CSV file",
-    parameters={
-        "type": "object",
-        "properties": {
-            "query_id": {"type": "string", "description": "Query ID from spark_submit_query"},
-            "output_dir": {"type": "string", "description": "Output directory (default /tmp)"},
-        },
-        "required": ["query_id"],
-    },
-    group="spark",
-)
+@impl(SPARK_DOWNLOAD_RESULT_FILE, requires=_SPARK_REQUIRES)
 async def spark_download_result_file(params: dict) -> ToolResult:
     query_id = params["query_id"]
-    output_dir = params.get("output_dir", "/tmp")
+    output_dir = params["output_dir"]
     rec = _query_store.get(query_id)
     if rec is None:
-        return ToolResult(content="", error=f"Query ID not found: {query_id}")
+        return ToolResult(error=f"Query ID not found: {query_id}")
     if rec["status"] != "FINISHED":
-        return ToolResult(content="", error=f"Query not finished (status: {rec['status']})")
+        return ToolResult(error=f"Query not finished (status: {rec['status']})")
 
     df = rec.get("df")
     if df is None:
-        return ToolResult(content="", error="No DataFrame available for download")
+        return ToolResult(error="No DataFrame available for download")
 
     file_path = os.path.join(output_dir, f"{query_id}.csv")
     os.makedirs(output_dir, exist_ok=True)
     df.write.csv(file_path, header=True, mode="overwrite")
-    return ToolResult(content=f"Result written to {file_path}", files=[file_path])
+    return ToolResult(data={"file": file_path, "format": "csv"})
 
 
 # ----------------------------------------------------------------
 # spark_cancel_job
 # ----------------------------------------------------------------
 
-@register(
-    name="spark_cancel_job",
-    description="Cancel a running Spark query by query ID",
-    parameters={
-        "type": "object",
-        "properties": {
-            "query_id": {"type": "string", "description": "Query ID from spark_submit_query"},
-        },
-        "required": ["query_id"],
-    },
-    group="spark",
-)
+@impl(SPARK_CANCEL_JOB, requires=_SPARK_REQUIRES)
 async def spark_cancel_job(params: dict) -> ToolResult:
     query_id = params["query_id"]
     rec = _query_store.get(query_id)
     if rec is None:
-        return ToolResult(content="", error=f"Query ID not found: {query_id}")
+        return ToolResult(error=f"Query ID not found: {query_id}")
     if rec["status"] != "RUNNING":
-        return ToolResult(content=f"Query {query_id} is not running (status: {rec['status']})")
+        return ToolResult(data={"job_id": query_id, "status": rec["status"], "cancelled": False})
 
     try:
         spark = _get_spark()
         spark.sparkContext.cancelJobGroup(query_id)
     except Exception as e:
-        return ToolResult(content="", error=str(e))
+        return ToolResult(error=str(e))
     rec["status"] = "CANCELLED"
-    return ToolResult(content=f"Query {query_id} cancelled")
+    return ToolResult(data={"job_id": query_id, "cancelled": True})
+

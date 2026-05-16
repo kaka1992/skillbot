@@ -8,7 +8,7 @@ from .runner import (
     GraderOutput,
     default_grader,
 )
-from .task import EvalTask, load_and_run, load_tasks, register_grader, run_tasks
+from .evaltask import EvalTask, load_and_run, load_tasks, register_grader, run_tasks
 from .trace import TraceCollector
 
 __all__ = [

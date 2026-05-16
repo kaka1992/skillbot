@@ -28,7 +28,7 @@ async def json_extract(params: dict) -> ToolResult:
     try:
         data = json.loads(params["json_str"])
     except json.JSONDecodeError as e:
-        return ToolResult(content="", error=f"Invalid JSON: {e}")
+        return ToolResult(error=f"Invalid JSON: {e}")
 
     obj = data
     for key in params["key_path"].split("."):
@@ -38,6 +38,6 @@ async def json_extract(params: dict) -> ToolResult:
             else:
                 obj = obj[key]
         except (KeyError, IndexError, ValueError, TypeError) as e:
-            return ToolResult(content="", error=f"Key '{key}' not found: {e}")
+            return ToolResult(error=f"Key '{key}' not found: {e}")
 
-    return ToolResult(content=json.dumps(obj, ensure_ascii=False))
+    return ToolResult(data={"value": obj})

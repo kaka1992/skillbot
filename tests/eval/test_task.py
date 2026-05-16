@@ -9,7 +9,7 @@ import pytest
 import yaml
 
 from eval.runner import GraderOutput, default_grader
-from eval.task import (
+from eval.evaltask import (
     EvalTask,
     load_tasks,
     register_grader,
@@ -223,7 +223,7 @@ class TestLoadAndRun:
     """load_and_run() end-to-end (CLI entry point)."""
 
     def test_load_and_run_creates_output(self):
-        from eval.task import load_and_run
+        from eval.evaltask import load_and_run
 
         cfg = _write_config(
             [{"name": "lar-test", "dataset": _DATA, "agent": "nanobot",

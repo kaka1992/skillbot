@@ -268,7 +268,7 @@ bash scripts/eval.sh run tasks.yaml
 bash scripts/eval.sh run tasks.yaml -t math-smoke -o ci_results/
 ```
 
-内部通过 `PYTHONPATH="src" python -c "from eval.task import ..."` 调用 `load_tasks()` + `run_tasks()`。
+内部通过 `PYTHONPATH="src" python -c "from eval.evaltask import ..."` 调用 `load_tasks()` + `run_tasks()`。
 
 ### 输出结构
 

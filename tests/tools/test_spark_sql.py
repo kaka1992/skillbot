@@ -9,7 +9,6 @@ import pytest
 from tools import ToolRegistry
 
 
-# ---- mock Row ----
 class MockRow:
     def __init__(self, **kwargs):
         self._data = kwargs
@@ -18,27 +17,32 @@ class MockRow:
         return dict(self._data)
 
 
-# ---- mock DataFrame ----
+class _MockWriter:
+    def csv(self, path, header=True, mode="overwrite"):
+        pass
+
+
 class MockDataFrame:
-    def __init__(self, rows, schema=None):
-        self._rows = rows
+    def __init__(self, rows=None, schema=None):
+        self._rows = rows or []
         self._schema = schema
 
     def collect(self):
         return self._rows
 
     def explain(self, extended=False):
-        return "== Physical Plan ==\nMockPlan"
+        pass
 
+    @property
     def write(self):
-        return self
+        return _MockWriter()
 
-    def csv(self, path, header=True, mode="overwrite"):
-        return None
-
+    @property
     def _jdf(self):
-        return self
+        return _MockJdf()
 
+
+class _MockJdf:
     def queryExecution(self):
         return self
 
@@ -46,7 +50,6 @@ class MockDataFrame:
         return "== Physical Plan ==\nMockPlan"
 
 
-# ---- mock SparkContext ----
 class MockSparkContext:
     def setJobGroup(self, group_id, description):
         pass
@@ -55,17 +58,14 @@ class MockSparkContext:
         pass
 
 
-# ---- mock SparkSession ----
 class MockSpark:
     def __init__(self):
         self.sparkContext = MockSparkContext()
-        self._sql_result = None
 
     def sql(self, sql):
-        return self._sql_result or MockDataFrame([
-            MockRow(name="Alice", age=30),
-            MockRow(name="Bob", age=25),
-        ])
+        return MockDataFrame(
+            [MockRow(name="Alice", age=30), MockRow(name="Bob", age=25)]
+        )
 
     class builder:
         @staticmethod
@@ -80,7 +80,6 @@ class MockSparkBuilder:
 
 @pytest.fixture(autouse=True)
 def setup_spark():
-    """Replace _get_spark with mock for all tests."""
     import tools.builtin.spark_sql as mod
 
     mod._spark = MockSpark()
@@ -94,7 +93,7 @@ class TestSparkAnalyzeQuery:
     def test_analyze_returns_plan(self):
         t = ToolRegistry.get("spark_analyze_query")
         result = asyncio.run(t.execute({"sql": "SELECT 1"}))
-        assert "Physical Plan" in result.content
+        assert "Physical Plan" in result.data["plan"]
         assert result.error is None
 
 
@@ -102,7 +101,7 @@ class TestSparkSubmitQuery:
     def test_submit_returns_query_id(self):
         t = ToolRegistry.get("spark_submit_query")
         result = asyncio.run(t.execute({"sql": "SELECT * FROM t"}))
-        assert "Query ID:" in result.content
+        assert "job_id" in result.data
         assert result.error is None
 
 
@@ -112,11 +111,11 @@ class TestSparkJobStatus:
         status = ToolRegistry.get("spark_get_job_status")
 
         r = asyncio.run(submit.execute({"sql": "SELECT 1"}))
-        qid = r.content.split(": ")[-1].strip()
+        qid = r.data["job_id"]
 
         r2 = asyncio.run(status.execute({"query_id": qid}))
-        assert qid in r2.content
-        assert "FINISHED" in r2.content
+        assert r2.data["job_id"] == qid
+        assert r2.data["status"] == "FINISHED"
 
     def test_status_unknown_id(self):
         t = ToolRegistry.get("spark_get_job_status")
@@ -132,9 +131,8 @@ class TestSparkGetResult:
         result_tool = ToolRegistry.get("spark_get_query_result")
 
         r = asyncio.run(submit.execute({"sql": "SELECT * FROM t"}))
-        qid = r.content.split(": ")[-1].strip()
+        qid = r.data["job_id"]
 
-        # force immediate finish with mock data
         mod._query_store[qid]["status"] = "FINISHED"
         mod._query_store[qid]["result"] = [
             MockRow(name="Alice", age=30),
@@ -142,8 +140,8 @@ class TestSparkGetResult:
         ]
 
         r2 = asyncio.run(result_tool.execute({"query_id": qid}))
-        assert "Alice" in r2.content
-        assert "Bob" in r2.content
+        assert r2.data["columns"] == ["name", "age"]
+        assert r2.data["row_count"] == 2
 
     def test_result_unknown_id(self):
         t = ToolRegistry.get("spark_get_query_result")
@@ -151,33 +149,38 @@ class TestSparkGetResult:
         assert result.error is not None
 
     def test_result_still_running(self):
+        import tools.builtin.spark_sql as mod
+
         submit = ToolRegistry.get("spark_submit_query")
         result_tool = ToolRegistry.get("spark_get_query_result")
 
         r = asyncio.run(submit.execute({"sql": "SELECT 1"}))
-        qid = r.content.split(": ")[-1].strip()
+        qid = r.data["job_id"]
+        mod._query_store[qid]["status"] = "RUNNING"
 
         r2 = asyncio.run(result_tool.execute({"query_id": qid}))
-        assert "still running" in r2.content.lower()
+        assert "still running" in r2.error.lower()
 
 
 class TestSparkDownload:
     def test_download_finished_query(self):
+        import os
+        import tempfile
+
         import tools.builtin.spark_sql as mod
-        import tempfile, os
 
         submit = ToolRegistry.get("spark_submit_query")
         download = ToolRegistry.get("spark_download_result_file")
 
         r = asyncio.run(submit.execute({"sql": "SELECT 1"}))
-        qid = r.content.split(": ")[-1].strip()
+        qid = r.data["job_id"]
         mod._query_store[qid]["status"] = "FINISHED"
         mod._query_store[qid]["df"] = MockDataFrame([])
 
         with tempfile.TemporaryDirectory() as tmp:
             r2 = asyncio.run(download.execute({"query_id": qid, "output_dir": tmp}))
-            assert "Result written to" in r2.content
-            assert qid in r2.content
+            assert r2.data["file"].startswith(tmp)
+            assert r2.data["format"] == "csv"
 
 
 class TestSparkCancel:
@@ -188,10 +191,11 @@ class TestSparkCancel:
         cancel = ToolRegistry.get("spark_cancel_job")
 
         r = asyncio.run(submit.execute({"sql": "SELECT 1"}))
-        qid = r.content.split(": ")[-1].strip()
+        qid = r.data["job_id"]
+        mod._query_store[qid]["status"] = "RUNNING"
 
         r2 = asyncio.run(cancel.execute({"query_id": qid}))
-        assert "cancelled" in r2.content.lower()
+        assert r2.data["cancelled"] is True
         assert mod._query_store[qid]["status"] == "CANCELLED"
 
     def test_cancel_unknown_id(self):
@@ -200,8 +204,5 @@ class TestSparkCancel:
         assert result.error is not None
 
 
-# ----------------------------------------------------------------
-# Load builtins once for this module
-# ----------------------------------------------------------------
 ToolRegistry.clear()
 ToolRegistry.discover("src/tools/builtin")

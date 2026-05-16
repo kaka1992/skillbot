@@ -41,7 +41,7 @@ cmd_list() {
     local config="${1:?usage: ${SCRIPT_NAME} list <config>}"
     PYTHONPATH="${PROJECT_DIR}/src" "${VENV_PYTHON}" -c "
 import sys
-from eval.task import load_tasks
+from eval.evaltask import load_tasks
 tasks, out_dir = load_tasks('${config}')
 print(f'output_dir: {out_dir}')
 print(f'tasks ({len(tasks)}):')
@@ -105,7 +105,7 @@ cmd_run() {
     fi
 
     PYTHONPATH="${PROJECT_DIR}/src" "${VENV_PYTHON}" -c "
-from eval.task import load_tasks, run_tasks
+from eval.evaltask import load_tasks, run_tasks
 import asyncio
 
 tasks, cfg_out = load_tasks('${config}')
