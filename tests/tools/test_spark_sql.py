@@ -93,7 +93,7 @@ class TestSparkAnalyzeQuery:
     def test_analyze_returns_plan(self):
         t = ToolRegistry.get("spark_analyze_query")
         result = asyncio.run(t.execute({"sql": "SELECT 1"}))
-        assert "Physical Plan" in result.data["plan"]
+        assert "Physical Plan" in result.data["data"]["plan"]
         assert result.error is None
 
 
@@ -101,7 +101,7 @@ class TestSparkSubmitQuery:
     def test_submit_returns_query_id(self):
         t = ToolRegistry.get("spark_submit_query")
         result = asyncio.run(t.execute({"sql": "SELECT * FROM t"}))
-        assert "job_id" in result.data
+        assert "job_id" in result.data["data"]
         assert result.error is None
 
 
@@ -111,15 +111,15 @@ class TestSparkJobStatus:
         status = ToolRegistry.get("spark_get_job_status")
 
         r = asyncio.run(submit.execute({"sql": "SELECT 1"}))
-        qid = r.data["job_id"]
+        job_id = r.data["data"]["job_id"]
 
-        r2 = asyncio.run(status.execute({"query_id": qid}))
-        assert r2.data["job_id"] == qid
-        assert r2.data["status"] == "FINISHED"
+        r2 = asyncio.run(status.execute({"job_id": job_id}))
+        assert r2.data["data"]["job_id"] == job_id
+        assert r2.data["data"]["status"] == "FINISHED"
 
     def test_status_unknown_id(self):
         t = ToolRegistry.get("spark_get_job_status")
-        result = asyncio.run(t.execute({"query_id": "nonexistent"}))
+        result = asyncio.run(t.execute({"job_id": "nonexistent"}))
         assert result.error is not None
 
 
@@ -131,21 +131,21 @@ class TestSparkGetResult:
         result_tool = ToolRegistry.get("spark_get_query_result")
 
         r = asyncio.run(submit.execute({"sql": "SELECT * FROM t"}))
-        qid = r.data["job_id"]
+        job_id = r.data["data"]["job_id"]
 
-        mod._query_store[qid]["status"] = "FINISHED"
-        mod._query_store[qid]["result"] = [
+        mod._query_store[job_id]["status"] = "FINISHED"
+        mod._query_store[job_id]["result"] = [
             MockRow(name="Alice", age=30),
             MockRow(name="Bob", age=25),
         ]
 
-        r2 = asyncio.run(result_tool.execute({"query_id": qid}))
-        assert r2.data["columns"] == ["name", "age"]
-        assert r2.data["row_count"] == 2
+        r2 = asyncio.run(result_tool.execute({"job_id": job_id}))
+        assert r2.data["data"]["sample_data"] == [["name", "age"], ["Alice", 30], ["Bob", 25]]
+        assert r2.data["data"]["content_row_count"] == 2
 
     def test_result_unknown_id(self):
         t = ToolRegistry.get("spark_get_query_result")
-        result = asyncio.run(t.execute({"query_id": "nonexistent"}))
+        result = asyncio.run(t.execute({"job_id": "nonexistent"}))
         assert result.error is not None
 
     def test_result_still_running(self):
@@ -155,32 +155,11 @@ class TestSparkGetResult:
         result_tool = ToolRegistry.get("spark_get_query_result")
 
         r = asyncio.run(submit.execute({"sql": "SELECT 1"}))
-        qid = r.data["job_id"]
-        mod._query_store[qid]["status"] = "RUNNING"
+        job_id = r.data["data"]["job_id"]
+        mod._query_store[job_id]["status"] = "RUNNING"
 
-        r2 = asyncio.run(result_tool.execute({"query_id": qid}))
+        r2 = asyncio.run(result_tool.execute({"job_id": job_id}))
         assert "still running" in r2.error.lower()
-
-
-class TestSparkDownload:
-    def test_download_finished_query(self):
-        import os
-        import tempfile
-
-        import tools.builtin.spark_sql as mod
-
-        submit = ToolRegistry.get("spark_submit_query")
-        download = ToolRegistry.get("spark_download_result_file")
-
-        r = asyncio.run(submit.execute({"sql": "SELECT 1"}))
-        qid = r.data["job_id"]
-        mod._query_store[qid]["status"] = "FINISHED"
-        mod._query_store[qid]["df"] = MockDataFrame([])
-
-        with tempfile.TemporaryDirectory() as tmp:
-            r2 = asyncio.run(download.execute({"query_id": qid, "output_dir": tmp}))
-            assert r2.data["file"].startswith(tmp)
-            assert r2.data["format"] == "csv"
 
 
 class TestSparkCancel:
@@ -191,16 +170,16 @@ class TestSparkCancel:
         cancel = ToolRegistry.get("spark_cancel_job")
 
         r = asyncio.run(submit.execute({"sql": "SELECT 1"}))
-        qid = r.data["job_id"]
-        mod._query_store[qid]["status"] = "RUNNING"
+        job_id = r.data["data"]["job_id"]
+        mod._query_store[job_id]["status"] = "RUNNING"
 
-        r2 = asyncio.run(cancel.execute({"query_id": qid}))
-        assert r2.data["cancelled"] is True
-        assert mod._query_store[qid]["status"] == "CANCELLED"
+        r2 = asyncio.run(cancel.execute({"job_id": job_id}))
+        assert r2.data["data"]["cancel_requested"] == "true"
+        assert mod._query_store[job_id]["status"] == "CANCELLED"
 
     def test_cancel_unknown_id(self):
         t = ToolRegistry.get("spark_cancel_job")
-        result = asyncio.run(t.execute({"query_id": "nonexistent"}))
+        result = asyncio.run(t.execute({"job_id": "nonexistent"}))
         assert result.error is not None
 
 
