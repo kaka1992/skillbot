@@ -83,4 +83,12 @@ def load_sql_completer(ipython) -> None:
         _log.debug("completer: no matches for %r", symbol)
         return None
 
-    ipython.Completer.matchers.insert(0, _sql_complete)
+    # Try multiple registration paths for IPython 8.x / Jupyter kernel
+    completer = getattr(ipython, "Completer", None)
+    if completer and hasattr(completer, "matchers"):
+        completer.matchers.insert(0, _sql_complete)
+        _log.info("sql completer registered via Completer.matchers")
+    else:
+        # Fallback: register as a general custom completer
+        ipython.set_hook("complete_command", _sql_complete, re_key=".*")
+        _log.info("sql completer registered via set_hook(re_key=.*)")
