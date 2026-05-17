@@ -83,6 +83,12 @@ def load_sql_completer(ipython) -> None:
         _log.info("completer: no matches for %r", symbol)
         return None
 
-    # Register via set_hook — IPython 8.x uses StrDispatch internally
-    ipython.set_hook("complete_command", _sql_complete, re_key=r"^%%sql")
-    _log.info("sql completer registered via set_hook re_key=^%%sql")
+    # Register globally (fires for all cells). _sql_complete returns None
+    # immediately for non-%%sql cells, so Python completion is unaffected.
+    ipython.events.register("pre_run_cell", lambda _info: None)  # no-op to warm events
+    try:
+        ipython.Completer.matchers.insert(0, _sql_complete)
+        _log.info("sql completer registered via Completer.matchers")
+    except Exception:
+        ipython.set_hook("complete_command", _sql_complete, re_key=r".*")
+        _log.info("sql completer registered via set_hook(re_key=.*)")
