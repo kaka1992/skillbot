@@ -19,25 +19,32 @@
 
   function getCellEditorView(cell) {
     try {
-      // Find the cell widget via the notebook's widget registry
       var nbPanel = document.querySelector(".jp-NotebookPanel");
-      if (!nbPanel || !nbPanel.jupyterlab) return null;
+      if (!nbPanel)        { console.log("[%%sql] getCellEditorView: no .jp-NotebookPanel"); return null; }
+      if (!nbPanel.jupyterlab) { console.log("[%%sql] getCellEditorView: no jupyterlab on panel"); return null; }
       var notebook = nbPanel.jupyterlab.shell.currentWidget;
-      if (!notebook || !notebook.content || !notebook.content.widgets) return null;
+      if (!notebook)        { console.log("[%%sql] getCellEditorView: no currentWidget"); return null; }
+      if (!notebook.content) { console.log("[%%sql] getCellEditorView: no notebook.content"); return null; }
+      if (!notebook.content.widgets) { console.log("[%%sql] getCellEditorView: no widgets array"); return null; }
 
       var widgets = notebook.content.widgets;
-      // Try to match by cell ID
       for (var i = 0; i < widgets.length; i++) {
         var w = widgets[i];
         if (!w || !w.editor) continue;
-        // CodeMirrorEditor has a host DOM node — check if it's inside our cell
         var host = w.editor.host;
-        if (host && cell.contains(host)) {
-          return w.editor.editor || null;
+        if (!host) { console.log("[%%sql] getCellEditorView: widget " + i + " has no editor.host"); continue; }
+        if (cell.contains(host)) {
+          var view = w.editor.editor || null;
+          if (!view) console.log("[%%sql] getCellEditorView: found cell but w.editor.editor is null");
+          return view;
         }
       }
+      console.log("[%%sql] getCellEditorView: no widget matched cell (widgets=" + widgets.length + ")");
       return null;
-    } catch (e) { return null; }
+    } catch (e) {
+      console.log("[%%sql] getCellEditorView error:", e.message);
+      return null;
+    }
   }
 
   function toggleSqlLanguage(cell, enable) {
