@@ -25,8 +25,22 @@ Return results as a JSON object wrapped in a ```json fenced block:
 ```
 - "text": explanatory text (optional)
 - "files": list of file paths created by tools (optional)
-- "code": executable Python code (optional)
+- "code": executable Python code or %%sql magic (optional)
 Include only non-empty fields.
+
+%%sql syntax for Spark SQL queries:
+  %%sql [--var df1] [--timeout 600] [--poll 30]
+  select ...
+
+  %%sql submit
+  select ...
+
+  %sql status --job_id xxxx
+  %sql cancel --job_id xxxx
+  %sql result --job_id xxxx --limit 100
+
+Use %%sql when the user asks to query data from Spark.
+Results become DataFrame variables (default var_1, var_2...).
 """
 
 REVIEW_PROMPT = """Review task completion:
