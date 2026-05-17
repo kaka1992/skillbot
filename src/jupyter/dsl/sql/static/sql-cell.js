@@ -1,22 +1,12 @@
 (function () {
   "use strict";
 
-  // ---- helpers ----
-
   function getCellText(cmEl) {
-    if (!cmEl) return "";
-    return cmEl.textContent || "";
+    return cmEl ? (cmEl.textContent || "") : "";
   }
 
   function isSqlCell(cmEl) {
     return getCellText(cmEl).trimStart().startsWith("%%sql");
-  }
-
-  function getCellSql(cell) {
-    var cmEl = cell.querySelector(".cm-content");
-    var text = getCellText(cmEl);
-    var lines = text.split("\n");
-    return { magic: lines[0], sql: lines.slice(1).join("\n"), cmEl: cmEl };
   }
 
   function getActiveCell() {
@@ -28,83 +18,78 @@
     return cells.length > 0 ? cells[cells.length - 1] : null;
   }
 
-  // ---- syntax highlighting (CodeMirror 6) ----
+  // ---- syntax highlighting (set cell language to SQL) ----
 
-  function setSqlHighlight(cell) {
-    var cmEl = cell.querySelector(".cm-content");
-    if (!cmEl || !isSqlCell(cmEl)) return false;
-
-    // access the CodeMirror 6 EditorView via JupyterLab cell widget
-    var cmView = cmEl.closest(".cm-editor");
-    if (!cmView) return false;
-
-    // find EditorView instance attached to the DOM wrapper
+  function applySqlLanguage(cell) {
+    if (!cell) return;
+    // JupyterLab stores cell metadata via the model
+    // Set language="sql" to trigger CodeMirror 6 SQL highlighting
     try {
-      // CodeMirror 6 stores the view on the DOM node
-      var view = cmView.cmView ? cmView.cmView.view : null;
-      // alternative: find via __jupyterlab editor property
-      if (!view) {
-        // walk up to find the cell widget's editor
-        var notebookEl = cell.closest(".jp-NotebookPanel");
-        if (notebookEl) {
-          // try accessing via JupyterLab's global registry
-          var jpLab = notebookEl.jupyterlab || window._jupyterlab;
-        }
-      }
+      var notebook = document.querySelector(".jp-NotebookPanel");
+      if (!notebook || !notebook.jupyterlab) return;
 
-      // Use CodeMirror 6 Compartment API if view is accessible
-      if (view && view.dispatch) {
-        // Try to set SQL language — need to import from @codemirror/lang-sql
-        // Since we can't import, use a simpler approach: set the language name
-        try {
-          var cm = view.state;
-          // CodeMirror 6 doesn't expose setMode directly; use facets
-          // Fallback: configure the cell editor via JupyterLab commands
-          var id = cell.getAttribute("id") || cell.getAttribute("data-id");
-          if (id && window._jpLAB) {
-            window._jpLAB.commands.execute("notebook:change-cell-to-code");
-          }
-        } catch (e) {
-          // ignore
+      // access the notebook widget's content
+      var nbWidget = notebook.jupyterlab.shell.currentWidget;
+      if (!nbWidget || !nbWidget.content) return;
+
+      var notebookContent = nbWidget.content;
+      // find the cell index
+      var allCells = cell.parentNode ? cell.parentNode.querySelectorAll(":scope > .jp-Cell") : [];
+      var cellIdx = -1;
+      for (var i = 0; i < allCells.length; i++) {
+        if (allCells[i] === cell) { cellIdx = i; break; }
+      }
+      if (cellIdx < 0) return;
+
+      // get the cell widget from notebook's widgets list
+      if (notebookContent.widgets && notebookContent.widgets[cellIdx]) {
+        var cellWidget = notebookContent.widgets[cellIdx];
+        // set metadata language to 'sql' — JupyterLab CM6 picks this up
+        if (cellWidget.model && cellWidget.model.metadata) {
+          cellWidget.model.metadata.set("language", "sql");
         }
       }
     } catch (e) {
-      // ignore, fall back to CSS
+      // fallback: CSS indicator
     }
-
-    // CSS fallback: simple visual indicator
-    cell.classList.add("sql-cell");
-    return true;
   }
-
-  // ---- CSS ----
-
-  var _style = document.createElement("style");
-  _style.textContent =
-    ".jp-Cell.sql-cell .cm-line:first-child { color: #6a9955 !important; font-style: italic; }";
-  document.head.appendChild(_style);
 
   function updateAllHighlights() {
     var cells = document.querySelectorAll(".jp-Cell");
     cells.forEach(function (cell) {
       var cmEl = cell.querySelector(".cm-content");
       if (cmEl && isSqlCell(cmEl)) {
-        cell.classList.add("sql-cell");
-        setSqlHighlight(cell);
+        if (!cell.classList.contains("sql-cell")) {
+          cell.classList.add("sql-cell");
+          applySqlLanguage(cell);
+        }
       } else {
         cell.classList.remove("sql-cell");
       }
     });
   }
 
+  // ---- CSS fallback ----
+
+  var _style = document.createElement("style");
+  _style.textContent =
+    ".jp-Cell.sql-cell .cm-line:first-child { color: #6a9955 !important; }";
+  document.head.appendChild(_style);
+
   // ---- formatting via kernel ----
 
   function formatCell(cell) {
-    var sq = getCellSql(cell);
-    if (!sq.magic.startsWith("%%sql")) return;
+    var cmEl = cell.querySelector(".cm-content");
+    if (!cmEl || !isSqlCell(cmEl)) return;
 
-    var sql = sq.sql.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-    var code = "from jupyter.dsl.sql import format_sql\nprint(format_sql('''" + sql + "'''), end='')";
+    var text = getCellText(cmEl);
+    var lines = text.split("\n");
+    var magic = lines[0];
+    var sql = lines.slice(1).join("\n");
+    if (!sql.trim()) return;
+
+    var escapedSql = sql.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    var code = "from jupyter.dsl.sql import format_sql\nprint(format_sql('''" + escapedSql + "'''), end='')";
 
     var nbPanel = document.querySelector(".jp-NotebookPanel");
     if (!nbPanel || !nbPanel.jupyterlab) return;
@@ -114,9 +99,8 @@
       if (sessionContext && sessionContext.session) {
         var future = sessionContext.session.kernel.requestExecute({ code: code });
         future.done.then(function (reply) {
-          var formatted = reply.content.text || sq.sql;
-          var newText = sq.magic + "\n" + formatted;
-          if (sq.cmEl) sq.cmEl.textContent = newText;
+          var formatted = reply.content.text || sql;
+          cmEl.textContent = magic + "\n" + formatted;
         });
       }
     } catch (e) {
@@ -128,10 +112,14 @@
 
   document.addEventListener("keydown", function (e) {
     if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "F") {
-      e.preventDefault();
-      e.stopPropagation();
       var cell = getActiveCell();
-      if (cell) formatCell(cell);
+      if (!cell) return;
+      var cmEl = cell.querySelector(".cm-content");
+      if (cmEl && isSqlCell(cmEl)) {
+        e.preventDefault();
+        e.stopPropagation();
+        formatCell(cell);
+      }
     }
   }, true);
 

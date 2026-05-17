@@ -4,7 +4,7 @@ import time
 import urllib.request
 
 JUPYTER_URL = "http://localhost:8888"
-JUPYTER_TOKEN = "f13a6eece4991c5904ad9f9d995f554c0155794171bff7dd"
+JUPYTER_TOKEN = "81af9efb352668666f3a61976b4795f8c0653be7071e83a0"
 _counter = 0
 
 
