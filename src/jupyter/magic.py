@@ -25,55 +25,7 @@ from .agent_session import (
     _session_id,
 )
 
-def _pop_flag(args: list[str], name: str, convert: type = str):
-    """Pop ``name`` and its value from *args*, returning the converted value or None."""
-    try:
-        i = args.index(name)
-    except ValueError:
-        return None
-    if i + 1 >= len(args):
-        return None
-    val = args.pop(i + 1)
-    args.pop(i)
-    if convert is int:
-        return int(val)
-    return val
-
-
-def _parse_kv(args: list[str]) -> dict[str, str]:
-    """Parse remaining ``--KEY=VALUE`` items from *args*, returning a dict."""
-    result = {}
-    remaining = list(args)
-    for item in args[:]:
-        if item.startswith("--") and "=" in item:
-            key, val = item[2:].split("=", 1)
-            result[key] = val
-            remaining.remove(item)
-    args[:] = remaining
-    return result
-
-
-def _sql_progress(phase: str, data: dict | None = None) -> None:
-    """Print spark query progress to stdout with flush for real-time streaming."""
-    if data is None:
-        data = {}
-    if phase == "analyze":
-        plan = data.get("plan", "")
-        print(f"\n[analyze] plan:\n{plan}")
-    elif phase == "submit":
-        print(f"[submit] job_id: {data.get('job_id', '')}")
-    elif phase == "poll":
-        status = data.get("status", "?")
-        elapsed = data.get("elapsed", 0)
-        print(f"\r[poll] {status} ({elapsed}s)  ", end="")
-        sys.stdout.flush()
-    elif phase == "result":
-        print(f"\n[result] {data.get('row_count', 0)} rows fetched")
-    elif phase == "error":
-        print(f"\n\033[91m[{data.get('stage', '?')}] {data.get('message', '')}\033[0m",
-              file=sys.stderr)
-    elif phase == "submit_ok":
-        print(f"[submit] job_id: {data.get('job_id', '')}")
+from .config import pop_flag as _pop_flag, parse_kv as _parse_kv, sql_progress as _sql_progress, load_yaml_config, load_third_party_tools, apply_preferences, set_debug
 
 
 _LOG_DIR = Path(__file__).resolve().parents[2] / ".run"
