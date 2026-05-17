@@ -85,10 +85,14 @@ def load_sql_completer(ipython) -> None:
 
     # Register globally (fires for all cells). _sql_complete returns None
     # immediately for non-%%sql cells, so Python completion is unaffected.
-    ipython.events.register("pre_run_cell", lambda _info: None)  # no-op to warm events
+    c = ipython.Completer
+    _log.info("completer type=%s has_matchers=%s matchers_val=%r",
+              type(c).__name__, hasattr(c, "matchers"),
+              getattr(c, "matchers", "N/A"))
     try:
-        ipython.Completer.matchers.insert(0, _sql_complete)
-        _log.info("sql completer registered via Completer.matchers")
-    except Exception:
+        c.matchers.insert(0, _sql_complete)
+        _log.info("sql completer registered via Completer.matchers, now %d matchers", len(c.matchers))
+    except Exception as e:
+        _log.info("matchers insert failed: %s, trying set_hook", e)
         ipython.set_hook("complete_command", _sql_complete, re_key=r".*")
         _log.info("sql completer registered via set_hook(re_key=.*)")
