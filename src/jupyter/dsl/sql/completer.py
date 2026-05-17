@@ -47,8 +47,11 @@ def load_sql_completer(ipython) -> None:
 
             line = (event.line or "").strip()
             symbol = (event.symbol or "").strip()
-        _log.info("completer: line=%r symbol=%r cell_first_line=%r",
-                   line[:80], symbol, cell.split("\n")[0][:80])
+            _log.info("completer: line=%r symbol=%r cell_first_line=%r",
+                       line[:80], symbol, cell.split("\n")[0][:80])
+        except Exception as e:
+            _log.warning("_sql_complete error: %s", e)
+            return None
 
         if not symbol:
             _log.info("completer skip: empty symbol")
