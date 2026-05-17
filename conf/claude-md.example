@@ -1,0 +1,18 @@
+# CLAUDE.md — Project Context for Jupyter Agent
+
+This file provides project-specific constraints and context.
+Use with: %agent_config --claude-md conf/claude-md.example
+
+## Project Description
+<!-- Describe your project: tech stack, data sources, conventions -->
+
+## Constraints
+<!-- Rules the agent should follow -->
+- Always write type-annotated Python code
+- Use pandas for data manipulation
+- Use matplotlib for plotting
+- Keep code self-contained and reproducible
+
+## Data Sources
+<!-- Describe available data -->
+<!-- e.g., Spark tables, CSV files, database connections -->

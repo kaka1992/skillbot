@@ -93,11 +93,32 @@ def _session_key() -> str:
 
 
 # ---------------------------------------------------------------------------
+# prompt building
+# ---------------------------------------------------------------------------
+
+
+def build_system_prompt(claude_md_path: str | None = None) -> str:
+    """Merge CLAUDE.md (project constraints) with SYSTEM_PROMPT (output format)."""
+    parts = []
+    if claude_md_path:
+        try:
+            claude_content = Path(claude_md_path).read_text()
+            parts.append(claude_content)
+            parts.append("")
+            _log.info("claude.md loaded: %s (%d chars)", claude_md_path, len(claude_content))
+        except Exception as e:
+            print(f"[agent_config] CLAUDE.md not found: {claude_md_path}", file=sys.stderr)
+            _log.warning("claude.md load failed: %s", e)
+    parts.append(SYSTEM_PROMPT)
+    return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
 # session lifecycle
 # ---------------------------------------------------------------------------
 
 
-def init_session(agent: str, timeout: int) -> None:
+def init_session(agent: str, timeout: int, claude_md_path: str | None = None) -> None:
     """Create client + stable session, seed system prompt."""
     global _client, _session_id
     _cleanup_session()
@@ -105,8 +126,10 @@ def init_session(agent: str, timeout: int) -> None:
 
     _client = ChatClient(agent, timeout=timeout)
     _session_id = _session_key()
-    _client.chat(SYSTEM_PROMPT, session=_session_id)
-    _log.info("session init: agent=%s timeout=%ds session=%s", agent, timeout, _session_id)
+    merged_prompt = build_system_prompt(claude_md_path)
+    _client.chat(merged_prompt, session=_session_id)
+    _log.info("session init: agent=%s timeout=%ds session=%s claude_md=%s",
+              agent, timeout, _session_id, claude_md_path)
 
 
 def _cleanup_session() -> None:

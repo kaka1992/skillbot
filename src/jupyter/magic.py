@@ -37,6 +37,8 @@ _log = logging.getLogger(__name__)
 class AgentMagic(Magics):
     _agent = "claude-code"
     _timeout = 600
+    _claude_md_path: str | None = None
+    _tools_cfg: dict = {}
 
     def __init__(self, shell):
         super().__init__(shell)
@@ -64,12 +66,13 @@ class AgentMagic(Magics):
 
     @line_magic
     def agent_config(self, line: str) -> None:
-        """%agent_config [--config PATH] [--agent NAME] [--timeout N] [--debug] [--KEY=VALUE ...]"""
+        """%agent_config [--config PATH] [--agent NAME] [--timeout N] [--claude-md PATH] [--debug] [--KEY=VALUE ...]"""
         args = shlex.split(line)
 
         config_path = pop_flag(args, "--config")
         agent = pop_flag(args, "--agent")
         timeout = pop_flag(args, "--timeout", convert=int)
+        claude_md_path = pop_flag(args, "--claude-md")
         debug = "--debug" in args
         if debug:
             args.remove("--debug")
@@ -85,6 +88,7 @@ class AgentMagic(Magics):
 
         agent = agent or cfg.get("agent") or self._agent
         timeout = timeout or cfg.get("timeout") or self._timeout
+        claude_md_path = claude_md_path or cfg.get("claude_md")
 
         merged_env = {**(cfg.get("env") or {}), **env_vars}
 
@@ -94,6 +98,7 @@ class AgentMagic(Magics):
                   file=sys.stderr)
             agent = self._agent
 
+        # tools: always incremental (never triggers session rebuild)
         tools_cfg = cfg.get("tools") or {}
         load_third_party_tools(tools_cfg)
         apply_preferences(tools_cfg.get("preferences") or {})
@@ -101,11 +106,21 @@ class AgentMagic(Magics):
         if merged_env:
             os.environ.update({k: str(v) for k, v in merged_env.items()})
 
-        changed = agent != self._agent or timeout != self._timeout
+        # session rebuild: only when agent or CLAUDE.md changes
+        session_rebuild = (
+            agent != self._agent or claude_md_path != self._claude_md_path
+        )
+        if session_rebuild:
+            init_session(agent, timeout, claude_md_path=claude_md_path)
+        elif timeout != self._timeout:
+            cl = get_client()
+            if cl is not None:
+                cl._backend._timeout = timeout
+
         self._agent = agent
         self._timeout = timeout
-        if changed:
-            init_session(self._agent, self._timeout)
+        self._claude_md_path = claude_md_path
+        self._tools_cfg = tools_cfg
         print(f"agent: {self._agent}, timeout: {self._timeout}s")
 
     # ---- %sql (line magic) ----
