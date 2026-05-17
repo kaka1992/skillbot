@@ -19,27 +19,54 @@
 
   function getCellEditorView(cell) {
     try {
-      var nbPanel = document.querySelector(".jp-NotebookPanel");
-      if (!nbPanel)        { console.log("[%%sql] getCellEditorView: no .jp-NotebookPanel"); return null; }
-      if (!nbPanel.jupyterlab) { console.log("[%%sql] getCellEditorView: no jupyterlab on panel"); return null; }
-      var notebook = nbPanel.jupyterlab.shell.currentWidget;
-      if (!notebook)        { console.log("[%%sql] getCellEditorView: no currentWidget"); return null; }
-      if (!notebook.content) { console.log("[%%sql] getCellEditorView: no notebook.content"); return null; }
-      if (!notebook.content.widgets) { console.log("[%%sql] getCellEditorView: no widgets array"); return null; }
+      // Try multiple paths to access the JupyterLab notebook widget:
+      // 1) window._jupyterlab 2) .jp-LabShell 3) document jupyterlab attribute
+      var nbWidget = null;
 
-      var widgets = notebook.content.widgets;
+      // Path 1: global JupyterLab instance
+      var app = window.jupyterlab || window._jupyterlab;
+      if (app && app.shell) {
+        nbWidget = app.shell.currentWidget;
+      }
+
+      // Path 2: find via LabShell DOM
+      if (!nbWidget) {
+        var shell = document.querySelector(".jp-LabShell");
+        if (shell) {
+          // Try to access the shell's currentWidget via React fiber
+          var fiberKey = Object.keys(shell).find(function (k) { return k.startsWith("__reactFiber"); });
+          if (fiberKey) {
+            var fiber = shell[fiberKey];
+            while (fiber) {
+              if (fiber.stateNode && fiber.stateNode.shell) {
+                nbWidget = fiber.stateNode.shell.currentWidget;
+                break;
+              }
+              fiber = fiber.return;
+            }
+          }
+        }
+      }
+
+      if (!nbWidget) {
+        console.log("[%%sql] getCellEditorView: could not find notebook widget");
+        return null;
+      }
+      if (!nbWidget.content || !nbWidget.content.widgets) {
+        console.log("[%%sql] getCellEditorView: notebook has no content/widgets");
+        return null;
+      }
+
+      var widgets = nbWidget.content.widgets;
       for (var i = 0; i < widgets.length; i++) {
         var w = widgets[i];
         if (!w || !w.editor) continue;
         var host = w.editor.host;
-        if (!host) { console.log("[%%sql] getCellEditorView: widget " + i + " has no editor.host"); continue; }
+        if (!host) continue;
         if (cell.contains(host)) {
-          var view = w.editor.editor || null;
-          if (!view) console.log("[%%sql] getCellEditorView: found cell but w.editor.editor is null");
-          return view;
+          return w.editor.editor || null;
         }
       }
-      console.log("[%%sql] getCellEditorView: no widget matched cell (widgets=" + widgets.length + ")");
       return null;
     } catch (e) {
       console.log("[%%sql] getCellEditorView error:", e.message);
