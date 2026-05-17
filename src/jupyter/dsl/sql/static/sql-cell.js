@@ -28,12 +28,17 @@
       var nbWidget = app.shell.currentWidget;
       if (!nbWidget || !nbWidget.content || !nbWidget.content.widgets) return null;
       var widgets = nbWidget.content.widgets;
+      var matched = 0, noHost = 0, noContain = 0;
       for (var i = 0; i < widgets.length; i++) {
         var w = widgets[i];
         if (!w || !w.editor) continue;
+        matched++;
         var host = w.editor.host;
-        if (host && cell.contains(host)) return w.editor.editor || null;
+        if (!host) { noHost++; continue; }
+        if (!cell.contains(host)) { noContain++; continue; }
+        return w.editor.editor || null;
       }
+      console.log("[%%sql] widget scan: matched=" + matched + " noHost=" + noHost + " noContain=" + noContain + " total=" + widgets.length);
       return null;
     } catch (e) { return null; }
   }
