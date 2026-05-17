@@ -1,73 +1,37 @@
-"""%%agent cell magic — call agent from Jupyter with streaming progress."""
+"""%%agent / %%sql cell magics — thin scheduling layer."""
 
+import logging
 import os
 import shlex
-import yaml
 import sys
 import time
-from datetime import datetime
 from pathlib import Path
 
 from IPython.core.magic import Magics, cell_magic, line_magic, magics_class
 
-from .namespace import Namespace
-from .sql import SqlRunner
-from .parser import parse
-from .render import render_output
-from tools import ToolRegistry
-
 from .agent_session import (
     SYSTEM_PROMPT,
-    init_session as _init_session,
-    get_client,
+    init_session,
     get_session_id,
-    stream_output as _stream_output,
-    _session_id,
+    stream_output,
 )
+from .config import (
+    pop_flag,
+    parse_kv,
+    load_yaml_config,
+    load_third_party_tools,
+    apply_preferences,
+    set_debug,
+    sql_progress as _sql_progress,
+)
+from .namespace import Namespace
+from .parser import parse
+from .render import render_output
+from .review import review_task
+from .sql import SqlRunner
 
-from .config import pop_flag as _pop_flag, parse_kv as _parse_kv, sql_progress as _sql_progress, load_yaml_config, load_third_party_tools, apply_preferences, set_debug
+_log = logging.getLogger(__name__)
 
-
-_LOG_DIR = Path(__file__).resolve().parents[2] / ".run"
-_LOG_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def _log_agent(session: str, vars_: list[str], cells: list[dict],
-               prompt: str, result: str, elapsed: float, error: str = "") -> None:
-    """Write a human-readable log entry."""
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_file = _LOG_DIR / f"agent-{datetime.now().strftime('%Y%m%d')}.log"
-
-    lines = [
-        f"{'='*60}",
-        f"  [{ts}]  session={session}  elapsed={elapsed:.1f}s",
-        f"{'='*60}",
-    ]
-    if vars_:
-        lines.append(f"  variables: {', '.join(vars_)}")
-    if cells:
-        lines.append(f"  cell history ({len(cells)} total):")
-        for c in cells[-3:]:
-            code = c["code"][:120].replace("\n", "\\n")
-            lines.append(f"    › {code}")
-            if c.get("output"):
-                out = c["output"][:100].replace("\n", "\\n")
-                lines.append(f"      → {out}")
-    lines.append(f"  {'─'*50}")
-    lines.append(f"  prompt: {prompt[:300]}")
-    if error:
-        lines.append(f"  ERROR: {error}")
-    if result:
-        lines.append(f"  result ({len(result)} chars):")
-        for rline in result[:2000].split("\n")[:30]:
-            lines.append(f"    {rline}")
-    lines.append("")
-
-    with open(log_file, "a", encoding="utf-8") as f:
-        f.write("\n".join(lines))
-
-
-# ---- magic ----
 
 @magics_class
 class AgentMagic(Magics):
@@ -76,20 +40,13 @@ class AgentMagic(Magics):
 
     def __init__(self, shell):
         super().__init__(shell)
-        self._sql_var_counter = 0
         self.ns = Namespace(shell)
-        _init_session(self._agent, self._timeout)
-        self.ns.delta()  # establish baseline snapshot
-        # track ALL cell executions (not just %%agent)
+        init_session(self._agent, self._timeout)
+        self.ns.delta()
+        self._sql_var_counter = 0
         shell.events.register("post_run_cell", self._on_cell_run)
 
-    def _next_sql_var(self) -> str:
-        """Return next default variable name (var_1, var_2, ...)."""
-        self._sql_var_counter += 1
-        return f"var_{self._sql_var_counter}"
-
     def _on_cell_run(self, result):
-        """Hook: capture cell code + output for namespace context."""
         info = getattr(result, "info", None)
         if info is None:
             return
@@ -99,64 +56,48 @@ class AgentMagic(Magics):
         output = str(info.result) if getattr(info, "result", None) else ""
         self.ns.track_cell(code.strip(), output.strip())
 
+    def _next_sql_var(self) -> str:
+        self._sql_var_counter += 1
+        return f"var_{self._sql_var_counter}"
+
+    # ---- agent_config ----
+
     @line_magic
     def agent_config(self, line: str) -> None:
-        """Configure agent: %agent_config [--config PATH] [--agent NAME] [--timeout N] [--KEY=VALUE ...]"""
+        """%agent_config [--config PATH] [--agent NAME] [--timeout N] [--debug] [--KEY=VALUE ...]"""
         args = shlex.split(line)
 
-        # 1. 解析命令行参数
-        config_path = _pop_flag(args, "--config")
-        agent = _pop_flag(args, "--agent")
-        timeout = _pop_flag(args, "--timeout", convert=int)
-        env_vars = _parse_kv(args)
+        config_path = pop_flag(args, "--config")
+        agent = pop_flag(args, "--agent")
+        timeout = pop_flag(args, "--timeout", convert=int)
+        debug = "--debug" in args
+        if debug:
+            args.remove("--debug")
+        if "--no-debug" in args:
+            args.remove("--no-debug")
+            debug = False
+        env_vars = parse_kv(args)
 
-        # 2. 加载 YAML（命令行未指定时使用默认值）
-        cfg: dict = {}
-        if config_path:
-            try:
-                cfg = yaml.safe_load(Path(config_path).read_text()) or {}
-            except FileNotFoundError:
-                print(f"[agent_config] config file not found: {config_path}", file=sys.stderr)
-            except yaml.YAMLError as e:
-                print(f"[agent_config] YAML parse error: {e}", file=sys.stderr)
+        cfg = load_yaml_config(config_path)
 
-        # 2.5. 加载第三方 tools + 设定偏好
-        tools_cfg = cfg.get("tools") or {}
-        for path in tools_cfg.get("paths") or []:
-            try:
-                discovered = ToolRegistry.discover(path)
-                if discovered:
-                    names = ", ".join(t.name for t in discovered)
-                    print(f"[agent_config] loaded from {path}: {names}")
-            except Exception as e:
-                print(f"[agent_config] failed to load tools from {path}: {e}", file=sys.stderr)
-
-        preferences = tools_cfg.get("preferences") or {}
-        for preset_name, impl_name in (preferences.get("presets") or {}).items():
-            try:
-                ToolRegistry.set_preferred(preset_name, impl_name)
-            except KeyError as e:
-                print(f"[agent_config] preference error: {e}", file=sys.stderr)
-        for group_name, impl_name in (preferences.get("groups") or {}).items():
-            try:
-                ToolRegistry.set_preferred_for_group(group_name, impl_name)
-            except KeyError as e:
-                print(f"[agent_config] preference error: {e}", file=sys.stderr)
+        cfg_debug = cfg.get("debug", False)
+        set_debug(debug or cfg_debug)
 
         agent = agent or cfg.get("agent") or self._agent
         timeout = timeout or cfg.get("timeout") or self._timeout
 
-        # 合并 YAML env + CLI KV（后者覆盖前者）
-        merged_env: dict = {**(cfg.get("env") or {}), **env_vars}
+        merged_env = {**(cfg.get("env") or {}), **env_vars}
 
-        # agent 合法性检查
         from chat import _AGENTS
-
         if agent not in _AGENTS:
-            print(f"[agent_config] unknown agent '{agent}', valid: {', '.join(sorted(_AGENTS))}", file=sys.stderr)
+            print(f"[agent_config] unknown agent '{agent}', valid: {', '.join(sorted(_AGENTS))}",
+                  file=sys.stderr)
             agent = self._agent
 
-        # 3. 注入 env + 重建 session
+        tools_cfg = cfg.get("tools") or {}
+        load_third_party_tools(tools_cfg)
+        apply_preferences(tools_cfg.get("preferences") or {})
+
         if merged_env:
             os.environ.update({k: str(v) for k, v in merged_env.items()})
 
@@ -164,16 +105,18 @@ class AgentMagic(Magics):
         self._agent = agent
         self._timeout = timeout
         if changed:
-            _init_session(self._agent, self._timeout)
+            init_session(self._agent, self._timeout)
         print(f"agent: {self._agent}, timeout: {self._timeout}s")
+
+    # ---- %sql (line magic) ----
 
     @line_magic
     def sql(self, line: str) -> None:
         """%sql status|result|cancel [options] — manage Spark query jobs."""
         args = shlex.split(line)
         sub = args[0] if args else ""
-        job_id = _pop_flag(args, "--job_id")
-        limit = _pop_flag(args, "--limit", convert=int) or 100
+        job_id = pop_flag(args, "--job_id")
+        limit = pop_flag(args, "--limit", convert=int) or 100
 
         if not job_id:
             print("\033[91m--job_id is required\033[0m", file=sys.stderr)
@@ -182,13 +125,13 @@ class AgentMagic(Magics):
         runner = SqlRunner()
         try:
             if sub == "status":
-                result = runner.status(job_id, on_progress=_sql_progress)
+                result = runner.status(job_id)
                 data = result.get("data", {})
                 print(f"job_id: {data.get('job_id', job_id)}")
                 print(f"status: {data.get('status', '?')}")
                 print(f"engine:  {data.get('engine_type', '?')}")
             elif sub == "cancel":
-                result = runner.cancel(job_id, on_progress=_sql_progress)
+                result = runner.cancel(job_id)
                 data = result.get("data", {})
                 requested = data.get("cancel_requested", "false")
                 print(f"job_id: {data.get('job_id', job_id)}  cancel_requested: {requested}")
@@ -210,43 +153,31 @@ class AgentMagic(Magics):
         except RuntimeError as e:
             print(f"\033[91m{e}\033[0m", file=sys.stderr)
 
+    # ---- %%sql (cell magic) ----
+
     @cell_magic
     def sql(self, line: str, cell: str) -> None:
-        """%%sql — Spark SQL query in Jupyter.
-
-        Usage::
-
-            %%sql [--var df1] [--timeout 600] [--poll 30]
-            select * from table
-
-            %%sql submit
-            select * from table
-
-            %%sql result --job_id xxx [--limit 100]
-        """
+        """%%sql [--var NAME] [--timeout N] [--poll N] | submit | result --job_id ID [--limit N]"""
         import pandas as pd
-
         args = shlex.split(line)
         mode = args[0] if args and not args[0].startswith("--") else "query"
 
-        runner = SqlRunner()
-
         if mode == "submit":
             try:
-                result = runner.submit(cell, on_progress=_sql_progress)
+                result = SqlRunner().submit(cell)
                 job_id = result.get("data", {}).get("job_id", "")
+                _log.info("sql submit: job_id=%s sql=%.100s", job_id, cell)
                 print(f"job submitted: {job_id}")
             except RuntimeError as e:
                 print(f"\033[91m{e}\033[0m", file=sys.stderr)
-
         elif mode == "result":
-            job_id = _pop_flag(args, "--job_id")
-            limit = _pop_flag(args, "--limit", convert=int) or 100
+            job_id = pop_flag(args, "--job_id")
+            limit = pop_flag(args, "--limit", convert=int) or 100
             if not job_id:
                 print("\033[91m--job_id is required\033[0m", file=sys.stderr)
                 return
             try:
-                result = runner.result(job_id, limit=limit)
+                result = SqlRunner().result(job_id, limit=limit)
                 data = result.get("data", {})
                 sample = data.get("sample_data", [])
                 if sample:
@@ -258,12 +189,10 @@ class AgentMagic(Magics):
                     print(f"[{var_name}] {len(rows)} rows x {len(cols)} cols")
             except RuntimeError as e:
                 print(f"\033[91m{e}\033[0m", file=sys.stderr)
-
-        else:  # mode == "query" (direct)
-            var_name = _pop_flag(args, "--var")
-            timeout = _pop_flag(args, "--timeout", convert=int) or 600
-            poll = _pop_flag(args, "--poll", convert=int) or 30
-
+        else:
+            var_name = pop_flag(args, "--var")
+            timeout = pop_flag(args, "--timeout", convert=int) or 600
+            poll = pop_flag(args, "--poll", convert=int) or 30
             runner = SqlRunner(poll_interval=poll, timeout=timeout)
             try:
                 result = runner.query(cell, on_progress=_sql_progress)
@@ -276,14 +205,21 @@ class AgentMagic(Magics):
                     if not var_name:
                         var_name = self._next_sql_var()
                     self.ns.inject(var_name, df)
+                    _log.info("sql query: var=%s rows=%d sql=%.100s", var_name, len(rows), cell)
                     print(f"[{var_name}] {len(rows)} rows x {len(cols)} cols")
             except (RuntimeError, TimeoutError) as e:
+                _log.error("sql query error: %s", e)
                 print(f"\033[91m{e}\033[0m", file=sys.stderr)
+
+    # ---- %%agent (cell magic) ----
 
     @cell_magic
     def agent(self, line: str, cell: str) -> None:
+        """%%agent [--timeout N] [--code] [--trace] [--auto]"""
         timeout = self._timeout
         code_only = False
+        trace = False
+        auto = False
         args = shlex.split(line)
         i = 0
         while i < len(args):
@@ -291,6 +227,10 @@ class AgentMagic(Magics):
                 timeout = int(args[i + 1]); i += 2
             elif args[i] == "--code":
                 code_only = True; i += 1
+            elif args[i] == "--trace":
+                trace = True; i += 1
+            elif args[i] == "--auto":
+                auto = True; i += 1
             else:
                 i += 1
 
@@ -300,28 +240,121 @@ class AgentMagic(Magics):
 
         ctx = self.ns.delta()
         prompt = f"{ctx}\n\n{cell}" if ctx else cell
+        session = get_session_id()
 
         t0 = time.time()
         raw = ""
         try:
-            raw = _stream_output(prompt, timeout, show_text=code_only)
+            raw = stream_output(prompt, timeout, show_text=code_only)
         except Exception as e:
-            _log_agent(_session_id, sorted(self.ns.vars().keys()),
-                       self.ns._cells, cell, "", round(time.time() - t0, 1),
-                       error=str(e))
+            _log.error("agent error: session=%s elapsed=%.1fs error=%s",
+                       session, round(time.time() - t0, 1), e)
             print(f"\033[91mError: {e}\033[0m")
+            if trace and auto:
+                retry_cell = (
+                    f"%%agent --trace --auto\n"
+                    f"# Fix the error and retry:\n# {str(e)[:200]}\n{cell}"
+                )
+                self.ns.set_next_input(retry_cell)
+                _log.info("trace: auto retry cell after error")
             return
 
         elapsed = round(time.time() - t0, 1)
-        _log_agent(_session_id, sorted(self.ns.vars().keys()),
-                   self.ns._cells, cell, raw, elapsed)
+        _log.info("agent done: session=%s elapsed=%.1fs output=%d chars trace=%s auto=%s",
+                  session, elapsed, len(raw), trace, auto)
+        _log.debug("agent output:\n%s", raw[:5000])
 
+        has_new_cell = False
         if raw.strip():
             try:
                 result = parse(raw)
+                _log.debug("agent parse: text=%d chars files=%d code=%d chars",
+                          len(result.text or ""), len(result.files),
+                          len(result.code or ""))
             except ValueError as e:
+                _log.warning("agent parse error: %s", e)
                 print(f"\033[91mParse error: {e}\033[0m")
                 return
             render_output(self.ns, result, skip_text=code_only, inject_code=code_only)
+            has_new_cell = bool(result.code)
 
         self.ns.track_cell(cell, raw.strip()[:200])
+
+        # ---- trace post-execution ----
+        if not trace:
+            return
+
+        agent_output = raw.strip()[:2000] if raw.strip() else "(no output)"
+
+        if has_new_cell:
+            new_code = self.ns._next_input or ""
+            if new_code and "%agent --trace" not in new_code:
+                suffix = "%agent --trace --auto" if auto else "%agent --trace"
+                self.ns.set_next_input(new_code + "\n" + suffix)
+            _log.info("trace: new cell with %%agent --trace marker")
+            print(f"[trace] new cell with %agent --trace")
+        else:
+            result = review_task(
+                cell, agent_output,
+                variables=self.ns.vars(),
+                cells=self.ns._cells,
+                timeout=self._timeout,
+                auto=auto,
+            )
+            if result == "NOT_SOLVED":
+                mode = "--trace --auto" if auto else "--trace"
+                retry_cell = f"%%agent {mode}\n# Fix: {agent_output[:200]}\n{cell}"
+                self.ns.set_next_input(retry_cell)
+                _log.info("trace: retry cell generated")
+                print("[trace] retry cell generated")
+
+    # ---- %agent (line magic) ----
+
+    @line_magic
+    def agent(self, line: str) -> None:
+        """%agent --trace [--auto] — trigger trace review from current cell."""
+        args = shlex.split(line)
+        trace = "--trace" in args
+        auto = "--auto" in args
+
+        if not trace:
+            print("[agent] use %agent --trace to trigger trace review", file=sys.stderr)
+            return
+
+        code_before = self.ns.flush_current_cell()
+        if not code_before:
+            print("[trace] no cell content found before %agent --trace", file=sys.stderr)
+            return
+
+        delta = self.ns.delta()
+        variables = str({k: type(v).__name__ for k, v in self.ns.vars().items()})
+
+        review_prompt = f"""Analyze current progress:
+
+## New Context Since Last Agent Call
+{delta}
+
+## Current Variables
+{variables}
+
+Based on the above, does the task need further action?
+Reply ONLY: SOLVED: or NOT_SOLVED: <suggested next step>
+"""
+        try:
+            raw = stream_output(review_prompt, self._timeout, show_text=False)
+            result_text = raw.strip().upper()
+            if "NOT_SOLVED" in result_text:
+                mode = "--trace --auto" if auto else "--trace"
+                fix = raw.strip()[:500]
+                retry_cell = f"%%agent {mode}\n# Review: {fix}\n"
+                self.ns.set_next_input(retry_cell)
+                _log.info("trace: review cell from line magic")
+                print("[trace] review cell generated")
+            elif "SOLVED" in result_text:
+                print("[trace] ✓ SOLVED")
+                _log.info("trace: SOLVED from line magic")
+            else:
+                print(f"[trace] ? {raw[:200]}")
+        except Exception as e:
+            print(f"\033[91m[trace] error: {e}\033[0m", file=sys.stderr)
+            _log.error("trace line magic error: %s", e)
