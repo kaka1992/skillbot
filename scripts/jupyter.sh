@@ -99,18 +99,25 @@ c.InteractiveShellApp.extensions = ['jupyter']
 PYEOF
     echo "  [OK] config: auto-load %%agent via InteractiveShellApp.extensions"
 
-    # ---- sql-cell.js lab extension ----
-    local labext_dir="${IPYTHON_PROFILE}/labextensions/@skillbot/sql-cell"
-    mkdir -p "$labext_dir"
-    cp "${SRC}/jupyter/dsl/sql/static/sql-cell.js" "$labext_dir/"
-    cp "${SRC}/jupyter/dsl/sql/static/package.json" "$labext_dir/"
-    # register custom labextensions path in jupyter_lab_config
-    mkdir -p "${IPYTHON_PROFILE}/lab"
-    cat > "${IPYTHON_PROFILE}/jupyter_lab_config.py" <<'JLEOF'
+    # ---- sql labextension (TypeScript) ----
+    local ext_dir="${SRC}/jupyter/dsl/sql/extension"
+    if [ -f "${ext_dir}/package.json" ]; then
+        echo "  [RUN] building @skillbot/sql-cell labextension"
+        (cd "$ext_dir" && npm install --silent 2>/dev/null && node build.js 2>/dev/null) || true
+        # link into JupyterLab
+        local labext_target="${IPYTHON_PROFILE}/labextensions/@skillbot/sql-cell"
+        mkdir -p "$labext_target"
+        cp "${ext_dir}/package.json" "$labext_target/"
+        if [ -d "${ext_dir}/lib" ]; then
+            cp -r "${ext_dir}/lib" "$labext_target/"
+        fi
+        # register extra labextensions path
+        cat > "${IPYTHON_PROFILE}/jupyter_lab_config.py" <<'JLEOF'
 c = get_config()
 c.LabApp.extra_labextensions_path = [c.ServerApp.root_dir + "/labextensions"]
 JLEOF
-    echo "  [OK] labextension: @skillbot/sql-cell → %%sql highlighting + Ctrl+Shift+F"
+        echo "  [OK] labextension: @skillbot/sql-cell → SQL highlighting + Ctrl+Shift+F"
+    fi
 }
 
 # -----------------------------------------------------------
