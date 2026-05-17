@@ -4,7 +4,7 @@
 
 ```
 src/jupyter/
-├── __init__.py           # extension 加载 + logging 初始化 + completer 注册
+├── __init__.py           # extension 加载 + logging 初始化 + magics 注册
 ├── agent_session.py      # session 生命周期 + stream + prompts (SYSTEM_PROMPT/REVIEW_PROMPT)
 ├── config.py             # agent_config 解析/加载 + tools + debug toggle
 ├── review.py             # trace review 机制 (review_task / review_line_trace)
@@ -15,10 +15,7 @@ src/jupyter/
 ├── dsl/
 │   └── sql/
 │       ├── __init__.py       # 导出: SqlRunner, format_sql, register_table
-│       ├── sql_runner.py     # SqlRunner: spark SQL 业务编排
-│       ├── completer.py      # SQL 关键字补全 + 表/字段缓存
-│       └── static/
-│           └── sql-cell.js   # CodeMirror 高亮 + Ctrl+Shift+F 格式化
+│       └── sql_runner.py     # SqlRunner: spark SQL 业务编排
 └── dev.md
 ```
 
@@ -30,8 +27,7 @@ __init__ (extension 加载时)
   ├── Namespace(shell) → 创建 ns
   ├── init_session(agent, timeout) → ChatClient + seed merged prompt
   │   └── build_system_prompt(claude_md) → CLAUDE.md + SYSTEM_PROMPT 合并
-  ├── ns.delta() → 建立 baseline 快照
-  └── load_sql_completer(ipython) → 注册 %%sql 补全
+  └── ns.delta() → 建立 baseline 快照
 
 %%agent cell
   ↓ AgentMagic.agent()
@@ -130,12 +126,6 @@ select * from table
 | `%sql result --job_id ID [--var NAME] [--limit N]` | 取查询结果（CSV → DataFrame） |
 
 `%%sql` 依赖 `ToolRegistry` 中的 spark tool preset。可通过 `%agent_config --config xxx.yaml` 加载第三方实现并设定偏好。Agent 在 `--code` 模式下可生成 `%%sql` cell。
-
-### SQL 语法高亮 + 格式化 + 补全
-
-- `%%sql` cell → 自动 SQL 语法高亮（CodeMirror `text/x-sql`）
-- `Ctrl+Shift+F` → 格式化 SQL（`sqlparse`，通过 kernel `format_sql()` 完成）
-- Tab 补全：SQL 关键字（~50 个）+ 表/字段缓存（`register_table()` 注册）
 
 ## agent_config 配置
 
