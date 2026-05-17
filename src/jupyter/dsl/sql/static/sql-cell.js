@@ -83,16 +83,26 @@
   }
 
   function toggleSqlLanguage(cell, enable) {
-    if (enable === !!cell.__sql_on) return;
+    console.log("[%%sql] toggleSqlLanguage: enable=" + enable + " __sql_on=" + cell.__sql_on);
+    if (enable === !!cell.__sql_on) {
+      console.log("[%%sql] toggleSqlLanguage: SKIP (already " + enable + ")");
+      return;
+    }
     cell.__sql_on = enable;
 
-    if (!enable) return;
+    if (!enable) {
+      console.log("[%%sql] toggleSqlLanguage: return (disable)");
+      return;
+    }
 
+    console.log("[%%sql] toggleSqlLanguage: calling getCellEditorView...");
     var view = getCellEditorView(cell);
     if (!view) {
       console.log("[%%sql] no EditorView for cell");
       return;
     }
+
+    console.log("[%%sql] toggleSqlLanguage: got EditorView, calling import()...");
 
     import("@codemirror/lang-sql")
       .then(function (sqlMod) {
