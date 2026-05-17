@@ -1,8 +1,6 @@
 (function () {
   "use strict";
 
-  // ---- helpers ----
-
   function isSqlCell(cell) {
     try {
       var cmEl = cell.querySelector(".cm-content");
@@ -21,38 +19,49 @@
 
   function getCellEditorView(cell) {
     try {
-      // JupyterLab stores the notebook widget hierarchy on the DOM
       var nbPanel = document.querySelector(".jp-NotebookPanel");
       if (!nbPanel || !nbPanel.jupyterlab) return null;
       var notebook = nbPanel.jupyterlab.shell.currentWidget;
       if (!notebook || !notebook.content) return null;
-      var cellIdx = Array.from(cell.parentNode.querySelectorAll(":scope > .jp-Cell")).indexOf(cell);
+      var cellIdx = Array.from(
+        cell.parentNode.querySelectorAll(":scope > .jp-Cell, .jp-Cell")
+      ).indexOf(cell);
       if (cellIdx < 0) return null;
       var cellWidget = notebook.content.widgets[cellIdx];
       if (!cellWidget || !cellWidget.editor) return null;
-      // CodeMirrorEditor.editor is the public EditorView
       return cellWidget.editor.editor || null;
     } catch (e) { return null; }
   }
 
   function toggleSqlLanguage(cell, enable) {
-    var view = getCellEditorView(cell);
-    if (!view) return;
-    if (view.__sql_applied === enable) return;
-    view.__sql_applied = enable;
+    if (enable === !!cell.__sql_on) return;
+    cell.__sql_on = enable;
 
-    if (enable) {
-      // Dynamic import @codemirror/lang-sql from JupyterLab's federated modules
-      import("@codemirror/lang-sql").then(function (mod) {
-        import("@codemirror/state").then(function (stateMod) {
-          try {
-            view.dispatch({
-              effects: stateMod.StateEffect.appendConfig.of(mod.sql({ upperCaseKeywords: true }))
-            });
-          } catch (e) { /* ignore */ }
-        });
-      }).catch(function () { /* module not available */ });
+    if (!enable) return;
+
+    var view = getCellEditorView(cell);
+    if (!view) {
+      console.log("[%%sql] no EditorView for cell");
+      return;
     }
+
+    import("@codemirror/lang-sql")
+      .then(function (sqlMod) {
+        return import("@codemirror/state").then(function (stateMod) {
+          return { sqlMod: sqlMod, stateMod: stateMod };
+        });
+      })
+      .then(function (mods) {
+        view.dispatch({
+          effects: mods.stateMod.StateEffect.appendConfig.of(
+            mods.sqlMod.sql({ upperCaseKeywords: true })
+          ),
+        });
+        console.log("[%%sql] SQL language applied to cell");
+      })
+      .catch(function (err) {
+        console.log("[%%sql] import failed:", err.message);
+      });
   }
 
   // ---- highlight scan ----
@@ -61,10 +70,12 @@
     var cells = document.querySelectorAll(".jp-Cell");
     cells.forEach(function (cell) {
       var isSql = isSqlCell(cell);
-      if (isSql && !cell.classList.contains("sql-cell")) {
-        cell.classList.add("sql-cell");
+      if (isSql) {
+        if (!cell.classList.contains("sql-cell")) {
+          cell.classList.add("sql-cell");
+        }
         toggleSqlLanguage(cell, true);
-      } else if (!isSql && cell.classList.contains("sql-cell")) {
+      } else {
         cell.classList.remove("sql-cell");
       }
     });
@@ -107,8 +118,12 @@
     }
   }, true);
 
-  // ---- watch ----
+  // ---- CSS indicator ----
+  var _style = document.createElement("style");
+  _style.textContent = ".jp-Cell.sql-cell .cm-line:first-child { color: #6a9955 !important; }";
+  document.head.appendChild(_style);
 
+  // ---- watch ----
   setInterval(updateAllHighlights, 1000);
   document.addEventListener("focusin", function () { setTimeout(updateAllHighlights, 200); });
 
