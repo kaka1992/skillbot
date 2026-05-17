@@ -19,31 +19,33 @@
 
   // ---- access JupyterLab notebook widget ----
 
-  function getApp() {
-    // Search all window properties for the JupyterLab application instance
-    var keys = Object.keys(window);
-    for (var i = 0; i < keys.length; i++) {
-      try {
-        var v = window[keys[i]];
-        if (v && v.shell && v.commands && v.started) return v;
-      } catch (e) {}
-    }
-    return null;
-  }
-
   function getCellEditorView(cell) {
     try {
-      var app = getApp();
-      if (!app) { console.log("[%%sql] getCellEditorView: app not found"); return null; }
-      if (!app.shell) { console.log("[%%sql] getCellEditorView: app has no shell"); return null; }
-      var nbWidget = app.shell.currentWidget;
-      if (!nbWidget || !nbWidget.content || !nbWidget.content.widgets) return null;
-      var widgets = nbWidget.content.widgets;
-      for (var i = 0; i < widgets.length; i++) {
-        var w = widgets[i];
-        if (!w || !w.editor) continue;
-        var host = w.editor.host;
-        if (host && cell.contains(host)) return w.editor.editor || null;
+      // Walk React fiber from .jp-NotebookPanel to find notebook widget
+      var panel = document.querySelector(".jp-NotebookPanel");
+      if (!panel) return null;
+
+      var fiberKey = Object.keys(panel).find(function (k) {
+        return k.startsWith("__reactFiber") || k.startsWith("__reactInternalInstance");
+      });
+      if (!fiberKey) return null;
+
+      // Walk up fiber tree to find the NotebookPanel stateNode
+      var fiber = panel[fiberKey];
+      while (fiber) {
+        var sn = fiber.stateNode;
+        if (sn && sn.content && sn.content.widgets) {
+          // Found the notebook widget — iterate cells
+          var widgets = sn.content.widgets;
+          for (var i = 0; i < widgets.length; i++) {
+            var w = widgets[i];
+            if (!w || !w.editor) continue;
+            var host = w.editor.host;
+            if (host && cell.contains(host)) return w.editor.editor || null;
+          }
+          break;
+        }
+        fiber = fiber["return"];
       }
       return null;
     } catch (e) { return null; }
@@ -57,7 +59,7 @@
     if (!enable) return;
 
     var view = getCellEditorView(cell);
-    if (!view) { console.log("[%%sql] no EditorView (app=" + !!getApp() + ")"); return; }
+    if (!view) { console.log("[%%sql] no EditorView"); return; }
 
     import("@codemirror/lang-sql").then(function (sqlMod) {
       return import("@codemirror/state").then(function (stateMod) {
@@ -101,10 +103,18 @@
     var sql = lines.slice(1).join("\n");
     if (!sql.trim()) return;
 
-    var app = getApp();
-    if (!app || !app.shell) return;
-    var nb = app.shell.currentWidget;
-    if (!nb || !nb.content || !nb.sessionContext) return;
+    // Find session via React fiber (same approach as getCellEditorView)
+    var panel = document.querySelector(".jp-NotebookPanel");
+    if (!panel) return;
+    var fiberKey = Object.keys(panel).find(function(k){return k.startsWith("__reactFiber")||k.startsWith("__reactInternalInstance")});
+    if (!fiberKey) return;
+    var fiber = panel[fiberKey], nb = null;
+    while (fiber) {
+      var sn = fiber.stateNode;
+      if (sn && sn.content && sn.sessionContext) { nb = sn; break; }
+      fiber = fiber["return"];
+    }
+    if (!nb || !nb.sessionContext) return;
     var session = nb.sessionContext.session;
     if (!session || !session.kernel) return;
 
