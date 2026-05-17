@@ -1,23 +1,48 @@
-"""Spark SQL runner — business logic for %%sql magic, tool-preset agnostic."""
+"""Spark SQL runner + formatter + table registry — %%sql magic backend."""
 
 from __future__ import annotations
 
 import asyncio
-import sys
 import time
 from collections.abc import Callable
 from typing import Any
+
+try:
+    import sqlparse
+    _HAS_SQLPARSE = True
+except ImportError:
+    _HAS_SQLPARSE = False
 
 from tools import ToolRegistry
 
 ProgressFn = Callable[[str, dict[str, Any] | None], None]
 
-# preset names — SqlRunner looks these up in ToolRegistry
+# preset names
 _PRESET_ANALYZE = "spark_analyze_query"
 _PRESET_SUBMIT = "spark_submit_query"
 _PRESET_STATUS = "spark_get_job_status"
 _PRESET_CANCEL = "spark_cancel_job"
 _PRESET_RESULT = "spark_get_query_result"
+
+# table/column cache for completion (populated externally)
+_table_columns: dict[str, list[str]] = {}
+
+
+def register_table(name: str, columns: list[str]) -> None:
+    """Register table columns for SQL completion. Called by tools/spark."""
+    _table_columns[name.lower()] = [c.lower() for c in columns]
+
+
+def get_table_columns() -> dict[str, list[str]]:
+    """Return current table/column cache."""
+    return dict(_table_columns)
+
+
+def format_sql(sql: str) -> str:
+    """Format SQL using sqlparse. Returns original if sqlparse unavailable."""
+    if _HAS_SQLPARSE:
+        return sqlparse.format(sql, reindent=True, keyword_case='upper')
+    return sql
 
 
 class SqlRunner:
@@ -27,13 +52,8 @@ class SqlRunner:
         self._poll_interval = poll_interval
         self._timeout = timeout
 
-    # ------------------------------------------------------------------
-    # internal helpers
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _check_available() -> None:
-        """Raise RuntimeError if spark tools are not registered."""
         tool = ToolRegistry.get(_PRESET_ANALYZE)
         if tool is None:
             raise RuntimeError(
@@ -43,36 +63,27 @@ class SqlRunner:
 
     @staticmethod
     async def _call(preset_name: str, params: dict[str, Any]) -> dict[str, Any]:
-        """Call a spark tool by preset name, return data dict. Raise on error."""
         tool = ToolRegistry.get(preset_name)
         result = await tool.execute(params)
         if result.error:
             raise RuntimeError(result.error)
         return result.data
 
-    # ------------------------------------------------------------------
-    # public API
-    # ------------------------------------------------------------------
-
     def query(self, sql: str, on_progress: ProgressFn | None = None) -> dict[str, Any]:
-        """analyze → submit → poll → result. Returns the result data dict."""
         self._check_available()
 
         def emit(phase: str, data: dict[str, Any] | None = None) -> None:
             if on_progress:
                 on_progress(phase, data)
 
-        # 1. analyze
         emit("analyze")
         try:
             r = asyncio.run(self._call(_PRESET_ANALYZE, {"sql": sql}))
-            plan = r.get("data", {}).get("plan", "")
-            emit("analyze", {"plan": plan})
+            emit("analyze", {"plan": r.get("data", {}).get("plan", "")})
         except Exception as e:
             emit("error", {"stage": "analyze", "message": str(e)})
             raise
 
-        # 2. submit
         emit("submit")
         try:
             r = asyncio.run(self._call(_PRESET_SUBMIT, {"sql": sql}))
@@ -82,7 +93,6 @@ class SqlRunner:
             emit("error", {"stage": "submit", "message": str(e)})
             raise
 
-        # 3. poll
         t0 = time.time()
         while True:
             elapsed = int(time.time() - t0)
@@ -110,19 +120,16 @@ class SqlRunner:
                 emit("error", {"stage": "poll", "message": "query cancelled"})
                 raise RuntimeError("query cancelled")
 
-        # 4. result
         emit("result")
         try:
             r = asyncio.run(self._call(_PRESET_RESULT, {"job_id": job_id}))
-            row_count = r.get("data", {}).get("content_row_count", 0)
-            emit("result", {"row_count": row_count})
+            emit("result", {"row_count": r.get("data", {}).get("content_row_count", 0)})
             return r
         except Exception as e:
             emit("error", {"stage": "result", "message": str(e)})
             raise
 
     def submit(self, sql: str, on_progress: ProgressFn | None = None) -> dict[str, Any]:
-        """Submit a query, return job metadata."""
         self._check_available()
         if on_progress:
             on_progress("submit", None)
@@ -138,17 +145,14 @@ class SqlRunner:
             raise
 
     def status(self, job_id: str, on_progress: ProgressFn | None = None) -> dict[str, Any]:
-        """Query job status."""
         self._check_available()
         return asyncio.run(self._call(_PRESET_STATUS, {"job_id": job_id}))
 
     def cancel(self, job_id: str, on_progress: ProgressFn | None = None) -> dict[str, Any]:
-        """Cancel a running job."""
         self._check_available()
         return asyncio.run(self._call(_PRESET_CANCEL, {"job_id": job_id}))
 
     def result(self, job_id: str, limit: int = 100,
                on_progress: ProgressFn | None = None) -> dict[str, Any]:
-        """Fetch job result."""
         self._check_available()
         return asyncio.run(self._call(_PRESET_RESULT, {"job_id": job_id, "limit": limit}))

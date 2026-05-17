@@ -28,7 +28,7 @@ from .namespace import Namespace
 from .parser import parse
 from .render import render_output
 from .review import parse_review_result, review_line_trace, review_task
-from .sql import SqlRunner
+from .dsl.sql import SqlRunner
 
 _log = logging.getLogger(__name__)
 

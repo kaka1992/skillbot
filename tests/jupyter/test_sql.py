@@ -5,7 +5,7 @@ sys.path.insert(0, "src")
 
 import pytest
 from tools import ToolRegistry, ToolPreset, ToolResult
-from jupyter.sql import SqlRunner
+from jupyter.dsl.sql import SqlRunner
 
 
 # mock spark tool implementations
