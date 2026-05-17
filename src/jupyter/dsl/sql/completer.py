@@ -36,29 +36,29 @@ def load_sql_completer(ipython) -> None:
 
         # only active in %%sql cells
         if not cell.lstrip().startswith("%%sql"):
-            _log.debug("completer skip: not a %%sql cell")
+            _log.info("completer skip: not a %%sql cell")
             return None
 
         line = (event.line or "").strip()
         symbol = (event.symbol or "").strip()
-        _log.debug("completer: line=%r symbol=%r cell_first_line=%r",
+        _log.info("completer: line=%r symbol=%r cell_first_line=%r",
                    line[:80], symbol, cell.split("\n")[0][:80])
 
         if not symbol:
-            _log.debug("completer skip: empty symbol")
+            _log.info("completer skip: empty symbol")
             return None
 
         prefix_lower = symbol.lower()
 
         # SQL keywords
         kw_matches = [kw for kw in SQL_KEYWORDS if kw.lower().startswith(prefix_lower)]
-        _log.debug("completer: keyword matches for %r: %s", symbol, kw_matches[:10])
+        _log.info("completer: keyword matches for %r: %s", symbol, kw_matches[:10])
 
         # table names from cache
         tbl_cache = get_table_columns()
         tbl_matches = [t for t in tbl_cache if t.startswith(prefix_lower)]
         if tbl_matches:
-            _log.debug("completer: table matches for %r: %s (cache size=%d)",
+            _log.info("completer: table matches for %r: %s (cache size=%d)",
                       symbol, tbl_matches, len(tbl_cache))
 
         matches = kw_matches + tbl_matches
@@ -70,20 +70,19 @@ def load_sql_completer(ipython) -> None:
             cached_cols = tbl_cache.get(tbl, [])
             col_prefix = symbol.lower()
             col_matches = [f"{tbl}.{c}" for c in cached_cols if c.startswith(col_prefix)]
-            _log.debug("completer: column completion table=%r prefix=%r matches=%s",
+            _log.info("completer: column completion table=%r prefix=%r matches=%s",
                       tbl, col_prefix, col_matches)
             if col_matches:
                 return sorted(col_matches)
 
         if matches:
             result = sorted(set(matches), key=str.lower)
-            _log.debug("completer: returning %d matches for %r: %s", len(result), symbol, result[:10])
+            _log.info("completer: returning %d matches for %r: %s", len(result), symbol, result[:10])
             return result
 
-        _log.debug("completer: no matches for %r", symbol)
+        _log.info("completer: no matches for %r", symbol)
         return None
 
-    # Register as custom completer (IPython 8.x)
-    # custom_completers maps regex patterns → completer functions
-    ipython.Completer.custom_completers["%%sql"] = _sql_complete
-    _log.info("sql completer registered via custom_completers['%%sql']")
+    # Register via set_hook — IPython 8.x uses StrDispatch internally
+    ipython.set_hook("complete_command", _sql_complete, re_key=r"^%%sql")
+    _log.info("sql completer registered via set_hook re_key=^%%sql")
