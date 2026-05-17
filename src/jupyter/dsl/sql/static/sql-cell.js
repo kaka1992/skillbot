@@ -1,78 +1,86 @@
 /**
  * %%sql cell support: syntax highlighting + Ctrl+Shift+F formatting.
- *
- * Installation: Load via Jupyter custom.js or jupyter-config.json.
+ * JupyterLab / Notebook v7 plugin — auto-start via labextension.
  */
-define(["base/js/namespace", "base/js/events"], function (Jupyter, events) {
-  "use strict";
+const plugin = {
+  id: "skillbot:sql-cell",
+  autoStart: true,
+  requires: ["@jupyterlab/notebook", "@jupyterlab/codemirror"],
+  activate: function (app, notebook, codeMirror) {
+    "use strict";
 
-  function isSqlCell(cell) {
-    var text = cell.get_text();
-    return text.trimStart().startsWith("%%sql");
-  }
+    const { CodeMirror } = codeMirror;
+    const log = (...args) => console.log("[%%sql]", ...args);
 
-  function setSqlHighlight(cell) {
-    if (isSqlCell(cell)) {
-      cell.code_mirror.setOption("mode", "text/x-sql");
+    function isSqlCell(cell) {
+      try {
+        const text = cell.model.sharedModel.getSource();
+        return text.trimStart().startsWith("%%sql");
+      } catch (e) {
+        return false;
+      }
     }
-  }
 
-  function formatSql(cell) {
-    if (!isSqlCell(cell)) return;
-    var text = cell.get_text();
-    var lines = text.split("\n");
-    var magicLine = lines[0]; // %%sql ...
-    var sql = lines.slice(1).join("\n");
+    function sqlContent(cell) {
+      const text = cell.model.sharedModel.getSource();
+      const lines = text.split("\n");
+      return { magicLine: lines[0], sql: lines.slice(1).join("\n"), full: text };
+    }
 
-    // call kernel to format SQL
-    var code = "from jupyter.dsl.sql import format_sql\nprint(format_sql('''" +
-      sql.replace(/'/g, "\\'") + "'''), end='')";
-    cell.kernel.execute(code, {
-      iopub: {
-        output: function (msg) {
-          var formatted = msg.content.text || sql;
-          cell.set_text(magicLine + "\n" + formatted);
-        },
+    function setSqlHighlight(cell) {
+      if (isSqlCell(cell) && cell.editor) {
+        cell.editor.setOption("mode", "text/x-sql");
+      }
+    }
+
+    function formatCell(cell) {
+      if (!isSqlCell(cell)) return false;
+      try {
+        const { magicLine, sql } = sqlContent(cell);
+        // call kernel to format SQL
+        cell.sessionContext.session.kernel.requestExecute({
+          code: `from jupyter.dsl.sql import format_sql\nprint(format_sql('''${sql.replace(/'/g, "\\'")}'''), end='')`,
+        }).done.then(reply => {
+          const formatted = reply.content.text || sql;
+          cell.model.sharedModel.setSource(magicLine + "\n" + formatted);
+        }).catch(() => {});
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    // hook: cell changed → set highlight
+    notebook.NotebookActions.executed.connect((_, args) => {
+      const cell = args.cell;
+      if (cell) setSqlHighlight(cell);
+    });
+
+    // hook: after cell creation
+    app.commands.addCommand("skillbot:sql-format", {
+      label: "Format %%sql cell",
+      execute: () => {
+        const nb = app.shell.currentWidget;
+        if (nb && nb.content && nb.content.activeCell) {
+          formatCell(nb.content.activeCell);
+        }
       },
     });
-  }
 
-  // hook: when a cell is selected, set SQL highlight
-  events.on("selected_cell_type_changed.Notebook", function () {
-    var cell = Jupyter.notebook.get_selected_cell();
-    if (cell) setSqlHighlight(cell);
-  });
+    // keyboard shortcut: Ctrl+Shift+F
+    app.commands.addKeyBinding({
+      command: "skillbot:sql-format",
+      keys: ["Accel Shift F"],
+      selector: ".jp-Notebook",
+    });
 
-  // hook: after cell creation, check highlight
-  events.on("create.Cell", function (ev, data) {
-    if (data && data.cell) setSqlHighlight(data.cell);
-  });
+    log("highlighting + formatting loaded (JupyterLab)");
+  },
+};
 
-  // hook: after cell execution, re-check
-  events.on("finished_execute.CodeCell", function (ev, data) {
-    if (data && data.cell) setSqlHighlight(data.cell);
-  });
-
-  // keyboard shortcut: Ctrl+Shift+F → format SQL
-  Jupyter.keyboard_manager.command_shortcuts.add_shortcut(
-    "Ctrl-Shift-F",
-    "jupyter-sql:format-cell"
-  );
-  Jupyter.keyboard_manager.actions.register(
-    {
-      help: "Format %%sql cell",
-      handler: function () {
-        var cell = Jupyter.notebook.get_selected_cell();
-        if (cell) formatSql(cell);
-      },
-    },
-    "format-cell",
-    "jupyter-sql"
-  );
-  Jupyter.keyboard_manager.command_shortcuts.add_shortcut(
-    "Ctrl-Shift-F",
-    "jupyter-sql:format-cell"
-  );
-
-  console.log("[%%sql] highlighting + formatting loaded");
-});
+// JupyterLab plugin export
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = [plugin];
+} else {
+  window._skillbot_sql_plugin = plugin;
+}

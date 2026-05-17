@@ -98,6 +98,19 @@ c = get_config()
 c.InteractiveShellApp.extensions = ['jupyter']
 PYEOF
     echo "  [OK] config: auto-load %%agent via InteractiveShellApp.extensions"
+
+    # ---- sql-cell.js lab extension ----
+    local labext_dir="${IPYTHON_PROFILE}/labextensions/@skillbot/sql-cell"
+    mkdir -p "$labext_dir"
+    cp "${SRC}/jupyter/dsl/sql/static/sql-cell.js" "$labext_dir/"
+    cp "${SRC}/jupyter/dsl/sql/static/package.json" "$labext_dir/"
+    # register custom labextensions path in jupyter_lab_config
+    mkdir -p "${IPYTHON_PROFILE}/lab"
+    cat > "${IPYTHON_PROFILE}/jupyter_lab_config.py" <<'JLEOF'
+c = get_config()
+c.LabApp.extra_labextensions_path = [c.ServerApp.root_dir + "/labextensions"]
+JLEOF
+    echo "  [OK] labextension: @skillbot/sql-cell → %%sql highlighting + Ctrl+Shift+F"
 }
 
 # -----------------------------------------------------------

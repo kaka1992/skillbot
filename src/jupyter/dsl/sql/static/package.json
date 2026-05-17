@@ -1,0 +1,9 @@
+{
+  "name": "@skillbot/sql-cell",
+  "version": "0.1.0",
+  "description": "%%sql cell syntax highlighting + formatting for skillbot",
+  "main": "sql-cell.js",
+  "jupyterlab": {
+    "extension": true
+  }
+}
