@@ -27,39 +27,11 @@
       // 1) window._jupyterlab 2) .jp-LabShell 3) document jupyterlab attribute
       var nbWidget = null;
 
-      // Scan window for JupyterLab app reference
-      var app = window.jupyterlab || window._jupyterlab || window.jupyterapp;
-      if (!app) {
-        // Search all window keys for a JupyterLab-like object
-        Object.keys(window).forEach(function (k) {
-          var v = window[k];
-          if (v && v.commands && v.shell && v.shell.currentWidget) {
-            app = v;
-            console.log("[%%sql] found app at window." + k);
-          }
-        });
-      }
-      if (app && app.shell) {
-        nbWidget = app.shell.currentWidget;
-      }
-
-      // Path 2: find via React fiber on .jp-NotebookPanel
-      if (!nbWidget) {
-        var panel = document.querySelector(".jp-NotebookPanel");
-        if (panel) {
-          var fiberKey = Object.keys(panel).find(function (k) { return k.startsWith("__reactFiber") || k.startsWith("__reactInternalInstance"); });
-          if (fiberKey) {
-            var fiber = panel[fiberKey];
-            while (fiber) {
-              if (fiber.stateNode && fiber.stateNode.content && fiber.stateNode.content.widgets) {
-                nbWidget = fiber.stateNode;
-                break;
-              }
-              fiber = fiber.return;
-            }
-          }
-        }
-      }
+      // Dump JupyterLab-related globals for debugging
+      var jpKeys = Object.keys(window).filter(function (k) { return k.toLowerCase().indexOf('jupyter') >= 0; });
+      console.log("[%%sql] JupyterLab window keys:", JSON.stringify(jpKeys));
+      var jpDom = document.querySelectorAll("[class*='jp-']");
+      console.log("[%%sql] jp-* DOM elements:", jpDom.length);
 
       if (!nbWidget) {
         console.log("[%%sql] getCellEditorView: could not find notebook widget");

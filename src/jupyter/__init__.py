@@ -3,9 +3,13 @@
 import logging
 from pathlib import Path
 
+_EXTENSION_LOADED = False
+
 
 def load_ipython_extension(ipython):
     """Register %%agent magic. Called by %load_ext jupyter."""
+    global _EXTENSION_LOADED
+
     # setup jupyter logging — resolve relative to project root
     _proj = Path(__file__).resolve().parents[2]
     _log_dir = _proj / ".run"
@@ -26,11 +30,14 @@ def load_ipython_extension(ipython):
     from .dsl.sql.completer import load_sql_completer
     load_sql_completer(ipython)
 
-    # inject SQL cell JS (highlighting + Ctrl+Shift+F) on first cell execution
+    # inject SQL cell JS on first cell execution (only once per kernel)
+    if _EXTENSION_LOADED:
+        return
+    _EXTENSION_LOADED = True
+
     _sql_js_path = Path(__file__).resolve().parent / "dsl" / "sql" / "static" / "sql-cell.js"
 
     def _on_first_exec(_info=None):
-        # v2 — reads sql-cell.js at call time (not import time)
         try:
             if not _sql_js_path.is_file():
                 ipython.events.unregister("pre_run_cell", _on_first_exec)
