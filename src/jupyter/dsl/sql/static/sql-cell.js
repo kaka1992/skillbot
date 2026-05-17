@@ -24,7 +24,8 @@
   function getCellEditorView(cell) {
     try {
       var app = getApp();
-      if (!app || !app.shell) { console.log("[%%sql] no app/shell"); return null; }
+      if (!app) { console.log("[%%sql] getApp() returned falsy"); return null; }
+      if (!app.shell) { console.log("[%%sql] app has no shell, type=" + typeof app + " keys=" + Object.keys(app||{}).slice(0,5).join(",")); return null; }
       var nbWidget = app.shell.currentWidget;
       if (!nbWidget) { console.log("[%%sql] currentWidget is null"); return null; }
       if (!nbWidget.content) { console.log("[%%sql] currentWidget has no content prop, type=" + (nbWidget.constructor ? nbWidget.constructor.name : typeof nbWidget)); return null; }
