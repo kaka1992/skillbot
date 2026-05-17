@@ -31,9 +31,10 @@ def load_ipython_extension(ipython):
     load_sql_completer(ipython)
 
     # inject SQL cell JS on first cell execution (only once per kernel)
-    if _EXTENSION_LOADED:
+    # Check on ipython instance to survive module reload
+    if getattr(ipython, "_sql_js_registered", False):
         return
-    _EXTENSION_LOADED = True
+    ipython._sql_js_registered = True
 
     _sql_js_path = Path(__file__).resolve().parent / "dsl" / "sql" / "static" / "sql-cell.js"
 
