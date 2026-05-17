@@ -63,6 +63,9 @@ class Namespace:
     # -- write --
 
     def inject(self, name: str, value: object) -> None:
+        if name in self.vars():
+            import sys
+            print(f"[namespace] variable '{name}' already exists, overwriting", file=sys.stderr)
         self._shell.user_ns[name] = value
 
     # -- delete --

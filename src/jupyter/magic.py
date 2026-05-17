@@ -27,7 +27,7 @@ from .config import (
 from .namespace import Namespace
 from .parser import parse
 from .render import render_output
-from .review import review_task
+from .review import parse_review_result, review_line_trace, review_task
 from .sql import SqlRunner
 
 _log = logging.getLogger(__name__)
@@ -361,28 +361,17 @@ class AgentMagic(Magics):
         delta = self.ns.delta()
         variables = str({k: type(v).__name__ for k, v in self.ns.vars().items()})
 
-        review_prompt = f"""Analyze current progress:
-
-## New Context Since Last Agent Call
-{delta}
-
-## Current Variables
-{variables}
-
-Based on the above, does the task need further action?
-Reply ONLY: SOLVED: or NOT_SOLVED: <suggested next step>
-"""
         try:
-            raw = stream_output(review_prompt, self._timeout, show_text=False)
-            result_text = raw.strip().upper()
-            if "NOT_SOLVED" in result_text:
+            raw = review_line_trace(delta, variables, self._timeout)
+            result = parse_review_result(raw)
+            if result == "NOT_SOLVED":
                 mode = "--trace --auto" if auto else "--trace"
                 fix = raw.strip()[:500]
                 retry_cell = f"%%agent {mode}\n# Review: {fix}\n"
                 self.ns.set_next_input(retry_cell)
                 _log.info("trace: review cell from line magic")
                 print("[trace] review cell generated")
-            elif "SOLVED" in result_text:
+            elif result == "SOLVED":
                 print("[trace] ✓ SOLVED")
                 _log.info("trace: SOLVED from line magic")
             else:
