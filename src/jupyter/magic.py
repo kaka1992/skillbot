@@ -1,7 +1,5 @@
 """%%agent cell magic — call agent from Jupyter with streaming progress."""
 
-import atexit
-import hashlib
 import os
 import shlex
 import yaml
@@ -18,47 +16,14 @@ from .parser import parse
 from .render import render_output
 from tools import ToolRegistry
 
-# ---- prompt templates ----
-
-SYSTEM_PROMPT = """\
-Return results as a JSON object wrapped in a ```json fenced block:
-```json
-{
-  "text": "explanatory markdown text",
-  "files": ["/tmp/chart.png", "/tmp/data.csv"],
-  "code": "print('hello')"
-}
-```
-- "text": explanatory text (optional)
-- "files": list of file paths created by tools (optional)
-- "code": executable Python code (optional)
-Include only non-empty fields.
-"""
-
-_client: object | None = None
-_session_id: str | None = None
-
-
-def _notebook_path() -> str:
-    """Best-effort notebook path for stable session-key binding."""
-    try:
-        ip = get_ipython()  # noqa: F821
-        nb = getattr(ip, "_notebook_path", None)
-        if nb:
-            return nb
-        kernel = getattr(ip, "kernel", None)
-        parent = getattr(kernel, "_parent_header", None) or {}
-        nb = (parent.get("metadata") or {}).get("notebook_path")
-        if nb:
-            return nb
-    except Exception:
-        pass
-    return os.path.realpath(os.getcwd())
-
-
-def _session_key() -> str:
-    return hashlib.md5(_notebook_path().encode()).hexdigest()[:12]
-
+from .agent_session import (
+    SYSTEM_PROMPT,
+    init_session as _init_session,
+    get_client,
+    get_session_id,
+    stream_output as _stream_output,
+    _session_id,
+)
 
 def _pop_flag(args: list[str], name: str, convert: type = str):
     """Pop ``name`` and its value from *args*, returning the converted value or None."""
@@ -111,31 +76,6 @@ def _sql_progress(phase: str, data: dict | None = None) -> None:
         print(f"[submit] job_id: {data.get('job_id', '')}")
 
 
-def _init_session(agent: str, timeout: int) -> None:
-    """Create client + stable session, seed system prompt."""
-    global _client, _session_id
-    _cleanup_session()
-    from chat import ChatClient
-    _client = ChatClient(agent, timeout=timeout)
-    _session_id = _session_key()
-    # seed system prompt as first turn (model-caches the instructions)
-    _client.chat(SYSTEM_PROMPT, session=_session_id)
-
-
-def _cleanup_session() -> None:
-    """Clear server-side session on kernel shutdown."""
-    global _client, _session_id
-    if _client is not None and _session_id is not None:
-        try:
-            _client.clear_session(_session_id)
-        except Exception:
-            pass
-    _client = None
-    _session_id = None
-
-
-atexit.register(_cleanup_session)
-
 _LOG_DIR = Path(__file__).resolve().parents[2] / ".run"
 _LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -173,47 +113,6 @@ def _log_agent(session: str, vars_: list[str], cells: list[dict],
 
     with open(log_file, "a", encoding="utf-8") as f:
         f.write("\n".join(lines))
-
-
-def _stream_output(prompt: str, timeout: int | None = None, show_text: bool = True) -> str:
-    """Stream agent response via ``stream_chunks()``, display progress."""
-    if timeout is not None:
-        _client._backend._timeout = timeout
-
-    raw = ""
-    thinking_lines: list[str] = []
-    tool_names: set[str] = set()
-
-    for chunk in _client._backend.stream_chunks(prompt, session=_session_id):
-        if chunk.text:
-            raw += chunk.text
-            if show_text:
-                sys.stdout.write(chunk.text)
-                sys.stdout.flush()
-
-        if chunk.blocks:
-            for b in chunk.blocks:
-                if b.type == "thinking" and b.data:
-                    t = b.data.get("thinking", "").strip()
-                    if t:
-                        thinking_lines.append(t)
-                elif b.type == "tool_use" and b.data:
-                    name = b.data.get("name", "?")
-                    if name not in tool_names:
-                        tool_names.add(name)
-                        print(f"\n\033[90m[{name}]\033[0m")
-                elif b.type == "tool_result" and b.data:
-                    pass
-
-    print()
-    if tool_names:
-        print(f"\033[90m# tools: {', '.join(sorted(tool_names))}\033[0m")
-    if thinking_lines:
-        summary = " ".join(thinking_lines)[:200]
-        print(f"\033[90m# thinking: {summary}\033[0m")
-    print()
-
-    return raw
 
 
 # ---- magic ----
