@@ -46,7 +46,7 @@
     if (!enable) return;
 
     var view = getCellEditorView(cell);
-    if (!view) return;
+    if (!view) { console.log("[%%sql] no EditorView (window._JUPYTERLAB=" + !!getApp() + ")"); return; }
 
     import("@codemirror/lang-sql").then(function (sqlMod) {
       return import("@codemirror/state").then(function (stateMod) {
@@ -55,8 +55,11 @@
             sqlMod.sql({ upperCaseKeywords: true })
           ),
         });
+        console.log("[%%sql] SQL language applied ✓");
       });
-    }).catch(function () {});
+    }).catch(function (err) {
+      console.log("[%%sql] import failed:", err.message);
+    });
   }
 
   // ---- highlight scan ----
