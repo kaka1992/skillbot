@@ -31,10 +31,8 @@ EOF
 _setup() {
     echo "=== Setting up Jupyter ==="
 
-    # clean stale artifacts + Python cache
+    # clean stale labextension artifacts (deprecated approach)
     rm -rf "${IPYTHON_PROFILE}/labextensions" "${IPYTHON_PROFILE}/jupyter_lab_config.py" 2>/dev/null || true
-    find "${SRC}/jupyter" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
-    find "${SRC}/jupyter" -name "*.pyc" -delete 2>/dev/null || true
 
     # ensure Python deps
     if ! "${VENV_PYTHON}" -c "import jupyter" 2>/dev/null; then
