@@ -22,7 +22,3 @@ def load_ipython_extension(ipython):
     # register magics
     from .magic import AgentMagic
     ipython.register_magics(AgentMagic)
-
-    # register SQL completer
-    from .dsl.sql.completer import load_sql_completer
-    load_sql_completer(ipython)

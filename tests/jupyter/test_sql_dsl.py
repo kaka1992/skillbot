@@ -1,11 +1,10 @@
-"""Tests for dsl/sql: format_sql, register_table, completer."""
+"""Tests for dsl/sql: format_sql, register_table."""
 import sys
 
 sys.path.insert(0, "src")
 
 import pytest
 from jupyter.dsl.sql import format_sql, register_table, get_table_columns
-from jupyter.dsl.sql.completer import SQL_KEYWORDS
 
 
 class TestFormatSql:
@@ -47,36 +46,3 @@ class TestTableRegistry:
         register_table("b", ["y"])
         cache = get_table_columns()
         assert len(cache) >= 2
-
-
-class TestCompleterKeywords:
-    def test_select_matches(self):
-        matches = [kw for kw in SQL_KEYWORDS if kw.upper().startswith("SEL")]
-        assert "SELECT" in matches
-
-    def test_join_matches(self):
-        matches = [kw for kw in SQL_KEYWORDS if kw.upper().startswith("LEFT")]
-        assert "LEFT JOIN" in matches
-
-    def test_no_match(self):
-        matches = [kw for kw in SQL_KEYWORDS if kw.upper().startswith("ZZZ")]
-        assert len(matches) == 0
-
-    def test_case_insensitive(self):
-        matches_lower = [kw for kw in SQL_KEYWORDS if kw.lower().startswith("sel")]
-        matches_upper = [kw for kw in SQL_KEYWORDS if kw.upper().startswith("SEL")]
-        assert len(matches_lower) == len(matches_upper)
-
-
-class TestCompleterTableColumns:
-    def test_table_name_matches(self):
-        register_table("users", ["id", "name"])
-        tables = [t for t in get_table_columns() if t.startswith("us")]
-        assert "users" in tables
-
-    def test_column_completion(self):
-        register_table("orders", ["order_id", "amount", "date"])
-        cache = get_table_columns()
-        cols = cache.get("orders", [])
-        assert "order_id" in cols
-        assert "amount" in cols
