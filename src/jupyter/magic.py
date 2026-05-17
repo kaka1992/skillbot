@@ -137,16 +137,32 @@ class AgentMagic(Magics):
                 print(f"job_id: {data.get('job_id', job_id)}  cancel_requested: {requested}")
             elif sub == "result":
                 import pandas as pd
+                var_name = pop_flag(args, "--var") or f"result_{job_id[:8]}"
                 result = runner.result(job_id, limit=limit)
                 data = result.get("data", {})
                 sample = data.get("sample_data", [])
-                if sample:
+                # print preview from sample_data
+                if sample and len(sample) > 1:
+                    cols = sample[0] if sample else []
+                    print(f"[{var_name}] preview: {len(sample)-1} rows x {len(cols)} cols")
+                    if cols:
+                        print(f"  columns: {', '.join(str(c) for c in cols)}")
+                    for row in sample[1:4]:
+                        print(f"  [{', '.join(str(v) for v in row)}]")
+                # load from CSV output_path
+                output_path = data.get("output_path", "")
+                if output_path and Path(output_path).is_file():
+                    df = pd.read_csv(output_path)
+                    self.ns.inject(var_name, df)
+                    print(f"[{var_name}] loaded from {output_path}: {len(df)} rows x {len(df.columns)} cols")
+                elif sample and len(sample) > 1:
                     cols = sample[0] if sample else []
                     rows = sample[1:] if len(sample) > 1 else []
                     df = pd.DataFrame(rows, columns=cols)
-                    var_name = f"result_{job_id[:8]}"
                     self.ns.inject(var_name, df)
-                    print(f"[{var_name}] {len(rows)} rows x {len(cols)} cols")
+                    print(f"[{var_name}] {len(rows)} rows x {len(cols)} cols (from sample)")
+                else:
+                    print(f"\033[91m[{var_name}] no data available\033[0m", file=sys.stderr)
             else:
                 print(f"\033[91munknown subcommand: {sub}. Use: status | cancel | result\033[0m",
                       file=sys.stderr)
@@ -173,6 +189,7 @@ class AgentMagic(Magics):
         elif mode == "result":
             job_id = pop_flag(args, "--job_id")
             limit = pop_flag(args, "--limit", convert=int) or 100
+            var_name = pop_flag(args, "--var") or f"result_{job_id[:8]}"
             if not job_id:
                 print("\033[91m--job_id is required\033[0m", file=sys.stderr)
                 return
@@ -180,13 +197,28 @@ class AgentMagic(Magics):
                 result = SqlRunner().result(job_id, limit=limit)
                 data = result.get("data", {})
                 sample = data.get("sample_data", [])
-                if sample:
+                # print preview from sample_data
+                if sample and len(sample) > 1:
+                    cols = sample[0] if sample else []
+                    print(f"[{var_name}] preview: {len(sample)-1} rows x {len(cols)} cols")
+                    if cols:
+                        print(f"  columns: {', '.join(str(c) for c in cols)}")
+                    for row in sample[1:4]:
+                        print(f"  [{', '.join(str(v) for v in row)}]")
+                # load from CSV output_path
+                output_path = data.get("output_path", "")
+                if output_path and Path(output_path).is_file():
+                    df = pd.read_csv(output_path)
+                    self.ns.inject(var_name, df)
+                    print(f"[{var_name}] loaded from {output_path}: {len(df)} rows x {len(df.columns)} cols")
+                elif sample and len(sample) > 1:
                     cols = sample[0] if sample else []
                     rows = sample[1:] if len(sample) > 1 else []
                     df = pd.DataFrame(rows, columns=cols)
-                    var_name = f"result_{job_id[:8]}"
                     self.ns.inject(var_name, df)
-                    print(f"[{var_name}] {len(rows)} rows x {len(cols)} cols")
+                    print(f"[{var_name}] {len(rows)} rows x {len(cols)} cols (from sample)")
+                else:
+                    print(f"\033[91m[{var_name}] no data available\033[0m", file=sys.stderr)
             except RuntimeError as e:
                 print(f"\033[91m{e}\033[0m", file=sys.stderr)
         else:
