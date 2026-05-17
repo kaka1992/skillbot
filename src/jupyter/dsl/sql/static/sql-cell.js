@@ -21,21 +21,19 @@
 
   function getCellEditorView(cell) {
     try {
-      // Walk React fiber from .jp-NotebookPanel to find notebook widget
       var panel = document.querySelector(".jp-NotebookPanel");
-      if (!panel) return null;
+      if (!panel) { console.log("[%%sql] no .jp-NotebookPanel"); return null; }
 
       var fiberKey = Object.keys(panel).find(function (k) {
         return k.startsWith("__reactFiber") || k.startsWith("__reactInternalInstance");
       });
-      if (!fiberKey) return null;
+      if (!fiberKey) { console.log("[%%sql] panel keys:", JSON.stringify(Object.keys(panel).filter(function(k){return k.startsWith("__")||k.includes("react")||k.includes("fiber")||k.includes("Fiber")}))); return null; }
 
-      // Walk up fiber tree to find the NotebookPanel stateNode
-      var fiber = panel[fiberKey];
+      var fiber = panel[fiberKey], found = false;
       while (fiber) {
         var sn = fiber.stateNode;
         if (sn && sn.content && sn.content.widgets) {
-          // Found the notebook widget — iterate cells
+          found = true;
           var widgets = sn.content.widgets;
           for (var i = 0; i < widgets.length; i++) {
             var w = widgets[i];
@@ -47,8 +45,9 @@
         }
         fiber = fiber["return"];
       }
+      console.log("[%%sql] fiber scan: foundNotebook=" + found + " (no cell match)");
       return null;
-    } catch (e) { return null; }
+    } catch (e) { console.log("[%%sql] fiber error:", e.message); return null; }
   }
 
   // ---- SQL syntax highlighting via CM6 dynamic import ----
