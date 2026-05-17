@@ -19,17 +19,24 @@
 
   function getCellEditorView(cell) {
     try {
+      // Find the cell widget via the notebook's widget registry
       var nbPanel = document.querySelector(".jp-NotebookPanel");
       if (!nbPanel || !nbPanel.jupyterlab) return null;
       var notebook = nbPanel.jupyterlab.shell.currentWidget;
-      if (!notebook || !notebook.content) return null;
-      var cellIdx = Array.from(
-        cell.parentNode.querySelectorAll(":scope > .jp-Cell, .jp-Cell")
-      ).indexOf(cell);
-      if (cellIdx < 0) return null;
-      var cellWidget = notebook.content.widgets[cellIdx];
-      if (!cellWidget || !cellWidget.editor) return null;
-      return cellWidget.editor.editor || null;
+      if (!notebook || !notebook.content || !notebook.content.widgets) return null;
+
+      var widgets = notebook.content.widgets;
+      // Try to match by cell ID
+      for (var i = 0; i < widgets.length; i++) {
+        var w = widgets[i];
+        if (!w || !w.editor) continue;
+        // CodeMirrorEditor has a host DOM node — check if it's inside our cell
+        var host = w.editor.host;
+        if (host && cell.contains(host)) {
+          return w.editor.editor || null;
+        }
+      }
+      return null;
     } catch (e) { return null; }
   }
 
