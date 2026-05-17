@@ -124,6 +124,17 @@
 
   // ---- Ctrl+Shift+F formatting via kernel ----
 
+  function getNotebookSession() {
+    var app = window.jupyterlab || window._jupyterlab;
+    if (app && app.shell && app.shell.currentWidget) {
+      var nb = app.shell.currentWidget;
+      if (nb && nb.content && nb.sessionContext) {
+        return nb.sessionContext.session;
+      }
+    }
+    return null;
+  }
+
   function formatActiveCell() {
     var cell = getActiveCell();
     if (!cell || !isSqlCell(cell)) return;
@@ -135,11 +146,7 @@
     var sql = lines.slice(1).join("\n");
     if (!sql.trim()) return;
 
-    var nbPanel = document.querySelector(".jp-NotebookPanel");
-    if (!nbPanel || !nbPanel.jupyterlab) return;
-    var nb = nbPanel.jupyterlab.shell.currentWidget;
-    if (!nb || !nb.content || !nb.sessionContext) return;
-    var session = nb.sessionContext.session;
+    var session = getNotebookSession();
     if (!session || !session.kernel) return;
 
     var escaped = sql.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
