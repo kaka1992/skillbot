@@ -25,3 +25,20 @@ def load_ipython_extension(ipython):
     # register SQL completer
     from .dsl.sql.completer import load_sql_completer
     load_sql_completer(ipython)
+
+    # inject SQL cell JS (highlighting + Ctrl+Shift+F) on first cell execution
+    _sql_js_path = Path(__file__).resolve().parent / "dsl" / "sql" / "static" / "sql-cell.js"
+    if _sql_js_path.is_file():
+        import base64
+        _sql_js_b64 = base64.b64encode(_sql_js_path.read_bytes()).decode()
+
+        def _on_first_exec(_info=None):
+            try:
+                from IPython.display import Javascript, display
+                display(Javascript(f'eval(atob("{_sql_js_b64}"))'),
+                        include=["application/javascript"])
+            except Exception:
+                pass
+            ipython.events.unregister("pre_run_cell", _on_first_exec)
+
+        ipython.events.register("pre_run_cell", _on_first_exec)

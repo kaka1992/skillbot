@@ -99,29 +99,12 @@ c.InteractiveShellApp.extensions = ['jupyter']
 PYEOF
     echo "  [OK] config: auto-load %%agent via InteractiveShellApp.extensions"
 
-    # ---- sql labextension (TypeScript) ----
-    local ext_dir="${SRC}/jupyter/dsl/sql/extension"
-    if [ -f "${ext_dir}/package.json" ]; then
-        echo "  [RUN] building @skillbot/sql-cell labextension"
-        if [ ! -d "${ext_dir}/node_modules" ]; then
-            echo "  [npm] installing extension dependencies..."
-            (cd "$ext_dir" && npm install) || echo "  [WARN] npm install failed"
-        fi
-        if [ -f "${ext_dir}/build.js" ]; then
-            (cd "$ext_dir" && node build.js) || echo "  [WARN] extension build failed"
-        fi
-        # link into JupyterLab — use absolute path, NOT ServerApp.root_dir
-        local labext_target="${IPYTHON_PROFILE}/labextensions/@skillbot/sql-cell"
-        mkdir -p "${labext_target}/lib"
-        cp "${ext_dir}/package.json" "$labext_target/"
-        cp "${ext_dir}/lib/index.js" "$labext_target/lib/"
-        # JupyterLab config: use absolute path to the labextensions ROOT dir
-        local labext_root="${labext_target%/@skillbot/sql-cell}"
-        cat > "${IPYTHON_PROFILE}/jupyter_lab_config.py" <<JLEOF
-c = get_config()
-c.LabApp.extra_labextensions_path = ["${labext_root}"]
-JLEOF
-        echo "  [OK] labextension: @skillbot/sql-cell → SQL highlighting + Ctrl+Shift+F"
+    # ---- sql cell JS (injected via IPython on first cell execution) ----
+    local sql_js_src="${SRC}/jupyter/dsl/sql/static/sql-cell.js"
+    if [ -f "$sql_js_src" ]; then
+        mkdir -p "${IPYTHON_PROFILE}/sql"
+        cp "$sql_js_src" "${IPYTHON_PROFILE}/sql/sql-cell.js"
+        echo "  [OK] sql-cell.js deployed → CM6 dynamic import SQL highlighting + Ctrl+Shift+F"
     fi
 }
 
