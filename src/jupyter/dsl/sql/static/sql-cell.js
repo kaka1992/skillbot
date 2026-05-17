@@ -27,27 +27,32 @@
       // 1) window._jupyterlab 2) .jp-LabShell 3) document jupyterlab attribute
       var nbWidget = null;
 
-      // Path 1: global JupyterLab instance
+      // Scan window for JupyterLab app reference
       var app = window.jupyterlab || window._jupyterlab || window.jupyterapp;
-      console.log("[%%sql] path1: app=" + typeof app + " hasShell=" + !!(app && app.shell));
+      if (!app) {
+        // Search all window keys for a JupyterLab-like object
+        Object.keys(window).forEach(function (k) {
+          var v = window[k];
+          if (v && v.commands && v.shell && v.shell.currentWidget) {
+            app = v;
+            console.log("[%%sql] found app at window." + k);
+          }
+        });
+      }
       if (app && app.shell) {
         nbWidget = app.shell.currentWidget;
-        console.log("[%%sql] path1: nbWidget=" + (nbWidget ? "found" : "null"));
       }
 
-      // Path 2: find via LabShell DOM
+      // Path 2: find via React fiber on .jp-NotebookPanel
       if (!nbWidget) {
-        var shell = document.querySelector(".jp-LabShell");
-        console.log("[%%sql] path2: .jp-LabShell=" + !!shell);
-        if (shell) {
-          var fiberKey = Object.keys(shell).find(function (k) { return k.startsWith("__reactFiber"); });
-          console.log("[%%sql] path2: fiberKey=" + !!fiberKey);
+        var panel = document.querySelector(".jp-NotebookPanel");
+        if (panel) {
+          var fiberKey = Object.keys(panel).find(function (k) { return k.startsWith("__reactFiber") || k.startsWith("__reactInternalInstance"); });
           if (fiberKey) {
-            var fiber = shell[fiberKey];
+            var fiber = panel[fiberKey];
             while (fiber) {
-              if (fiber.stateNode && fiber.stateNode.shell) {
-                nbWidget = fiber.stateNode.shell.currentWidget;
-                console.log("[%%sql] path2: found via fiber");
+              if (fiber.stateNode && fiber.stateNode.content && fiber.stateNode.content.widgets) {
+                nbWidget = fiber.stateNode;
                 break;
               }
               fiber = fiber.return;
