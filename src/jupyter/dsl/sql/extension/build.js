@@ -1,6 +1,5 @@
-// esbuild bundler for JupyterLab extension
-// External: @jupyterlab/* @lumino/* (provided by JupyterLab at runtime)
-// Bundled: @codemirror/* (not exposed globally)
+// esbuild bundler — externalize @codemirror/* that JupyterLab provides at runtime
+// Only bundle @codemirror/lang-sql (not provided by JupyterLab)
 const esbuild = require("esbuild");
 
 esbuild.build({
@@ -13,6 +12,10 @@ esbuild.build({
   external: [
     "@jupyterlab/*",
     "@lumino/*",
+    "@codemirror/state",
+    "@codemirror/view",
+    "@codemirror/language",
+    "@codemirror/autocomplete",
   ],
   sourcemap: false,
 }).catch(() => process.exit(1));
