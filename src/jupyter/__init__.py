@@ -13,7 +13,7 @@ def _inject_sql_js_deferred(ipython) -> None:
     import base64
     js_b64 = base64.b64encode(js_path.read_bytes()).decode()
 
-    def _on_first_exec():
+    def _on_first_exec(_info=None):
         try:
             from IPython.display import Javascript, display
             display(Javascript(f'eval(atob("{js_b64}"))'), include=["application/javascript"])
