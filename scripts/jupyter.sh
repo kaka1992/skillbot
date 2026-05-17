@@ -103,24 +103,23 @@ PYEOF
     local ext_dir="${SRC}/jupyter/dsl/sql/extension"
     if [ -f "${ext_dir}/package.json" ]; then
         echo "  [RUN] building @skillbot/sql-cell labextension"
-        # install deps on first run (skip if node_modules exists)
         if [ ! -d "${ext_dir}/node_modules" ]; then
             echo "  [npm] installing extension dependencies..."
-            (cd "$ext_dir" && npm install) || echo "  [WARN] npm install failed, extension may not work"
+            (cd "$ext_dir" && npm install) || echo "  [WARN] npm install failed"
         fi
-        # build bundle
         if [ -f "${ext_dir}/build.js" ]; then
             (cd "$ext_dir" && node build.js) || echo "  [WARN] extension build failed"
         fi
-        # link into JupyterLab
+        # link into JupyterLab — use absolute path, NOT ServerApp.root_dir
         local labext_target="${IPYTHON_PROFILE}/labextensions/@skillbot/sql-cell"
         mkdir -p "${labext_target}/lib"
         cp "${ext_dir}/package.json" "$labext_target/"
         cp "${ext_dir}/lib/index.js" "$labext_target/lib/"
-        # register extra labextensions path
-        cat > "${IPYTHON_PROFILE}/jupyter_lab_config.py" <<'JLEOF'
+        # JupyterLab config: use absolute path to the labextensions ROOT dir
+        local labext_root="${labext_target%/@skillbot/sql-cell}"
+        cat > "${IPYTHON_PROFILE}/jupyter_lab_config.py" <<JLEOF
 c = get_config()
-c.LabApp.extra_labextensions_path = [c.ServerApp.root_dir + "/labextensions"]
+c.LabApp.extra_labextensions_path = ["${labext_root}"]
 JLEOF
         echo "  [OK] labextension: @skillbot/sql-cell → SQL highlighting + Ctrl+Shift+F"
     fi
