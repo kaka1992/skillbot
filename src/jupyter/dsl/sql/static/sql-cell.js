@@ -4,11 +4,7 @@
   function isSqlCell(cell) {
     try {
       var cmEl = cell.querySelector(".cm-content");
-      if (!cmEl) return false;
-      var text = cmEl.textContent || "";
-      var match = text.trimStart().startsWith("%%sql");
-      if (match) console.log("[%%sql] isSqlCell: YES, text starts with:", text.substring(0, 20));
-      return match;
+      return cmEl && (cmEl.textContent || "").trimStart().startsWith("%%sql");
     } catch (e) { return false; }
   }
 
@@ -21,118 +17,64 @@
     return cells.length > 0 ? cells[cells.length - 1] : null;
   }
 
+  // ---- access JupyterLab notebook widget ----
+
+  function getApp() { return window._JUPYTERLAB; }
+
   function getCellEditorView(cell) {
     try {
-      // Try multiple paths to access the JupyterLab notebook widget:
-      // 1) window._jupyterlab 2) .jp-LabShell 3) document jupyterlab attribute
-      var nbWidget = null;
-
-      // Dump JupyterLab-related globals for debugging
-      var jpKeys = Object.keys(window).filter(function (k) { return k.toLowerCase().indexOf('jupyter') >= 0; });
-      console.log("[%%sql] JupyterLab window keys:", JSON.stringify(jpKeys));
-      var jpDom = document.querySelectorAll("[class*='jp-']");
-      console.log("[%%sql] jp-* DOM elements:", jpDom.length);
-
-      if (!nbWidget) {
-        console.log("[%%sql] getCellEditorView: could not find notebook widget");
-        return null;
-      }
-      if (!nbWidget.content || !nbWidget.content.widgets) {
-        console.log("[%%sql] getCellEditorView: notebook has no content/widgets");
-        return null;
-      }
-
+      var app = getApp();
+      if (!app || !app.shell) return null;
+      var nbWidget = app.shell.currentWidget;
+      if (!nbWidget || !nbWidget.content || !nbWidget.content.widgets) return null;
       var widgets = nbWidget.content.widgets;
       for (var i = 0; i < widgets.length; i++) {
         var w = widgets[i];
         if (!w || !w.editor) continue;
         var host = w.editor.host;
-        if (!host) continue;
-        if (cell.contains(host)) {
-          return w.editor.editor || null;
-        }
+        if (host && cell.contains(host)) return w.editor.editor || null;
       }
       return null;
-    } catch (e) {
-      console.log("[%%sql] getCellEditorView error:", e.message);
-      return null;
-    }
+    } catch (e) { return null; }
   }
 
+  // ---- SQL syntax highlighting via CM6 dynamic import ----
+
   function toggleSqlLanguage(cell, enable) {
-    console.log("[%%sql] toggleSqlLanguage: enable=" + enable + " __sql_on=" + cell.__sql_on);
-    if (enable === !!cell.__sql_on) {
-      console.log("[%%sql] toggleSqlLanguage: SKIP (already " + enable + ")");
-      return;
-    }
+    if (enable === !!cell.__sql_on) return;
     cell.__sql_on = enable;
+    if (!enable) return;
 
-    if (!enable) {
-      console.log("[%%sql] toggleSqlLanguage: return (disable)");
-      return;
-    }
-
-    console.log("[%%sql] toggleSqlLanguage: calling getCellEditorView...");
     var view = getCellEditorView(cell);
-    if (!view) {
-      console.log("[%%sql] no EditorView for cell");
-      return;
-    }
+    if (!view) return;
 
-    console.log("[%%sql] toggleSqlLanguage: got EditorView, calling import()...");
-
-    import("@codemirror/lang-sql")
-      .then(function (sqlMod) {
-        return import("@codemirror/state").then(function (stateMod) {
-          return { sqlMod: sqlMod, stateMod: stateMod };
-        });
-      })
-      .then(function (mods) {
+    import("@codemirror/lang-sql").then(function (sqlMod) {
+      return import("@codemirror/state").then(function (stateMod) {
         view.dispatch({
-          effects: mods.stateMod.StateEffect.appendConfig.of(
-            mods.sqlMod.sql({ upperCaseKeywords: true })
+          effects: stateMod.StateEffect.appendConfig.of(
+            sqlMod.sql({ upperCaseKeywords: true })
           ),
         });
-        console.log("[%%sql] SQL language applied to cell");
-      })
-      .catch(function (err) {
-        console.log("[%%sql] import failed:", err.message);
       });
+    }).catch(function () {});
   }
 
   // ---- highlight scan ----
 
   function updateAllHighlights() {
     var cells = document.querySelectorAll(".jp-Cell");
-    var sqlCount = 0;
     cells.forEach(function (cell) {
       var isSql = isSqlCell(cell);
       if (isSql) {
-        sqlCount++;
-        var hadClass = cell.classList.contains("sql-cell");
-        if (!hadClass) {
-          cell.classList.add("sql-cell");
-        }
+        if (!cell.classList.contains("sql-cell")) cell.classList.add("sql-cell");
         toggleSqlLanguage(cell, true);
       } else {
         cell.classList.remove("sql-cell");
       }
     });
-    if (sqlCount > 0) console.log("[%%sql] updateAllHighlights: found " + sqlCount + " sql cells, cells=" + cells.length);
   }
 
   // ---- Ctrl+Shift+F formatting via kernel ----
-
-  function getNotebookSession() {
-    var app = window.jupyterlab || window._jupyterlab;
-    if (app && app.shell && app.shell.currentWidget) {
-      var nb = app.shell.currentWidget;
-      if (nb && nb.content && nb.sessionContext) {
-        return nb.sessionContext.session;
-      }
-    }
-    return null;
-  }
 
   function formatActiveCell() {
     var cell = getActiveCell();
@@ -145,7 +87,11 @@
     var sql = lines.slice(1).join("\n");
     if (!sql.trim()) return;
 
-    var session = getNotebookSession();
+    var app = getApp();
+    if (!app || !app.shell) return;
+    var nb = app.shell.currentWidget;
+    if (!nb || !nb.content || !nb.sessionContext) return;
+    var session = nb.sessionContext.session;
     if (!session || !session.kernel) return;
 
     var escaped = sql.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
@@ -174,5 +120,5 @@
   setInterval(updateAllHighlights, 1000);
   document.addEventListener("focusin", function () { setTimeout(updateAllHighlights, 200); });
 
-  console.log("[%%sql] highlighting + Ctrl+Shift+F loaded v2");
+  console.log("[%%sql] highlighting + Ctrl+Shift+F loaded");
 })();
