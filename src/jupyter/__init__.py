@@ -30,6 +30,7 @@ def load_ipython_extension(ipython):
     _sql_js_path = Path(__file__).resolve().parent / "dsl" / "sql" / "static" / "sql-cell.js"
 
     def _on_first_exec(_info=None):
+        # v2 — reads sql-cell.js at call time (not import time)
         try:
             if not _sql_js_path.is_file():
                 ipython.events.unregister("pre_run_cell", _on_first_exec)

@@ -175,5 +175,5 @@
   setInterval(updateAllHighlights, 1000);
   document.addEventListener("focusin", function () { setTimeout(updateAllHighlights, 200); });
 
-  console.log("[%%sql] highlighting + Ctrl+Shift+F loaded");
+  console.log("[%%sql] highlighting + Ctrl+Shift+F loaded v2");
 })();
