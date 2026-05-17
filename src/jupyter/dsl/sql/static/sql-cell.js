@@ -34,7 +34,8 @@
   function getCellEditorView(cell) {
     try {
       var app = getApp();
-      if (!app || !app.shell) return null;
+      if (!app) { console.log("[%%sql] getCellEditorView: app not found"); return null; }
+      if (!app.shell) { console.log("[%%sql] getCellEditorView: app has no shell"); return null; }
       var nbWidget = app.shell.currentWidget;
       if (!nbWidget || !nbWidget.content || !nbWidget.content.widgets) return null;
       var widgets = nbWidget.content.widgets;
@@ -56,7 +57,7 @@
     if (!enable) return;
 
     var view = getCellEditorView(cell);
-    if (!view) { console.log("[%%sql] no EditorView"); return; }
+    if (!view) { console.log("[%%sql] no EditorView (app=" + !!getApp() + ")"); return; }
 
     import("@codemirror/lang-sql").then(function (sqlMod) {
       return import("@codemirror/state").then(function (stateMod) {
