@@ -14,7 +14,7 @@ usage() {
     cat <<EOF
 Usage: jupyter.sh [lab|notebook] [options]
 
-Start Jupyter with %%agent magic pre-loaded.
+Start Jupyter with %%agent / %%sql magic pre-loaded.
 
 Examples:
   jupyter.sh                          # start notebook on 8888
@@ -26,34 +26,20 @@ EOF
 }
 
 # -----------------------------------------------------------
-# setup: ensure deps + init profile with auto-load
+# setup: ensure deps + register kernel + init profile
 # -----------------------------------------------------------
 _setup() {
     echo "=== Setting up Jupyter ==="
 
-    # ensure deps
+    # ensure Python deps
     if ! "${VENV_PYTHON}" -c "import jupyter" 2>/dev/null; then
         echo "  [RUN] installing jupyter deps"
         "${VENV_PYTHON}" -m pip install ipython jupyter notebook jupyterlab pandas ipykernel -q
     fi
 
-    # register skillbot kernel with bootstrap that patches in %%agent
+    # ---- skillbot kernel ----
     local kernel_dir="${IPYTHON_PROFILE}/kernels/skillbot"
     mkdir -p "$kernel_dir"
-    cat > "${kernel_dir}/bootstrap.py" <<BOOTSTRAP_EOF
-import os, sys
-sys.path.insert(0, '${SRC}')
-from ipykernel.kernelapp import IPKernelApp
-_orig = IPKernelApp.init_shell
-def _patched(self):
-    _orig(self)
-    # store notebook path for session-key binding
-    self.shell._notebook_path = os.path.realpath(os.getcwd())
-    from jupyter import load_ipython_extension
-    load_ipython_extension(self.shell)
-IPKernelApp.init_shell = _patched
-IPKernelApp.launch_instance()
-BOOTSTRAP_EOF
     cat > "${kernel_dir}/kernel.json" <<KERNEL_EOF
 {
  "argv": [
@@ -65,14 +51,26 @@ BOOTSTRAP_EOF
  "language": "python"
 }
 KERNEL_EOF
+    cat > "${kernel_dir}/bootstrap.py" <<BOOTSTRAP_EOF
+import os, sys
+sys.path.insert(0, '${SRC}')
+from ipykernel.kernelapp import IPKernelApp
+_orig = IPKernelApp.init_shell
+def _patched(self):
+    _orig(self)
+    self.shell._notebook_path = os.path.realpath(os.getcwd())
+    from jupyter import load_ipython_extension
+    load_ipython_extension(self.shell)
+IPKernelApp.init_shell = _patched
+IPKernelApp.launch_instance()
+BOOTSTRAP_EOF
     echo "  [OK] kernel: skillbot (Python 3.12)"
 
-    # create working directory
+    # ---- working dir ----
     mkdir -p "${IPYTHON_PROFILE}/run"
 
-    # create startup script in BOTH locations:
-    # .jupyter/startup  — Jupyter server
-    # ~/.ipython/profile_default/startup — ipykernel
+    # ---- IPython startup: auto-load jupyter extension ----
+    # Write to both .jupyter (skillbot kernel) and ~/.ipython (default kernel fallback)
     local ipython_dir="$("${VENV_PYTHON}" -c 'import IPython.paths; print(IPython.paths.get_ipython_dir())')/profile_default"
     for _dir in "${IPYTHON_PROFILE}" "${ipython_dir}"; do
         mkdir -p "${_dir}/startup"
@@ -89,23 +87,7 @@ except NameError:
 PYEOF
         sed -i '' "s|SRC_PLACEHOLDER|${SRC}|" "${_dir}/startup/00-agent-magic.py"
     done
-
-    # IPython config: auto-load jupyter extension (works for both terminal and kernel)
-    local ipython_config_dir="${ipython_dir}/profile_default"
-    mkdir -p "$ipython_config_dir"
-    cat > "${ipython_config_dir}/ipython_kernel_config.py" <<'PYEOF'
-c = get_config()
-c.InteractiveShellApp.extensions = ['jupyter']
-PYEOF
-    echo "  [OK] config: auto-load %%agent via InteractiveShellApp.extensions"
-
-    # ---- sql cell JS (injected via IPython on first cell execution) ----
-    local sql_js_src="${SRC}/jupyter/dsl/sql/static/sql-cell.js"
-    if [ -f "$sql_js_src" ]; then
-        mkdir -p "${IPYTHON_PROFILE}/sql"
-        cp "$sql_js_src" "${IPYTHON_PROFILE}/sql/sql-cell.js"
-        echo "  [OK] sql-cell.js deployed → CM6 dynamic import SQL highlighting + Ctrl+Shift+F"
-    fi
+    echo "  [OK] startup: auto-load %%agent + %%sql via IPython startup"
 }
 
 # -----------------------------------------------------------
@@ -119,7 +101,6 @@ _start() {
 
     echo "=== Starting Jupyter ${mode} ==="
     echo "  PYTHONPATH: ${SRC}"
-    echo "  Use: %load_ext jupyter"
     echo ""
 
     export PYTHONPATH="${SRC}${PYTHONPATH:+:${PYTHONPATH}}"
