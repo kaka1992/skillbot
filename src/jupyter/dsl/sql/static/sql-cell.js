@@ -28,22 +28,26 @@
       var nbWidget = null;
 
       // Path 1: global JupyterLab instance
-      var app = window.jupyterlab || window._jupyterlab;
+      var app = window.jupyterlab || window._jupyterlab || window.jupyterapp;
+      console.log("[%%sql] path1: app=" + typeof app + " hasShell=" + !!(app && app.shell));
       if (app && app.shell) {
         nbWidget = app.shell.currentWidget;
+        console.log("[%%sql] path1: nbWidget=" + (nbWidget ? "found" : "null"));
       }
 
       // Path 2: find via LabShell DOM
       if (!nbWidget) {
         var shell = document.querySelector(".jp-LabShell");
+        console.log("[%%sql] path2: .jp-LabShell=" + !!shell);
         if (shell) {
-          // Try to access the shell's currentWidget via React fiber
           var fiberKey = Object.keys(shell).find(function (k) { return k.startsWith("__reactFiber"); });
+          console.log("[%%sql] path2: fiberKey=" + !!fiberKey);
           if (fiberKey) {
             var fiber = shell[fiberKey];
             while (fiber) {
               if (fiber.stateNode && fiber.stateNode.shell) {
                 nbWidget = fiber.stateNode.shell.currentWidget;
+                console.log("[%%sql] path2: found via fiber");
                 break;
               }
               fiber = fiber.return;
