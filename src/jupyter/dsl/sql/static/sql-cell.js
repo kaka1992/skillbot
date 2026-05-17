@@ -1,86 +1,122 @@
-/**
- * %%sql cell support: syntax highlighting + Ctrl+Shift+F formatting.
- * JupyterLab / Notebook v7 plugin — auto-start via labextension.
- */
-const plugin = {
-  id: "skillbot:sql-cell",
-  autoStart: true,
-  requires: ["@jupyterlab/notebook", "@jupyterlab/codemirror"],
-  activate: function (app, notebook, codeMirror) {
-    "use strict";
+(function () {
+  "use strict";
 
-    const { CodeMirror } = codeMirror;
-    const log = (...args) => console.log("[%%sql]", ...args);
+  // ---- helpers ----
 
-    function isSqlCell(cell) {
+  function isSqlCell(cell) {
+    try {
+      return cell.getText().trimStart().startsWith("%%sql");
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function getActiveCell() {
+    // JupyterLab / Notebook v7
+    var nb = document.querySelector(".jp-Notebook");
+    if (nb && nb.jupyterlab) {
+      var panel = document.querySelector(".jp-NotebookPanel");
+      if (!panel) return null;
+      // get active cell from the notebook panel widget
       try {
-        const text = cell.model.sharedModel.getSource();
-        return text.trimStart().startsWith("%%sql");
-      } catch (e) {
-        return false;
-      }
-    }
-
-    function sqlContent(cell) {
-      const text = cell.model.sharedModel.getSource();
-      const lines = text.split("\n");
-      return { magicLine: lines[0], sql: lines.slice(1).join("\n"), full: text };
-    }
-
-    function setSqlHighlight(cell) {
-      if (isSqlCell(cell) && cell.editor) {
-        cell.editor.setOption("mode", "text/x-sql");
-      }
-    }
-
-    function formatCell(cell) {
-      if (!isSqlCell(cell)) return false;
-      try {
-        const { magicLine, sql } = sqlContent(cell);
-        // call kernel to format SQL
-        cell.sessionContext.session.kernel.requestExecute({
-          code: `from jupyter.dsl.sql import format_sql\nprint(format_sql('''${sql.replace(/'/g, "\\'")}'''), end='')`,
-        }).done.then(reply => {
-          const formatted = reply.content.text || sql;
-          cell.model.sharedModel.setSource(magicLine + "\n" + formatted);
-        }).catch(() => {});
-        return true;
-      } catch (e) {
-        return false;
-      }
-    }
-
-    // hook: cell changed → set highlight
-    notebook.NotebookActions.executed.connect((_, args) => {
-      const cell = args.cell;
-      if (cell) setSqlHighlight(cell);
-    });
-
-    // hook: after cell creation
-    app.commands.addCommand("skillbot:sql-format", {
-      label: "Format %%sql cell",
-      execute: () => {
-        const nb = app.shell.currentWidget;
-        if (nb && nb.content && nb.content.activeCell) {
-          formatCell(nb.content.activeCell);
+        var cells = document.querySelectorAll(".jp-Cell");
+        var focused = document.activeElement;
+        for (var i = 0; i < cells.length; i++) {
+          if (cells[i].contains(focused)) return cells[i];
         }
-      },
+        return cells[cells.length - 1];
+      } catch (e) {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  function getCellText(cell) {
+    var cmContent = cell.querySelector(".cm-content");
+    if (cmContent) return cmContent.textContent || "";
+    return "";
+  }
+
+  function getCellMagicLine(cell) {
+    var text = getCellText(cell);
+    var lines = text.split("\n");
+    return lines[0] || "";
+  }
+
+  function getCellSql(cell) {
+    var text = getCellText(cell);
+    var lines = text.split("\n");
+    return { magic: lines[0], sql: lines.slice(1).join("\n") };
+  }
+
+  // ---- formatting via kernel ----
+
+  function formatCell(cell) {
+    var sq = getCellSql(cell);
+    if (!sq.magic.startsWith("%%sql")) return;
+
+    var sql = sq.sql.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    var code = "from jupyter.dsl.sql import format_sql\nprint(format_sql('''" + sql + "'''), end='')";
+
+    // access kernel via JupyterLab notebook
+    var nbPanel = document.querySelector(".jp-NotebookPanel");
+    if (!nbPanel || !nbPanel.jupyterlab) return;
+
+    try {
+      var sessionContext = nbPanel.jupyterlab.sessionContext;
+      if (sessionContext && sessionContext.session) {
+        var future = sessionContext.session.kernel.requestExecute({ code: code });
+        future.done.then(function (reply) {
+          var formatted = reply.content.text || sq.sql;
+          var newText = sq.magic + "\n" + formatted;
+          // set cell text via NotebookActions-like approach
+          var cm = cell.querySelector(".cm-content");
+          if (cm) cm.textContent = newText;
+        });
+      }
+    } catch (e) {
+      console.log("[%%sql] format error:", e);
+    }
+  }
+
+  // ---- syntax highlighting via CSS ----
+
+  var _style = document.createElement("style");
+  _style.textContent =
+    ".jp-Cell.sql-highlight .cm-content { background: #f7f9fc !important; }";
+  document.head.appendChild(_style);
+
+  function updateSqlHighlight() {
+    var cells = document.querySelectorAll(".jp-Cell");
+    cells.forEach(function (cell) {
+      var text = getCellText(cell);
+      if (text.trimStart().startsWith("%%sql")) {
+        cell.classList.add("sql-highlight");
+      } else {
+        cell.classList.remove("sql-highlight");
+      }
     });
+  }
 
-    // keyboard shortcut: Ctrl+Shift+F
-    app.commands.addKeyBinding({
-      command: "skillbot:sql-format",
-      keys: ["Accel Shift F"],
-      selector: ".jp-Notebook",
-    });
+  // ---- keyboard shortcut ----
 
-    log("highlighting + formatting loaded (JupyterLab)");
-  },
-};
+  document.addEventListener("keydown", function (e) {
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "F") {
+      e.preventDefault();
+      e.stopPropagation();
+      var cell = getActiveCell();
+      if (cell) formatCell(cell);
+    }
+  }, true);
 
-// JupyterLab plugin export
-if (typeof module !== "undefined" && module.exports) {
-  module.exports = [plugin];
-} else {
-  window._skillbot_sql_plugin = plugin;
-}
+  // ---- watch for cell changes ----
+
+  setInterval(updateSqlHighlight, 2000);  // periodic check
+  document.addEventListener("focusin", updateSqlHighlight);
+  document.addEventListener("click", function () {
+    setTimeout(updateSqlHighlight, 100);
+  });
+
+  console.log("[%%sql] highlighting + Ctrl+Shift+F loaded (injected)");
+})();

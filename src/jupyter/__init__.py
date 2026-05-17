@@ -1,8 +1,27 @@
 """Jupyter integration — %%agent cell magic."""
 
 import logging
-import os
 from pathlib import Path
+
+
+def _inject_sql_js_deferred(ipython) -> None:
+    """Schedule JS injection on first cell execution (post kernel connect)."""
+    js_path = Path(__file__).resolve().parent / "dsl" / "sql" / "static" / "sql-cell.js"
+    if not js_path.is_file():
+        return
+
+    import base64
+    js_b64 = base64.b64encode(js_path.read_bytes()).decode()
+
+    def _on_first_exec():
+        try:
+            from IPython.display import Javascript, display
+            display(Javascript(f'eval(atob("{js_b64}"))'), include=["application/javascript"])
+        except Exception:
+            pass
+        ipython.events.unregister("pre_run_cell", _on_first_exec)
+
+    ipython.events.register("pre_run_cell", _on_first_exec)
 
 
 def load_ipython_extension(ipython):
@@ -26,3 +45,6 @@ def load_ipython_extension(ipython):
     # register SQL completer
     from .dsl.sql.completer import load_sql_completer
     load_sql_completer(ipython)
+
+    # inject SQL cell JS (deferred — injected on first %%sql cell execution)
+    _inject_sql_js_deferred(ipython)
