@@ -3,51 +3,98 @@
 
   // ---- helpers ----
 
-  function isSqlCell(cell) {
-    try {
-      return cell.getText().trimStart().startsWith("%%sql");
-    } catch (e) {
-      return false;
-    }
+  function getCellText(cmEl) {
+    if (!cmEl) return "";
+    return cmEl.textContent || "";
   }
 
-  function getActiveCell() {
-    // JupyterLab / Notebook v7
-    var nb = document.querySelector(".jp-Notebook");
-    if (nb && nb.jupyterlab) {
-      var panel = document.querySelector(".jp-NotebookPanel");
-      if (!panel) return null;
-      // get active cell from the notebook panel widget
-      try {
-        var cells = document.querySelectorAll(".jp-Cell");
-        var focused = document.activeElement;
-        for (var i = 0; i < cells.length; i++) {
-          if (cells[i].contains(focused)) return cells[i];
-        }
-        return cells[cells.length - 1];
-      } catch (e) {
-        return null;
-      }
-    }
-    return null;
-  }
-
-  function getCellText(cell) {
-    var cmContent = cell.querySelector(".cm-content");
-    if (cmContent) return cmContent.textContent || "";
-    return "";
-  }
-
-  function getCellMagicLine(cell) {
-    var text = getCellText(cell);
-    var lines = text.split("\n");
-    return lines[0] || "";
+  function isSqlCell(cmEl) {
+    return getCellText(cmEl).trimStart().startsWith("%%sql");
   }
 
   function getCellSql(cell) {
-    var text = getCellText(cell);
+    var cmEl = cell.querySelector(".cm-content");
+    var text = getCellText(cmEl);
     var lines = text.split("\n");
-    return { magic: lines[0], sql: lines.slice(1).join("\n") };
+    return { magic: lines[0], sql: lines.slice(1).join("\n"), cmEl: cmEl };
+  }
+
+  function getActiveCell() {
+    var cells = document.querySelectorAll(".jp-Cell");
+    var focused = document.activeElement;
+    for (var i = 0; i < cells.length; i++) {
+      if (cells[i].contains(focused)) return cells[i];
+    }
+    return cells.length > 0 ? cells[cells.length - 1] : null;
+  }
+
+  // ---- syntax highlighting (CodeMirror 6) ----
+
+  function setSqlHighlight(cell) {
+    var cmEl = cell.querySelector(".cm-content");
+    if (!cmEl || !isSqlCell(cmEl)) return false;
+
+    // access the CodeMirror 6 EditorView via JupyterLab cell widget
+    var cmView = cmEl.closest(".cm-editor");
+    if (!cmView) return false;
+
+    // find EditorView instance attached to the DOM wrapper
+    try {
+      // CodeMirror 6 stores the view on the DOM node
+      var view = cmView.cmView ? cmView.cmView.view : null;
+      // alternative: find via __jupyterlab editor property
+      if (!view) {
+        // walk up to find the cell widget's editor
+        var notebookEl = cell.closest(".jp-NotebookPanel");
+        if (notebookEl) {
+          // try accessing via JupyterLab's global registry
+          var jpLab = notebookEl.jupyterlab || window._jupyterlab;
+        }
+      }
+
+      // Use CodeMirror 6 Compartment API if view is accessible
+      if (view && view.dispatch) {
+        // Try to set SQL language — need to import from @codemirror/lang-sql
+        // Since we can't import, use a simpler approach: set the language name
+        try {
+          var cm = view.state;
+          // CodeMirror 6 doesn't expose setMode directly; use facets
+          // Fallback: configure the cell editor via JupyterLab commands
+          var id = cell.getAttribute("id") || cell.getAttribute("data-id");
+          if (id && window._jpLAB) {
+            window._jpLAB.commands.execute("notebook:change-cell-to-code");
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+    } catch (e) {
+      // ignore, fall back to CSS
+    }
+
+    // CSS fallback: simple visual indicator
+    cell.classList.add("sql-cell");
+    return true;
+  }
+
+  // ---- CSS ----
+
+  var _style = document.createElement("style");
+  _style.textContent =
+    ".jp-Cell.sql-cell .cm-line:first-child { color: #6a9955 !important; font-style: italic; }";
+  document.head.appendChild(_style);
+
+  function updateAllHighlights() {
+    var cells = document.querySelectorAll(".jp-Cell");
+    cells.forEach(function (cell) {
+      var cmEl = cell.querySelector(".cm-content");
+      if (cmEl && isSqlCell(cmEl)) {
+        cell.classList.add("sql-cell");
+        setSqlHighlight(cell);
+      } else {
+        cell.classList.remove("sql-cell");
+      }
+    });
   }
 
   // ---- formatting via kernel ----
@@ -59,7 +106,6 @@
     var sql = sq.sql.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
     var code = "from jupyter.dsl.sql import format_sql\nprint(format_sql('''" + sql + "'''), end='')";
 
-    // access kernel via JupyterLab notebook
     var nbPanel = document.querySelector(".jp-NotebookPanel");
     if (!nbPanel || !nbPanel.jupyterlab) return;
 
@@ -70,33 +116,12 @@
         future.done.then(function (reply) {
           var formatted = reply.content.text || sq.sql;
           var newText = sq.magic + "\n" + formatted;
-          // set cell text via NotebookActions-like approach
-          var cm = cell.querySelector(".cm-content");
-          if (cm) cm.textContent = newText;
+          if (sq.cmEl) sq.cmEl.textContent = newText;
         });
       }
     } catch (e) {
       console.log("[%%sql] format error:", e);
     }
-  }
-
-  // ---- syntax highlighting via CSS ----
-
-  var _style = document.createElement("style");
-  _style.textContent =
-    ".jp-Cell.sql-highlight .cm-content { background: #f7f9fc !important; }";
-  document.head.appendChild(_style);
-
-  function updateSqlHighlight() {
-    var cells = document.querySelectorAll(".jp-Cell");
-    cells.forEach(function (cell) {
-      var text = getCellText(cell);
-      if (text.trimStart().startsWith("%%sql")) {
-        cell.classList.add("sql-highlight");
-      } else {
-        cell.classList.remove("sql-highlight");
-      }
-    });
   }
 
   // ---- keyboard shortcut ----
@@ -110,13 +135,10 @@
     }
   }, true);
 
-  // ---- watch for cell changes ----
+  // ---- watch for changes ----
 
-  setInterval(updateSqlHighlight, 2000);  // periodic check
-  document.addEventListener("focusin", updateSqlHighlight);
-  document.addEventListener("click", function () {
-    setTimeout(updateSqlHighlight, 100);
-  });
+  setInterval(updateAllHighlights, 1000);
+  document.addEventListener("focusin", function () { setTimeout(updateAllHighlights, 200); });
 
-  console.log("[%%sql] highlighting + Ctrl+Shift+F loaded (injected)");
+  console.log("[%%sql] highlighting + Ctrl+Shift+F loaded");
 })();
