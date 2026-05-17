@@ -19,29 +19,31 @@
 
   // ---- access JupyterLab notebook widget ----
 
-  function getApp() { return window._JUPYTERLAB; }
+  function getApp() {
+    // Search all window properties for the JupyterLab application instance
+    var keys = Object.keys(window);
+    for (var i = 0; i < keys.length; i++) {
+      try {
+        var v = window[keys[i]];
+        if (v && v.shell && v.commands && v.started) return v;
+      } catch (e) {}
+    }
+    return null;
+  }
 
   function getCellEditorView(cell) {
     try {
       var app = getApp();
-      if (!app) { console.log("[%%sql] getApp() returned falsy"); return null; }
-      if (!app.shell) { console.log("[%%sql] app has no shell, type=" + typeof app + " keys=" + Object.keys(app||{}).slice(0,5).join(",")); return null; }
+      if (!app || !app.shell) return null;
       var nbWidget = app.shell.currentWidget;
-      if (!nbWidget) { console.log("[%%sql] currentWidget is null"); return null; }
-      if (!nbWidget.content) { console.log("[%%sql] currentWidget has no content prop, type=" + (nbWidget.constructor ? nbWidget.constructor.name : typeof nbWidget)); return null; }
-      if (!nbWidget.content.widgets) { console.log("[%%sql] notebook content has no widgets, keys=" + Object.keys(nbWidget.content).join(",")); return null; }
+      if (!nbWidget || !nbWidget.content || !nbWidget.content.widgets) return null;
       var widgets = nbWidget.content.widgets;
-      var matched = 0, noHost = 0, noContain = 0;
       for (var i = 0; i < widgets.length; i++) {
         var w = widgets[i];
         if (!w || !w.editor) continue;
-        matched++;
         var host = w.editor.host;
-        if (!host) { noHost++; continue; }
-        if (!cell.contains(host)) { noContain++; continue; }
-        return w.editor.editor || null;
+        if (host && cell.contains(host)) return w.editor.editor || null;
       }
-      console.log("[%%sql] widget scan: matched=" + matched + " noHost=" + noHost + " noContain=" + noContain + " total=" + widgets.length);
       return null;
     } catch (e) { return null; }
   }
@@ -54,7 +56,7 @@
     if (!enable) return;
 
     var view = getCellEditorView(cell);
-    if (!view) { console.log("[%%sql] no EditorView (window._JUPYTERLAB=" + !!getApp() + ")"); return; }
+    if (!view) { console.log("[%%sql] no EditorView"); return; }
 
     import("@codemirror/lang-sql").then(function (sqlMod) {
       return import("@codemirror/state").then(function (stateMod) {
