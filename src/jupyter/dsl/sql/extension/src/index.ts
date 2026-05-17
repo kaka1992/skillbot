@@ -4,14 +4,10 @@ import {
 } from "@jupyterlab/application";
 import { INotebookTracker, NotebookPanel } from "@jupyterlab/notebook";
 import { CodeCell } from "@jupyterlab/cells";
-import { sql } from "@codemirror/lang-sql";
-import { Compartment } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
 
 const PLUGIN_ID = "@skillbot/sql-cell:plugin";
-
-const sqlExtension = sql({ upperCaseKeywords: true });
-const languageCompartment = new Compartment();
+const SQL_MIME = "text/x-sql";
+const PYTHON_MIME = "text/x-python";
 
 /**
  * Check if a code cell contains a %%sql magic.
@@ -26,42 +22,34 @@ function isSqlCell(cell: CodeCell): boolean {
 }
 
 /**
- * Apply SQL language mode to the cell's CodeMirror editor.
+ * Get the current MIME type from the cell's editor model.
  */
-function applySqlLanguage(cell: CodeCell): void {
+function getMimeType(cell: CodeCell): string {
   try {
-    const editor = cell.editor;
-    // Access the underlying CodeMirror 6 EditorView
-    const cmView = (editor as any)._editor as EditorView | undefined;
-    if (!cmView || !cmView.dispatch) return;
-
-    cmView.dispatch({
-      effects: languageCompartment.reconfigure(sqlExtension),
-    });
+    return (cell.editor.model as any).mimeType || "";
   } catch {
-    // Ignore — cell may not have an active editor
+    return "";
   }
 }
 
 /**
- * Remove SQL language mode from the cell.
+ * Set the MIME type on the cell's editor model.
+ * This triggers JupyterLab's built-in language switching (CM6).
  */
-function removeSqlLanguage(cell: CodeCell): void {
+function setMimeType(cell: CodeCell, mime: string): void {
   try {
-    const editor = cell.editor;
-    const cmView = (editor as any)._editor as EditorView | undefined;
-    if (!cmView || !cmView.dispatch) return;
-
-    cmView.dispatch({
-      effects: languageCompartment.reconfigure([]),
-    });
+    const model = cell.editor.model as any;
+    if (model.mimeType !== mime) {
+      model.mimeType = mime;
+    }
   } catch {
     // Ignore
   }
 }
 
 /**
- * Check all cells in the notebook and update SQL highlighting.
+ * Update all cells in the notebook — set SQL MIME for %%sql cells,
+ * restore Python MIME for non-%%sql cells.
  */
 function updateNotebook(panel: NotebookPanel): void {
   const notebook = panel.content;
@@ -69,14 +57,21 @@ function updateNotebook(panel: NotebookPanel): void {
     if (cell.model.type === "code") {
       const codeCell = cell as CodeCell;
       if (isSqlCell(codeCell)) {
-        applySqlLanguage(codeCell);
+        if (getMimeType(codeCell) !== SQL_MIME) {
+          setMimeType(codeCell, SQL_MIME);
+        }
+      } else {
+        if (getMimeType(codeCell) === SQL_MIME) {
+          setMimeType(codeCell, PYTHON_MIME);
+        }
       }
     }
   });
 }
 
 /**
- * JupyterLab plugin: monitors notebook cells and applies SQL syntax highlighting.
+ * JupyterLab plugin: monitors notebook cells and switches language
+ * between SQL and Python based on %%sql magic.
  */
 const plugin: JupyterFrontEndPlugin<void> = {
   id: PLUGIN_ID,
@@ -88,18 +83,15 @@ const plugin: JupyterFrontEndPlugin<void> = {
   ) => {
     console.log("[%%sql] JupyterLab extension activated");
 
-    // Hook: when a notebook is opened or active notebook changes
     tracker.currentChanged.connect((_, panel) => {
       if (panel) {
         updateNotebook(panel);
-        // Listen for cell content changes
         panel.content.model?.sharedModel.changed.connect(() => {
           updateNotebook(panel);
         });
       }
     });
 
-    // Hook: when any notebook widget is added
     tracker.widgetAdded.connect((_, panel) => {
       updateNotebook(panel);
       panel.content.model?.sharedModel.changed.connect(() => {
@@ -107,7 +99,6 @@ const plugin: JupyterFrontEndPlugin<void> = {
       });
     });
 
-    // Also check all open notebooks
     tracker.forEach((panel) => {
       updateNotebook(panel);
       panel.content.model?.sharedModel.changed.connect(() => {
