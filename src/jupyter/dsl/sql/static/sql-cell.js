@@ -4,7 +4,11 @@
   function isSqlCell(cell) {
     try {
       var cmEl = cell.querySelector(".cm-content");
-      return cmEl && (cmEl.textContent || "").trimStart().startsWith("%%sql");
+      if (!cmEl) return false;
+      var text = cmEl.textContent || "";
+      var match = text.trimStart().startsWith("%%sql");
+      if (match) console.log("[%%sql] isSqlCell: YES, text starts with:", text.substring(0, 20));
+      return match;
     } catch (e) { return false; }
   }
 
@@ -109,10 +113,13 @@
 
   function updateAllHighlights() {
     var cells = document.querySelectorAll(".jp-Cell");
+    var sqlCount = 0;
     cells.forEach(function (cell) {
       var isSql = isSqlCell(cell);
       if (isSql) {
-        if (!cell.classList.contains("sql-cell")) {
+        sqlCount++;
+        var hadClass = cell.classList.contains("sql-cell");
+        if (!hadClass) {
           cell.classList.add("sql-cell");
         }
         toggleSqlLanguage(cell, true);
@@ -120,6 +127,7 @@
         cell.classList.remove("sql-cell");
       }
     });
+    if (sqlCount > 0) console.log("[%%sql] updateAllHighlights: found " + sqlCount + " sql cells, cells=" + cells.length);
   }
 
   // ---- Ctrl+Shift+F formatting via kernel ----
