@@ -24,9 +24,11 @@
   function getCellEditorView(cell) {
     try {
       var app = getApp();
-      if (!app || !app.shell) return null;
+      if (!app || !app.shell) { console.log("[%%sql] no app/shell"); return null; }
       var nbWidget = app.shell.currentWidget;
-      if (!nbWidget || !nbWidget.content || !nbWidget.content.widgets) return null;
+      if (!nbWidget) { console.log("[%%sql] currentWidget is null"); return null; }
+      if (!nbWidget.content) { console.log("[%%sql] currentWidget has no content prop, type=" + (nbWidget.constructor ? nbWidget.constructor.name : typeof nbWidget)); return null; }
+      if (!nbWidget.content.widgets) { console.log("[%%sql] notebook content has no widgets, keys=" + Object.keys(nbWidget.content).join(",")); return null; }
       var widgets = nbWidget.content.widgets;
       var matched = 0, noHost = 0, noContain = 0;
       for (var i = 0; i < widgets.length; i++) {
