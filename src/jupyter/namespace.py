@@ -85,6 +85,25 @@ class Namespace:
     def set_next_input(self, code: str) -> None:
         self._shell.set_next_input(code, replace=False)
 
+    def flush_current_cell(self, marker: str = "%agent --trace") -> str:
+        """Capture and track code before *marker* in the current cell.
+        Returns the code before the marker, or "" on failure.
+        """
+        try:
+            from IPython import get_ipython
+            shell = get_ipython()
+            full_cell = getattr(shell, "_current_cell_raw", "")
+            if not full_cell:
+                return ""
+            lines = full_cell.split("\n")
+            idx = next((i for i, l in enumerate(lines) if marker in l), len(lines))
+            code_before = "\n".join(lines[:idx])
+            if code_before.strip():
+                self.track_cell(code_before, "")
+            return code_before
+        except Exception:
+            return ""
+
     # -- helpers --
 
     @staticmethod
