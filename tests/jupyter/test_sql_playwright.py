@@ -127,7 +127,7 @@ class TestSqlCellBasic:
 
 
 class TestSqlFormatting:
-    """Test kernel-side format_sql."""
+    """Test kernel-side format_sql and Ctrl+Shift+F shortcut."""
 
     def test_kernel_format_sql(self):
         from playwright.sync_api import sync_playwright
@@ -153,7 +153,6 @@ class TestSqlFormatting:
             page.keyboard.press("Control+Enter")
             time.sleep(5)
 
-            # check output — try multiple selector patterns
             output = page.evaluate("""
                 () => {
                     const cells = document.querySelectorAll(".jp-Cell, .cell, [data-cell-id]");
@@ -171,3 +170,4 @@ class TestSqlFormatting:
             """)
             assert "OK" in (output or ""), f"output: '{output}'"
             browser.close()
+
