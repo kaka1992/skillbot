@@ -21,33 +21,31 @@
 
   function getCellEditorView(cell) {
     try {
-      var panel = document.querySelector(".jp-NotebookPanel");
-      if (!panel) { console.log("[%%sql] no .jp-NotebookPanel"); return null; }
+      // Find all window keys containing 'lab' or 'Lab' (case insensitive)
+      var labKeys = Object.keys(window).filter(function(k){return k.toLowerCase().indexOf('lab')>=0});
+      console.log("[%%sql] window keys with 'lab':", JSON.stringify(labKeys));
 
-      var fiberKey = Object.keys(panel).find(function (k) {
-        return k.startsWith("__reactFiber") || k.startsWith("__reactInternalInstance");
-      });
-      if (!fiberKey) { console.log("[%%sql] panel keys:", JSON.stringify(Object.keys(panel).filter(function(k){return k.startsWith("__")||k.includes("react")||k.includes("fiber")||k.includes("Fiber")}))); return null; }
-
-      var fiber = panel[fiberKey], found = false;
-      while (fiber) {
-        var sn = fiber.stateNode;
-        if (sn && sn.content && sn.content.widgets) {
-          found = true;
-          var widgets = sn.content.widgets;
-          for (var i = 0; i < widgets.length; i++) {
-            var w = widgets[i];
-            if (!w || !w.editor) continue;
-            var host = w.editor.host;
-            if (host && cell.contains(host)) return w.editor.editor || null;
+      // Check each for a usable app object
+      for (var i = 0; i < labKeys.length; i++) {
+        var v = window[labKeys[i]];
+        if (!v || typeof v !== "object") continue;
+        if (v.shell && v.commands) {
+          console.log("[%%sql] found app: window." + labKeys[i]);
+          var nbWidget = v.shell.currentWidget;
+          if (nbWidget && nbWidget.content && nbWidget.content.widgets) {
+            var widgets = nbWidget.content.widgets;
+            for (var j = 0; j < widgets.length; j++) {
+              var w = widgets[j];
+              if (!w || !w.editor) continue;
+              var host = w.editor.host;
+              if (host && cell.contains(host)) return w.editor.editor || null;
+            }
           }
-          break;
         }
-        fiber = fiber["return"];
       }
-      console.log("[%%sql] fiber scan: foundNotebook=" + found + " (no cell match)");
+      console.log("[%%sql] no usable app found in lab keys");
       return null;
-    } catch (e) { console.log("[%%sql] fiber error:", e.message); return null; }
+    } catch (e) { console.log("[%%sql] error:", e.message); return null; }
   }
 
   // ---- SQL syntax highlighting via CM6 dynamic import ----
