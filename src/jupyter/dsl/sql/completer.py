@@ -32,15 +32,21 @@ def load_sql_completer(ipython) -> None:
     _log.info("sql completer registered")
 
     def _sql_complete(event):
-        cell = getattr(ipython, "_current_cell_raw", "") or ""
+        try:
+            _log.info("_sql_complete CALLED event_type=%s", type(event).__name__)
+        except Exception as e:
+            _log.warning("_sql_complete log failed: %s", e)
 
-        # only active in %%sql cells
-        if not cell.lstrip().startswith("%%sql"):
-            _log.info("completer skip: not a %%sql cell")
-            return None
+        try:
+            cell = getattr(ipython, "_current_cell_raw", "") or ""
 
-        line = (event.line or "").strip()
-        symbol = (event.symbol or "").strip()
+            # only active in %%sql cells
+            if not cell.lstrip().startswith("%%sql"):
+                _log.info("completer skip: not a %%sql cell")
+                return None
+
+            line = (event.line or "").strip()
+            symbol = (event.symbol or "").strip()
         _log.info("completer: line=%r symbol=%r cell_first_line=%r",
                    line[:80], symbol, cell.split("\n")[0][:80])
 
