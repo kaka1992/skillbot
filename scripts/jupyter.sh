@@ -34,10 +34,10 @@ _setup() {
     # clean stale labextension artifacts (deprecated approach)
     rm -rf "${IPYTHON_PROFILE}/labextensions" "${IPYTHON_PROFILE}/jupyter_lab_config.py" 2>/dev/null || true
 
-    # ensure Python deps
-    if ! "${VENV_PYTHON}" -c "import jupyter" 2>/dev/null; then
-        echo "  [RUN] installing jupyter deps"
-        uv pip install -e "${PROJECT_DIR}[jupyter]" -q
+    # ensure project venv + deps
+    if [[ ! -x "${VENV_PYTHON}" ]] || ! "${VENV_PYTHON}" -c "import jupyter" 2>/dev/null; then
+        echo "ERROR: jupyter deps not installed. Run: install.sh init" >&2
+        exit 1
     fi
 
     # ---- skillbot kernel ----
