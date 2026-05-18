@@ -75,6 +75,7 @@ usage() {
 Usage: ${SCRIPT_NAME} <command> [agent]
 
 Commands:
+  init                Initialize project — uv venv + install pyproject.toml deps
   install   [agent]   Install agent(s) — clone repo + create uv venv
   update    [agent]   Update agent(s) — git pull + reinstall dependencies
   uninstall [agent]   Uninstall agent(s) — remove agent dir and config
@@ -454,6 +455,24 @@ cmd_check() {
     fi
 }
 
+cmd_init() {
+    echo "=== Initializing skillbot project ==="
+    check_prereqs
+
+    local venv_dir="${PROJECT_DIR}/.venv"
+    if [[ -d "$venv_dir" ]]; then
+        echo "  [SKIP] .venv already exists"
+    else
+        (cd "$PROJECT_DIR" && uv venv)
+        echo "  [OK] uv venv created at ${venv_dir}"
+    fi
+
+    echo "  [RUN] uv pip install -e .[dev,jupyter,eval]"
+    uv pip install --python "${venv_dir}/bin/python" -e "${PROJECT_DIR}[dev,jupyter,eval]"
+    echo "  [OK] project dependencies installed"
+    echo "=== Init complete ==="
+}
+
 # ============================================================
 # Main
 # ============================================================
@@ -463,10 +482,11 @@ main() {
     local cmd="${1:-}"
 
     case "$cmd" in
-        install)   cmd_install   "${2:-}" ;;
-        update)    cmd_update    "${2:-}" ;;
-        uninstall) cmd_uninstall "${2:-}" ;;
-        check)     cmd_check     "${2:?usage: ${SCRIPT_NAME} check <agent>}" ;;
+        init)       cmd_init ;;
+        install)    cmd_install   "${2:-}" ;;
+        update)     cmd_update    "${2:-}" ;;
+        uninstall)  cmd_uninstall "${2:-}" ;;
+        check)      cmd_check     "${2:?usage: ${SCRIPT_NAME} check <agent>}" ;;
         -h|--help|help) usage ;;
         *) usage ;;
     esac
