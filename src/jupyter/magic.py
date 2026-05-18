@@ -98,13 +98,14 @@ class AgentMagic(Magics):
                   file=sys.stderr)
             agent = self._agent
 
+        # inject env first (tools may depend on env vars)
+        if merged_env:
+            os.environ.update({k: str(v) for k, v in merged_env.items()})
+
         # tools: always incremental (never triggers session rebuild)
         tools_cfg = cfg.get("tools") or {}
         load_tools(tools_cfg)
         apply_preferences(tools_cfg.get("preferences") or {})
-
-        if merged_env:
-            os.environ.update({k: str(v) for k, v in merged_env.items()})
 
         # session rebuild: only when agent or CLAUDE.md changes
         session_rebuild = (
