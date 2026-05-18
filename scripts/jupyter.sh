@@ -37,7 +37,7 @@ _setup() {
     # ensure Python deps
     if ! "${VENV_PYTHON}" -c "import jupyter" 2>/dev/null; then
         echo "  [RUN] installing jupyter deps"
-        "${VENV_PYTHON}" -m pip install -e "${PROJECT_DIR}[jupyter]" -q
+        uv pip install -e "${PROJECT_DIR}[jupyter]" -q
     fi
 
     # ---- skillbot kernel ----
