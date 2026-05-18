@@ -47,7 +47,14 @@ def _load_api_key() -> str:
     )
 
 
-HERMES_API_KEY = _load_api_key()
+_hermes_api_key: str | None = None
+
+
+def _get_api_key() -> str:
+    global _hermes_api_key
+    if _hermes_api_key is None:
+        _hermes_api_key = _load_api_key()
+    return _hermes_api_key
 
 
 class HermesBackend(AbstractBackend):
@@ -107,7 +114,7 @@ class HermesBackend(AbstractBackend):
     @staticmethod
     def _headers(session: str) -> dict:
         return {
-            "Authorization": f"Bearer {HERMES_API_KEY}",
+            "Authorization": f"Bearer {_get_api_key()}",
             "X-Hermes-Session-Id": session,
         }
 
