@@ -30,6 +30,10 @@ eval = [
 ]
 jupyter = [
     "ipython>=8.0",
+    "ipykernel>=6.0",
+    "jupyter>=1.0",
+    "notebook>=7.0",
+    "jupyterlab>=4.0",
     "pandas>=2.0",
     "sqlparse>=0.5",
 ]
