@@ -74,10 +74,22 @@ def load_yaml_config(path: str | None) -> dict:
     return {}
 
 
-def load_third_party_tools(tools_cfg: dict) -> None:
-    """Discover third-party tool directories."""
+def load_tools(tools_cfg: dict) -> None:
+    """Load builtin tools first, then third-party tool directories."""
+    from pathlib import Path
     from tools import ToolRegistry
 
+    # 1. Load builtin tools (always first)
+    builtin_dir = str(Path(__file__).resolve().parents[3] / "src" / "tools" / "builtin")
+    try:
+        discovered = ToolRegistry.discover(builtin_dir)
+        if discovered:
+            names = ", ".join(t.name for t in discovered)
+            _log.info("tools loaded: builtin=%s", names)
+    except Exception as e:
+        _log.warning("builtin tools load failed: %s", e)
+
+    # 2. Load third-party paths
     for path in tools_cfg.get("paths") or []:
         try:
             discovered = ToolRegistry.discover(path)

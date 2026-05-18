@@ -19,7 +19,7 @@ from .config import (
     pop_flag,
     parse_kv,
     load_yaml_config,
-    load_third_party_tools,
+    load_tools,
     apply_preferences,
     set_debug,
     sql_progress as _sql_progress,
@@ -100,7 +100,7 @@ class AgentMagic(Magics):
 
         # tools: always incremental (never triggers session rebuild)
         tools_cfg = cfg.get("tools") or {}
-        load_third_party_tools(tools_cfg)
+        load_tools(tools_cfg)
         apply_preferences(tools_cfg.get("preferences") or {})
 
         if merged_env:
