@@ -91,19 +91,13 @@ def load_third_party_tools(tools_cfg: dict) -> None:
 
 
 def apply_preferences(preferences: dict) -> None:
-    """Apply tool implementation preferences."""
+    """Apply tool implementation preferences (preset_name → impl_name)."""
     from tools import ToolRegistry
 
-    for preset_name, impl_name in (preferences.get("presets") or {}).items():
+    for preset_name, impl_name in (preferences or {}).items():
         try:
             ToolRegistry.set_preferred(preset_name, impl_name)
             _log.info("preference: preset=%s impl=%s", preset_name, impl_name)
-        except KeyError as e:
-            print(f"[agent_config] preference error: {e}", file=sys.stderr)
-    for group_name, impl_name in (preferences.get("groups") or {}).items():
-        try:
-            ToolRegistry.set_preferred_for_group(group_name, impl_name)
-            _log.info("preference: group=%s impl=%s", group_name, impl_name)
         except KeyError as e:
             print(f"[agent_config] preference error: {e}", file=sys.stderr)
 

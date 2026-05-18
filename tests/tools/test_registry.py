@@ -241,24 +241,6 @@ class TestPreferredImpl:
         result = asyncio.run(t.execute({}))
         assert result.data["impl"] == "default"
 
-    def test_set_preferred_for_group(self):
-        async def fn(p): return ToolResult(data={"impl": "v2"})
-
-        p1 = ToolPreset(name="a", description="d", parameters={}, group="spark")
-        p2 = ToolPreset(name="b", description="d", parameters={}, group="spark")
-        p3 = ToolPreset(name="c", description="d", parameters={}, group="file")
-
-        for p in [p1, p2, p3]:
-            ToolRegistry.register_preset(p)
-            ToolRegistry.register_impl(p.name, "default", fn)
-            ToolRegistry.register_impl(p.name, "v2", fn)
-
-        ToolRegistry.set_preferred_for_group("spark", "v2")
-
-        assert ToolRegistry.get_preferred("a") == "v2"
-        assert ToolRegistry.get_preferred("b") == "v2"
-        assert ToolRegistry.get_preferred("c") is None  # file group not affected
-
     def test_set_preferred_unknown_preset_raises(self):
         with pytest.raises(KeyError, match="not found"):
             ToolRegistry.set_preferred("nonexistent", "v2")

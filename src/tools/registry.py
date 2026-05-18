@@ -97,13 +97,6 @@ class ToolRegistry:
         cls._preferred[preset_name] = impl_name
 
     @classmethod
-    def set_preferred_for_group(cls, group: str, impl_name: str) -> None:
-        """Set the preferred implementation for all presets in a *group*."""
-        for preset_name, preset in cls._presets.items():
-            if preset.group == group and impl_name in cls._implementations.get(preset_name, {}):
-                cls._preferred[preset_name] = impl_name
-
-    @classmethod
     def reset_preferred(cls, preset_name: str | None = None) -> None:
         """Reset preferred implementations.
 

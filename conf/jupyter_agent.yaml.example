@@ -20,9 +20,7 @@ tools:
   # 代码目录列表
   paths:
     # - /path/to/databricks_tools/
-  # 实现偏好
+  # 实现偏好 (preset_name → impl_name)
   preferences:
-    presets:                     # per-preset
-      # spark_analyze_query: databricks
-    groups:                      # per-group
-      # spark: databricks
+    # spark_analyze_query: databricks
+    # spark_submit_query: databricks
