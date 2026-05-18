@@ -80,7 +80,7 @@ def load_tools(tools_cfg: dict) -> None:
     from tools import ToolRegistry
 
     # 1. Load builtin tools (always first)
-    builtin_dir = str(Path(__file__).resolve().parents[3] / "src" / "tools" / "builtin")
+    builtin_dir = str(Path(__file__).resolve().parents[2] / "src" / "tools" / "builtin")
     try:
         discovered = ToolRegistry.discover(builtin_dir)
         if discovered:
