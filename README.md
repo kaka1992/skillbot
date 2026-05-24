@@ -1,6 +1,6 @@
 # skillbot
 
-多 agent 管理框架 — 统一管理 deer-flow、nanobot、hermes-agent、claude-code，提供一致的 CLI 运维工具和 Python chat API。
+多 agent 管理框架 — 统一管理 deer-flow、nanobot、hermes-agent、claude-code，提供一致的 CLI 运维工具、Python chat API与Jupyter交互能力。
 
 ## 快速开始
 
