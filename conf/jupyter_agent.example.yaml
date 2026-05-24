@@ -1,0 +1,26 @@
+# Jupyter %%agent 配置示例
+# 使用方式: %agent_config --config conf/jupyter_agent.yaml
+#
+# 所有字段均为可选，命令行参数会覆盖此文件中的同名项
+
+# agent 名称: deer-flow | nanobot | hermes-agent | claude-code
+agent: claude-code
+
+# 超时时间（秒）
+timeout: 600
+
+# 注入到 agent 运行时的环境变量
+env:
+  # SPARK_REMOTE: sc://localhost:15002
+  # API_TOKEN: your-token-here
+  # DEBUG: "true"
+
+# 第三方工具实现配置（可选）
+tools:
+  # 代码目录列表
+  paths:
+    # - /path/to/databricks_tools/
+  # 实现偏好 (preset_name → impl_name)
+  preferences:
+    # spark_analyze_query: databricks
+    # spark_submit_query: databricks
