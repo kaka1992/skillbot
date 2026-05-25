@@ -6,6 +6,7 @@ import logging
 import warnings
 
 TARGET_NAME = "skillbot:execute-cell"
+_MAX_CODE_SIZE = 100_000  # 100KB max per cell to avoid choking the websocket
 
 _log = logging.getLogger(__name__)
 
@@ -16,6 +17,9 @@ def send_cell_via_comm(ns, code: str, auto: bool = False) -> bool:
     Fire-and-forget: opens a comm with *code* and *auto*, closes immediately.
     The ``%agent --trace`` marker (if any) is already part of *code*.
     """
+    if len(code) > _MAX_CODE_SIZE:
+        _log.warning("send_cell_via_comm: code too large (%d bytes), truncating", len(code))
+        code = code[:_MAX_CODE_SIZE] + "\n# ...truncated..."
     try:
         from comm import create_comm
         shell = ns._shell

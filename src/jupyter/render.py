@@ -100,10 +100,12 @@ def render_sql_dataframe(ns: Namespace, data: dict, var_name: str):
     """Load SQL result into namespace as DataFrame. Returns the DataFrame or None."""
     sample = data.get("sample_data", [])
     if sample and len(sample) > 1:
-        cols, *rows = sample
-        df_sample = pd.DataFrame(list(rows), columns=cols)
-        render_text(f"[{var_name}] sample: {len(rows)} rows x {len(cols)} cols")
-        render_text(df_sample.to_string())
+        cols = sample[0]
+        rows = sample[1:1001]  # max 1000 rows for preview display
+        df_sample = pd.DataFrame(rows, columns=cols)
+        render_text(f"[{var_name}] sample: {len(sample) - 1} rows x {len(cols)} cols" +
+                    (" (showing first 1000)" if len(sample) > 1001 else ""))
+        render_text(df_sample.to_string(max_rows=20, max_cols=10, max_colwidth=30))
 
     output_path = data.get("output_path", "")
     result_url = data.get("result_url", "")
