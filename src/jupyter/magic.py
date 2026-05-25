@@ -11,7 +11,7 @@ from pathlib import Path
 from IPython.core.magic import Magics, cell_magic, line_magic, magics_class
 
 from agent import AgentSession, SubAgentConfig
-from agent.prompt import SYSTEM_PROMPT
+from agent.prompt import PromptBuilder
 from chat import _AGENTS
 from hook import HookGroup, HookRegistry, HookEvent
 from jupyter.telemetry import get_recorder, TelemetryRecorder, set_recorder
@@ -37,7 +37,7 @@ SUB_AGENT_DEFAULTS = {
     "cell_review": SubAgentConfig(
         name="cell_review",
         description="Review agent output and task progress",
-        tools=["Read", "Bash"],
+        tools=["Read"],
     ),
 }
 
@@ -57,26 +57,6 @@ def _extract_trailing_agent(cell: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 # jupyter-specific session helpers
 # ---------------------------------------------------------------------------
-
-MAGIC_PROMPT = """\
-Available magic commands:
-  %%agent [--timeout N] [--trace] [--auto]
-    Execute task using the AI agent. --trace triggers review, --auto auto-executes follow-up cells.
-
-  %%sql [--var df1] [--timeout 600] [--poll 30]
-    Execute Spark SQL query. Results become DataFrame variables (default var_1, var_2...).
-    %%sql submit → submit async query
-    %sql status --job_id ID → check job status
-    %sql cancel --job_id ID → cancel job
-    %sql result --job_id ID [--limit N] → fetch results
-
-  %agent_config --agent NAME [--timeout N] [--debug]
-    Configure agent, timeout, debug mode.
-
-  %feedback yes|no [--comment '...'] or
-  %fb yes|no [--comment '...']
-    Confirm if agent output meets expectations. yes=meets, no=does not meet.
-"""
 
 
 def _notebook_path() -> str:
@@ -100,16 +80,7 @@ def _session_key() -> str:
 
 
 def _merge_prompt(claude_md_path: str | None = None) -> str:
-    parts = []
-    if claude_md_path:
-        try:
-            parts.append(Path(claude_md_path).read_text())
-            parts.append("")
-        except Exception:
-            pass
-    parts.append(SYSTEM_PROMPT)
-    parts.append(MAGIC_PROMPT)
-    return "\n".join(parts)
+    return PromptBuilder.main(claude_md_path)
 
 
 def _register_hooks(timeout: int, hook_cfg: dict) -> None:

@@ -10,7 +10,6 @@ from typing import Any
 from uuid import uuid4
 
 _log = logging.getLogger(__name__)
-_SYSTEM_PROMPT = "Return results in JSON format. Be concise."
 
 
 @dataclass
@@ -167,9 +166,11 @@ class SubAgentSession:
         return ChatClient(self._main_agent)
 
     def _ensure_seed(self, client, sid: str) -> None:
-        """Seed sub-agent session with a minimal system prompt."""
+        """Seed sub-agent session with full capabilities prompt."""
+        from agent.prompt import PromptBuilder
+
         try:
-            client.chat(_SYSTEM_PROMPT, session=sid)
+            client.chat(PromptBuilder.sub(), session=sid)
         except Exception:
             pass
 

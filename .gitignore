@@ -122,3 +122,4 @@ config.json
 config.yaml
 settings.json
 jupyter_agent.yaml
+./conf/claude.md

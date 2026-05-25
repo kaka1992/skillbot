@@ -3,10 +3,9 @@ import sys
 sys.path.insert(0, "src")
 
 import pytest
-from jupyter.hook import (
-    Hook, HookEvent, HookStatus, HookResult, HookGroup, HookRegistry,
-    AgentCodeReviewHook,
-)
+from hook.base import Hook, HookGroup, HookRegistry
+from hook.events import HookEvent, HookResult, HookStatus
+from hook.impl.code_review import AgentCodeReviewHook
 
 
 @pytest.fixture(autouse=True)
@@ -37,10 +36,10 @@ class TestHookResult:
 class TestHookPriority:
     def test_priority_ordering(self):
         class A(Hook):
-            def on_event(self, event, context):
+            def on_event(self, event, context, session=None):
                 return HookResult(HookStatus.SUCCESS)
         class B(Hook):
-            def on_event(self, event, context):
+            def on_event(self, event, context, session=None):
                 return HookResult(HookStatus.SUCCESS)
         a = A()
         b = B()
@@ -51,7 +50,7 @@ class TestHookPriority:
 
     def test_default_priority(self):
         class H(Hook):
-            def on_event(self, event, context):
+            def on_event(self, event, context, session=None):
                 return HookResult(HookStatus.SUCCESS)
         assert H().priority == 0
 
@@ -61,10 +60,10 @@ class TestHookPriority:
 class TestHookGroup:
     def test_add_and_retrieve(self):
         class A(Hook):
-            def on_event(self, event, context):
+            def on_event(self, event, context, session=None):
                 return HookResult(HookStatus.SUCCESS)
         class B(Hook):
-            def on_event(self, event, context):
+            def on_event(self, event, context, session=None):
                 return HookResult(HookStatus.SUCCESS)
         g = HookGroup("test")
         h1 = A()
@@ -78,7 +77,7 @@ class TestHookGroup:
 
     def test_disabled_returns_empty(self):
         class H(Hook):
-            def on_event(self, event, context):
+            def on_event(self, event, context, session=None):
                 return HookResult(HookStatus.SUCCESS)
         g = HookGroup("test", enabled=False)
         g.add(H())
@@ -86,7 +85,7 @@ class TestHookGroup:
 
     def test_enabled_returns_hooks(self):
         class H(Hook):
-            def on_event(self, event, context):
+            def on_event(self, event, context, session=None):
                 return HookResult(HookStatus.SUCCESS)
         g = HookGroup("test", enabled=True)
         g.add(H())
@@ -98,7 +97,7 @@ class TestHookGroup:
 class TestRegistry:
     def test_register_group_to_events(self):
         class H(Hook):
-            def on_event(self, event, context):
+            def on_event(self, event, context, session=None):
                 return HookResult(HookStatus.SUCCESS)
         g = HookGroup("test")
         h = H()
@@ -115,12 +114,12 @@ class TestRegistry:
         order = []
         class A(Hook):
             priority = 1
-            def on_event(self, event, context):
+            def on_event(self, event, context, session=None):
                 order.append(1)
                 return HookResult(HookStatus.SUCCESS)
         class B(Hook):
             priority = 2
-            def on_event(self, event, context):
+            def on_event(self, event, context, session=None):
                 order.append(2)
                 return HookResult(HookStatus.SUCCESS)
 
@@ -134,12 +133,12 @@ class TestRegistry:
         called = []
         class Stopper(Hook):
             priority = 1
-            def on_event(self, event, context):
+            def on_event(self, event, context, session=None):
                 called.append("stopper")
                 return HookResult(HookStatus.FAILED_STOP, "handled")
         class Never(Hook):
             priority = 2
-            def on_event(self, event, context):
+            def on_event(self, event, context, session=None):
                 called.append("never")
                 return HookResult(HookStatus.SUCCESS)
 
@@ -154,12 +153,12 @@ class TestRegistry:
         called = []
         class Failer(Hook):
             priority = 1
-            def on_event(self, event, context):
+            def on_event(self, event, context, session=None):
                 called.append("failer")
                 return HookResult(HookStatus.FAILED_CONTINUE, "oops")
         class Next(Hook):
             priority = 2
-            def on_event(self, event, context):
+            def on_event(self, event, context, session=None):
                 called.append("next")
                 return HookResult(HookStatus.SUCCESS)
 
@@ -172,7 +171,7 @@ class TestRegistry:
 
     def test_clear_removes_all(self):
         class H(Hook):
-            def on_event(self, event, context):
+            def on_event(self, event, context, session=None):
                 return HookResult(HookStatus.SUCCESS)
         g = HookGroup("test")
         g.add(H())
@@ -186,7 +185,7 @@ class TestRegistry:
 class TestCodeReviewDispatch:
     def test_hook_mutates_code_list_in_context(self):
         class UppercaseHook(Hook):
-            def on_event(self, event, context):
+            def on_event(self, event, context, session=None):
                 context["code_list"] = [c.upper() for c in context["code_list"]]
                 return HookResult(HookStatus.SUCCESS)
 
