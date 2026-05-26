@@ -114,12 +114,12 @@ agents/
 dist
 .claude
 docs/superpowers
-./src/jupyter/extension/.yarn/
-./src/jupyter/extension/labextension/
+.yarn/
+labextension/
 
 .env
 config.json
 config.yaml
 settings.json
 jupyter_agent.yaml
-./conf/claude.md
+conf/claude.md
