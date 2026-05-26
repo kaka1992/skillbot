@@ -40,11 +40,13 @@ SECTIONS = {
         '```json\n'
         '{\n'
         '  "text": "explanatory text",\n'
-        '  "files": ["/tmp/chart.png", "/tmp/data.csv"],\n'
-        '  "code": ["print(\'hello\')"]\n'
+        '  "plan": "## Plan\\n1. Step one\\n2. Step two",\n'
+        '  "code": ["print(\'hello\')"],\n'
+        '  "files": ["/tmp/chart.png", "/tmp/data.csv"]\n'
         '}\n'
         '```\n'
         '- "text": explanatory text (optional). Supports markdown.\n'
+        '- "plan": analysis plan as markdown (plan mode). Rendered as a markdown cell.\n'
         '- "files": file paths created by tools (optional).\n'
         '- "code": string or array of strings (optional). Each element → new Jupyter cell.\n'
         'Include only non-empty fields.'
@@ -55,6 +57,17 @@ SECTIONS = {
         "- Bash(python3:*) → generate files, never run interactive code.\n"
         "- Write → only /tmp/ outputs that persist across tool calls.\n"
         "- Never execute user-facing code — always return it in \"code\" field."
+    ),
+    "plan": (
+        "You are in plan mode. For EVERY request:\n"
+        "- Output your analysis plan in the \"plan\" JSON field as markdown. Do NOT execute.\n"
+        '- End your response with "code": "%confirm yes" for user confirmation.\n'
+        "- Only proceed to execution after the user confirms.\n"
+        '- If the user provides feedback, adjust your plan and output an updated "plan" field.'
+    ),
+    "plan_optional": (
+        "For complex multi-step tasks, briefly describe your approach before execution.\n"
+        "For simple single requests, proceed directly."
     ),
     "file_explanation": (
         "File paths in \"files\" are auto-processed: "
@@ -71,6 +84,7 @@ class PromptBuilder:
         [
             SECTIONS["role"],
             "",  # claude_md placeholder (injected dynamically)
+            SECTIONS["plan_optional"],
             SECTIONS["jupyter"],
             SECTIONS["magic"],
             SECTIONS["output"],
@@ -93,9 +107,11 @@ class PromptBuilder:
     # ---- public API ----
 
     @classmethod
-    def main(cls, claude_md_path: str | None = None) -> str:
+    def main(cls, claude_md_path: str | None = None, plan_mode: bool = False) -> str:
         """Full prompt for main agent: static sections + claude_md + dynamic info."""
         parts = [cls._main_static]
+        if plan_mode:
+            parts[0] = parts[0].replace(SECTIONS["plan_optional"], SECTIONS["plan"])
         if claude_md_path:
             try:
                 content = Path(claude_md_path).read_text()

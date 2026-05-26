@@ -11,7 +11,8 @@ _MAX_CODE_SIZE = 100_000  # 100KB max per cell to avoid choking the websocket
 _log = logging.getLogger(__name__)
 
 
-def send_cell_via_comm(ns, code: str, auto: bool = False) -> bool:
+def send_cell_via_comm(ns, code: str, auto: bool = False, cell_type: str = "code",
+                       replace_cell_marker: str = "") -> bool:
     """Notify frontend extension to create + optionally execute a cell.
 
     Fire-and-forget: opens a comm with *code* and *auto*, closes immediately.
@@ -31,7 +32,8 @@ def send_cell_via_comm(ns, code: str, auto: bool = False) -> bool:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
             comm = create_comm(TARGET_NAME,
-                               data={"code": code, "auto": auto})
+                               data={"code": code, "auto": auto, "cell_type": cell_type,
+                                      "replace_cell_marker": replace_cell_marker})
             comm.close()
         return True
     except Exception:

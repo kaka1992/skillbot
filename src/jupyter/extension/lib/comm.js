@@ -9,6 +9,8 @@ function handleComm(comm, msg, tracker, sessionContext) {
     const data = ((_a = msg.content) === null || _a === void 0 ? void 0 : _a.data) || {};
     const code = data.code || '';
     const auto = data.auto !== false;
+    const cellType = data.cell_type || 'code';
+    const marker = data.replace_cell_marker || '';
     if (!code)
         return;
     const notebook = tracker.currentWidget;
@@ -17,14 +19,26 @@ function handleComm(comm, msg, tracker, sessionContext) {
     const model = notebook.model;
     if (!model)
         return;
+    // Replace existing cell by marker
+    if (marker) {
+        const cells = model.sharedModel.cells;
+        for (let i = cells.length - 1; i >= 0; i--) {
+            if (cells[i].source.includes(marker)) {
+                cells[i].source = code;
+                notebook.content.activeCellIndex = i;
+                return;
+            }
+        }
+    }
+    // Insert new cell
     const activeIndex = notebook.content.activeCellIndex;
     model.sharedModel.insertCell(activeIndex + 1, {
-        cell_type: 'code',
+        cell_type: cellType,
         source: code,
         metadata: {},
     });
     notebook.content.activeCellIndex = activeIndex + 1;
-    if (!auto)
+    if (cellType === 'markdown' || !auto)
         return;
     notebook_1.NotebookActions.run(notebook.content, sessionContext);
 }

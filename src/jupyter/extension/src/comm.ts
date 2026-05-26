@@ -18,6 +18,8 @@ function handleComm(
   const data = msg.content?.data || {};
   const code: string = data.code || '';
   const auto: boolean = data.auto !== false;
+  const cellType: string = data.cell_type || 'code';
+  const marker: string = data.replace_cell_marker || '';
   if (!code) return;
 
   const notebook = tracker.currentWidget;
@@ -25,15 +27,28 @@ function handleComm(
   const model = notebook.model;
   if (!model) return;
 
+  // Replace existing cell by marker
+  if (marker) {
+    const cells = model.sharedModel.cells;
+    for (let i = cells.length - 1; i >= 0; i--) {
+      if (cells[i].source.includes(marker)) {
+        cells[i].source = code;
+        notebook.content.activeCellIndex = i;
+        return;
+      }
+    }
+  }
+
+  // Insert new cell
   const activeIndex = notebook.content.activeCellIndex;
   model.sharedModel.insertCell(activeIndex + 1, {
-    cell_type: 'code',
+    cell_type: cellType as 'code' | 'markdown',
     source: code,
     metadata: {},
   });
   notebook.content.activeCellIndex = activeIndex + 1;
 
-  if (!auto) return;
+  if (cellType === 'markdown' || !auto) return;
   NotebookActions.run(notebook.content, sessionContext);
 }
 

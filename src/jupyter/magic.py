@@ -107,6 +107,8 @@ class AgentMagic(Magics):
     def __init__(self, shell):
         super().__init__(shell)
         self.ns = Namespace(shell)
+        self._plan = False
+        self._plan_replace = False  # True = replace existing plan cell
         cfg = load_yaml_config("conf/jupyter_agent.yaml")
         self._hook_cfg = cfg.get("hooks", {})
         self._init_session(self._agent, self._timeout, self._claude_md_path)
@@ -230,6 +232,25 @@ class AgentMagic(Magics):
         label = "meets expectation" if result == "yes" else "does not meet expectation"
         render_info(f"[feedback] {label}" + (f" — {comment}" if comment else ""))
 
+    # ---- %confirm ----
+
+    @line_magic("confirm")
+    def confirm_func(self, line: str) -> None:
+        """%confirm yes|no|message — confirm or adjust agent plan."""
+        line = line.strip()
+        if line == "yes":
+            self._plan_confirmed = True
+            self._plan_replace = False
+            render_info("[plan] ✓ confirmed, executing...")
+        elif line == "no":
+            self._plan_confirmed = False
+            render_info("[plan] ✗ cancelled")
+        else:
+            self._plan_confirmed = False
+            self._plan_feedback = line
+            self._plan_replace = True  # next plan output replaces existing cell
+            render_info(f"[plan] ↻ adjusting: {line}")
+
     # ---- agent_config ----
 
     @line_magic("agent_config")
@@ -247,6 +268,10 @@ class AgentMagic(Magics):
         if "--no-debug" in args:
             args.remove("--no-debug")
             cli_debug = False
+        if "--plan" in args:
+            self._plan = True; args.remove("--plan")
+        if "--no-plan" in args:
+            self._plan = False; args.remove("--no-plan")
         env_vars = parse_kv(args)
 
         # hook enable/disable (repeatable flags)
@@ -456,7 +481,8 @@ class AgentMagic(Magics):
                 f"agent parse: text={len(result.text or '')} chars files={len(result.files)} code={len(result.code_list)}")
             _log.debug(
                 f"agent parse detail: text={len(result.text or '')} files={len(result.files)} code={len(result.code_list)}")
-            render_output(self.ns, result, auto=auto, trace=trace)
+            render_output(self.ns, result, auto=auto, trace=trace,
+                          replace_plan=self._plan_replace)
             has_new_cell = bool(result.code_list)
 
         self.ns.track_cell(cell, raw.strip())

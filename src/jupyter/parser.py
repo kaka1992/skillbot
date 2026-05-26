@@ -39,6 +39,7 @@ class ParsedResult:
     images: list[bytes] = field(default_factory=list)
     files: list[str] = field(default_factory=list)
     code_list: list[str] = field(default_factory=list)
+    plan: str = ""
     is_markdown: bool = False
 
 
@@ -81,6 +82,7 @@ def _from_json(data: dict) -> ParsedResult:
     """Build ParsedResult from parsed JSON dict."""
     result = ParsedResult()
     result.text = data.get("text", "")
+    result.plan = data.get("plan", "")
     code_raw = data.get("code", "")
     if isinstance(code_raw, list):
         result.code_list = [str(c) for c in code_raw if str(c).strip()]
