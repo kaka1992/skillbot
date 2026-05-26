@@ -7,17 +7,31 @@ const TARGET = 'skillbot:execute-cell';
 function handleComm(comm, msg, tracker, sessionContext) {
     var _a;
     const data = ((_a = msg.content) === null || _a === void 0 ? void 0 : _a.data) || {};
-    const code = data.code || '';
-    const auto = data.auto !== false;
-    const cellType = data.cell_type || 'code';
-    const marker = data.replace_cell_marker || '';
-    if (!code)
-        return;
+    const runMarker = data.run_cell_marker || '';
     const notebook = tracker.currentWidget;
     if (!notebook)
         return;
     const model = notebook.model;
     if (!model)
+        return;
+    // Run cell by ID (used by %confirm to re-execute agent cell)
+    const runCellId = data.run_cell_id || '';
+    if (runCellId) {
+        const cells = model.sharedModel.cells;
+        for (let i = cells.length - 1; i >= 0; i--) {
+            if (cells[i].id === runCellId) {
+                notebook.content.activeCellIndex = i;
+                notebook_1.NotebookActions.run(notebook.content, sessionContext);
+                return;
+            }
+        }
+        return;
+    }
+    const code = data.code || '';
+    const auto = data.auto !== false;
+    const cellType = data.cell_type || 'code';
+    const marker = data.replace_cell_marker || '';
+    if (!code)
         return;
     // Replace existing cell by marker
     if (marker) {
@@ -26,6 +40,7 @@ function handleComm(comm, msg, tracker, sessionContext) {
             if (cells[i].source.includes(marker)) {
                 cells[i].source = code;
                 notebook.content.activeCellIndex = i;
+                comm.send({ cell_id: cells[i].id }).catch(() => { });
                 return;
             }
         }
@@ -37,7 +52,10 @@ function handleComm(comm, msg, tracker, sessionContext) {
         source: code,
         metadata: {},
     });
+    const newCell = model.sharedModel.cells[activeIndex + 1];
     notebook.content.activeCellIndex = activeIndex + 1;
+    // Reply with cell ID so kernel can track it
+    comm.send({ cell_id: newCell.id }).catch(() => { });
     if (cellType === 'markdown' || !auto)
         return;
     notebook_1.NotebookActions.run(notebook.content, sessionContext);

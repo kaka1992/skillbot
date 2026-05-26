@@ -108,7 +108,10 @@ class AgentMagic(Magics):
         super().__init__(shell)
         self.ns = Namespace(shell)
         self._plan = False
-        self._plan_replace = False  # True = replace existing plan cell
+        self._plan_replace = False
+        self._plan_feedback = ""
+        self._last_agent_cell = ""
+        self._last_agent_line = ""
         cfg = load_yaml_config("conf/jupyter_agent.yaml")
         self._hook_cfg = cfg.get("hooks", {})
         self._init_session(self._agent, self._timeout, self._claude_md_path)
@@ -246,10 +249,12 @@ class AgentMagic(Magics):
             self._plan_confirmed = False
             render_info("[plan] ✗ cancelled")
         else:
-            self._plan_confirmed = False
             self._plan_feedback = line
-            self._plan_replace = True  # next plan output replaces existing cell
+            self._plan_replace = True
             render_info(f"[plan] ↻ adjusting: {line}")
+            # re-trigger agent with feedback
+            if self._last_agent_cell:
+                self.agent_func(self._last_agent_line, self._last_agent_cell)
 
     # ---- agent_config ----
 
@@ -420,6 +425,8 @@ class AgentMagic(Magics):
         if cell is None:
             self._agent_line_func(line)
             return
+        self._last_agent_cell = cell
+        self._last_agent_line = line
 
         timeout = self._timeout
         trace = False
@@ -442,6 +449,13 @@ class AgentMagic(Magics):
 
         ctx = self.ns.delta()
         prompt = f"{ctx}\n\n{cell}" if ctx else cell
+        if self._plan_feedback:
+            prompt = (
+                f"Previous plan feedback: {self._plan_feedback}\n"
+                f"Adjust your plan in the \"plan\" field, then include %confirm.\n\n"
+                + prompt
+            )
+            self._plan_feedback = ""
         t0 = time.time()
         raw = ""
         try:
@@ -483,6 +497,7 @@ class AgentMagic(Magics):
                 f"agent parse detail: text={len(result.text or '')} files={len(result.files)} code={len(result.code_list)}")
             render_output(self.ns, result, auto=auto, trace=trace,
                           replace_plan=self._plan_replace)
+            self._plan_replace = False
             has_new_cell = bool(result.code_list)
 
         self.ns.track_cell(cell, raw.strip())

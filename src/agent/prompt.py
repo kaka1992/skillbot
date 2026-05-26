@@ -33,7 +33,9 @@ SECTIONS = {
         "  %agent --trace [--auto]\n"
         "    Trigger agent review of current cell.\n"
         "  %fb yes|no [--comment '...']\n"
-        "    Request user feedback."
+        "    Request user feedback.\n"
+        '  %confirm yes|no|"message"\n'
+        "    Confirm or adjust the execution plan (plan mode). yes=proceed, no=cancel, message=adjust and re-plan."
     ),
     "output": (
         "Return results as a ```json fenced block:\n"
@@ -67,7 +69,9 @@ SECTIONS = {
     ),
     "plan_optional": (
         "For complex multi-step tasks, briefly describe your approach before execution.\n"
-        "For simple single requests, proceed directly."
+        "If you choose to plan first, output the plan in the \"plan\" JSON field and include "
+        '"code": "%confirm yes" so the user can confirm before you execute.\n'
+        "For simple single requests, proceed directly without planning."
     ),
     "file_explanation": (
         "File paths in \"files\" are auto-processed: "

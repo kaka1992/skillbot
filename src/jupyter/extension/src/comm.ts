@@ -16,16 +16,31 @@ function handleComm(
   sessionContext: ISessionContext,
 ): void {
   const data = msg.content?.data || {};
+  const runMarker: string = data.run_cell_marker || '';
+  const notebook = tracker.currentWidget;
+  if (!notebook) return;
+  const model = notebook.model;
+  if (!model) return;
+
+  // Run cell by ID (used by %confirm to re-execute agent cell)
+  const runCellId: string = data.run_cell_id || '';
+  if (runCellId) {
+    const cells = model.sharedModel.cells;
+    for (let i = cells.length - 1; i >= 0; i--) {
+      if (cells[i].id === runCellId) {
+        notebook.content.activeCellIndex = i;
+        NotebookActions.run(notebook.content, sessionContext);
+        return;
+      }
+    }
+    return;
+  }
+
   const code: string = data.code || '';
   const auto: boolean = data.auto !== false;
   const cellType: string = data.cell_type || 'code';
   const marker: string = data.replace_cell_marker || '';
   if (!code) return;
-
-  const notebook = tracker.currentWidget;
-  if (!notebook) return;
-  const model = notebook.model;
-  if (!model) return;
 
   // Replace existing cell by marker
   if (marker) {
@@ -34,6 +49,7 @@ function handleComm(
       if (cells[i].source.includes(marker)) {
         cells[i].source = code;
         notebook.content.activeCellIndex = i;
+        comm.send({ cell_id: cells[i].id }).catch(() => {});
         return;
       }
     }
@@ -46,7 +62,11 @@ function handleComm(
     source: code,
     metadata: {},
   });
+  const newCell = model.sharedModel.cells[activeIndex + 1];
   notebook.content.activeCellIndex = activeIndex + 1;
+
+  // Reply with cell ID so kernel can track it
+  comm.send({ cell_id: newCell.id }).catch(() => {});
 
   if (cellType === 'markdown' || !auto) return;
   NotebookActions.run(notebook.content, sessionContext);
