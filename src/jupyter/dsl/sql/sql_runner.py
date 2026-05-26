@@ -7,6 +7,9 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+import sqlparse
+from sqlparse.tokens import Comment, Name
+
 from tools import ToolRegistry
 
 ProgressFn = Callable[[str, dict[str, Any] | None], None]
@@ -38,6 +41,24 @@ class SqlRunner:
         self._timeout = timeout
 
     @staticmethod
+    def _clean_sql(sql: str) -> str:
+        """Remove Jupyter magic commands and # comments from SQL text."""
+        # Remove magic lines (%%sql, %agent, etc.)
+        lines = [l for l in sql.split("\n") if not l.strip().startswith("%")]
+        sql = "\n".join(lines)
+
+        parsed = sqlparse.parse(sql)
+        tokens = []
+        for stmt in parsed:
+            for token in stmt.flatten():
+                if token.ttype in (Comment, Comment.Single, Comment.Multiline):
+                    continue
+                if token.ttype is Name and token.value.strip().startswith("#"):
+                    continue
+                tokens.append(token.value)
+        return "".join(tokens)
+
+    @staticmethod
     def _check_available() -> None:
         tool = ToolRegistry.get(_PRESET_ANALYZE)
         if tool is None:
@@ -55,6 +76,7 @@ class SqlRunner:
         return result.data
 
     def query(self, sql: str, on_progress: ProgressFn | None = None) -> dict[str, Any]:
+        sql = self._clean_sql(sql)
         self._check_available()
 
         def emit(phase: str, data: dict[str, Any] | None = None) -> None:
@@ -113,6 +135,7 @@ class SqlRunner:
             raise
 
     def submit(self, sql: str, on_progress: ProgressFn | None = None) -> dict[str, Any]:
+        sql = self._clean_sql(sql)
         self._check_available()
         try:
             r = _run_async(self._call(_PRESET_SUBMIT, {"sql": sql}))
