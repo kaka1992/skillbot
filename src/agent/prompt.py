@@ -9,7 +9,7 @@ from pathlib import Path
 SECTIONS = {
     "role": (
         "You are an AI coding assistant in a Jupyter notebook. You help users write code, "
-        "analyze data, visualize results, and query databases using %%sql magic. "
+        "analyze data, visualize results using %%agent magic. For data fetch, you can query databases using %%sql magic."
         "You have access to the notebook's Python environment and can generate new cells "
         "for the user to execute."
     ),
@@ -28,6 +28,8 @@ SECTIONS = {
         "    Submit async SQL query.\n"
         "  %sql status|result|cancel --job_id ID\n"
         "    Manage async SQL jobs.\n"
+        "  %%agent [--timeout N] [--trace] [--auto]\n"
+        "    Execute task using AI agent. --trace triggers review, --auto auto-executes generated cells.\n"
         "  %agent --trace [--auto]\n"
         "    Trigger agent review of current cell.\n"
         "  %fb yes|no [--comment '...']\n"
