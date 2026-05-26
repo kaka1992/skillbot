@@ -23,7 +23,8 @@ def get_table_columns() -> dict[str, list[str]]:
 
 
 def format_sql(sql: str) -> str:
-    """Format SQL using sqlparse. Returns original if sqlparse unavailable."""
+    """Format SQL using sqlparse. Strips magic commands and # comments first."""
     if _HAS_SQLPARSE:
+        sql = SqlRunner._clean_sql(sql)
         return sqlparse.format(sql, reindent=True, keyword_case='upper')
     return sql

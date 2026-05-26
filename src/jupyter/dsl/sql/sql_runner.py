@@ -52,8 +52,9 @@ class SqlRunner:
         for stmt in parsed:
             for token in stmt.flatten():
                 if token.ttype in (Comment, Comment.Single, Comment.Multiline):
-                    continue
-                if token.ttype is Name and token.value.strip().startswith("#"):
+                    if token.value.strip().startswith("#"):
+                        continue
+                elif token.ttype is Name and token.value.strip().startswith("#"):
                     continue
                 tokens.append(token.value)
         return "".join(tokens)

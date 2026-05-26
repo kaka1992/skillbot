@@ -15,6 +15,30 @@ function isSqlCell(code: string): boolean {
   return first.startsWith('%%sql');
 }
 
+/**
+ * Convert # comments to -- so sql-formatter (spark dialect) can parse them.
+ * Skips # inside string literals.
+ */
+function convertHashComments(sql: string): string {
+  let result = '';
+  let inSingle = false;
+  let inDouble = false;
+  for (const ch of sql) {
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      result += ch;
+    } else if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      result += ch;
+    } else if (ch === '#' && !inSingle && !inDouble) {
+      result += '--';
+    } else {
+      result += ch;
+    }
+  }
+  return result;
+}
+
 function formatCell(code: string, dialect: string): string {
   const lines = code.split('\n');
   const i = lines.findIndex(l => l.trimStart().startsWith('%%sql'));
@@ -22,13 +46,30 @@ function formatCell(code: string, dialect: string): string {
   const sqlBody = lines.slice(i + 1).join('\n').trim();
   if (!sqlBody) return code;
 
-  const body = format(sqlBody, {
+  // Extract % magic lines (re-appended after formatting).
+  // # comments are converted to -- inline so sql-formatter can parse them.
+  const sqlLines: string[] = [];
+  const magicLines: string[] = [];
+  for (const line of sqlBody.split('\n')) {
+    if (line.trimStart().startsWith('%')) {
+      magicLines.push(line);
+    } else {
+      sqlLines.push(convertHashComments(line));
+    }
+  }
+
+  const sqlToFormat = sqlLines.join('\n').trim();
+  if (!sqlToFormat) return code;
+
+  const body = format(sqlToFormat, {
     language: dialect as FormatOptionsWithLanguage['language'],
     tabWidth: 2,
     keywordCase: 'upper',
     linesBetweenQueries: 2,
   });
-  return `${magic}\n${body}`;
+  const formatted =
+    magicLines.length ? `${body}\n${magicLines.join('\n')}` : body;
+  return `${magic}\n${formatted}`;
 }
 
 function getEditor(cell: any): { editor: CodeMirrorEditor; view: EditorView } | null {

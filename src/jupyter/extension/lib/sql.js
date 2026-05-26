@@ -11,6 +11,32 @@ function isSqlCell(code) {
     const first = code.trimStart().split('\n')[0] || '';
     return first.startsWith('%%sql');
 }
+/**
+ * Convert # comments to -- so sql-formatter (spark dialect) can parse them.
+ * Skips # inside string literals.
+ */
+function convertHashComments(sql) {
+    let result = '';
+    let inSingle = false;
+    let inDouble = false;
+    for (const ch of sql) {
+        if (ch === "'" && !inDouble) {
+            inSingle = !inSingle;
+            result += ch;
+        }
+        else if (ch === '"' && !inSingle) {
+            inDouble = !inDouble;
+            result += ch;
+        }
+        else if (ch === '#' && !inSingle && !inDouble) {
+            result += '--';
+        }
+        else {
+            result += ch;
+        }
+    }
+    return result;
+}
 function formatCell(code, dialect) {
     const lines = code.split('\n');
     const i = lines.findIndex(l => l.trimStart().startsWith('%%sql'));
@@ -18,13 +44,29 @@ function formatCell(code, dialect) {
     const sqlBody = lines.slice(i + 1).join('\n').trim();
     if (!sqlBody)
         return code;
-    const body = (0, sql_formatter_1.format)(sqlBody, {
+    // Extract % magic lines (re-appended after formatting).
+    // # comments are converted to -- inline so sql-formatter can parse them.
+    const sqlLines = [];
+    const magicLines = [];
+    for (const line of sqlBody.split('\n')) {
+        if (line.trimStart().startsWith('%')) {
+            magicLines.push(line);
+        }
+        else {
+            sqlLines.push(convertHashComments(line));
+        }
+    }
+    const sqlToFormat = sqlLines.join('\n').trim();
+    if (!sqlToFormat)
+        return code;
+    const body = (0, sql_formatter_1.format)(sqlToFormat, {
         language: dialect,
         tabWidth: 2,
         keywordCase: 'upper',
         linesBetweenQueries: 2,
     });
-    return `${magic}\n${body}`;
+    const formatted = magicLines.length ? `${body}\n${magicLines.join('\n')}` : body;
+    return `${magic}\n${formatted}`;
 }
 function getEditor(cell) {
     const e = cell === null || cell === void 0 ? void 0 : cell.editor;
