@@ -93,9 +93,20 @@ skillbot/
 ./scripts/jupyter.sh                    # 启动 notebook (port 8888)
 ./scripts/jupyter.sh lab                # 启动 JupyterLab
 ./scripts/jupyter.sh notebook --port 9999
+./scripts/jupyter.sh --rebuild          # 仅重建前端扩展
 ```
 
-新建 notebook 选择 "skillbot (Python 3.12)" kernel，`%%agent` 自动可用。
+新建 notebook 选择 "skillbot (Python 3.12)" kernel。Agent 交互通过右侧 **Agent Panel** 进行（替代原有的 `%%agent` cell magic）。
+
+**Agent Panel 模式（Shift+Tab 循环）：**
+
+| 模式 | 标记 | 行为 |
+|------|:---:|------|
+| default | ❯ | cell 注入，手动执行 |
+| plan | ⏸ | 先调研出方案 → 确认 UI（3 选项 + 反馈修订）→ 执行 |
+| auto | ⏵⏵ | cell 自动执行 + 错误自动修复（最多 3 次） |
+
+**输入框快捷键（对齐 cc-haha TUI）：** Ctrl+A/E/B/F/H/K/U/W/Y, ↑↓ 历史, Tab 补全, Shift+Enter 换行。
 
 **配置 agent：**
 
@@ -106,33 +117,9 @@ skillbot/
 %agent_config --debug
 ```
 
-不调用 `%agent_config` 时默认使用 `claude-code`，切换 agent 自动重建 session。支持 `--config <yaml>` 加载配置、`--agent` 指定 agent、`--claude-md` 项目约束、`--debug` 日志、`--KEY=VALUE` 注入环境变量。
+不调用 `%agent_config` 时默认使用 `claude-code`，切换 agent 自动重建 session。
 
-YAML 配置可加载第三方 tool 实现并设定实现偏好（`tools.paths` / `tools.preferences`）。
-
-**用法：**
-
-```
-%%agent
-1+1=?
-# → 流式进度（工具调用）+ 解析后打印结果文本
-
-%%agent --timeout 1200
-complex multi-step analysis
-# → 单次超时 1200s
-
-%%agent
-使用 stock_df 绘制收盘价走势
-# → agent 可访问 stock_df 变量信息，生成的图表自动内联显示
-```
-
-| Flag | 效果 |
-|------|------|
-| `--timeout N` | 本次调用超时秒数（默认 600） |
-| `--trace` | agent 执行后触发 review（AgentCellReviewHook），生成 review/fix cell |
-| `--auto` | 自动执行生成的 cell（独立使用，也可配合 --trace） |
-
-**Agent 输出（JSON 格式，支持裸 JSON 或 fenced block）：**
+**Agent 输出（JSON 格式）：**
 
 ```json
 {
@@ -146,9 +133,9 @@ complex multi-step analysis
 |------|------|
 | `text` | 自动检测 markdown→渲染，纯文本→print |
 | `files[]` | `.csv` → DataFrame，`.png/.jpg/.svg` → 内联图片，`.py` → 追加到 code_list |
-| `code` | 字符串或数组，始终注入下一 cell（数组每元素一个 cell） |
+| `code` | 字符串或数组，注入下一 cell（auto 模式自动执行） |
 
-**变量上下文：** 每次 `%%agent` 调用自动收集 shell 中用户变量信息（DataFrame shape、list 长度等）和近期 cell 执行记录，注入 prompt 供 agent 参考。首次 `%%agent` 后只发送增量变更。
+**变量上下文：** 每次调用自动收集 shell 中用户变量信息和近期 cell 执行记录，注入 prompt 供 agent 参考。首次调用后只发送增量变更。
 
 ### Spark SQL Magic
 
@@ -171,9 +158,9 @@ select * from table
 
 查询结果自动注入为 DataFrame 变量（默认 `var_1`、`var_2`...）。poll 阶段 `\r` + `flush` 实现单行实时刷新。
 
-### 用户反馈 + 数据采集
+### 数据采集
 
-`%fb yes|no [--comment '...']` 确认 agent 输出是否符合预期。Telemetry 自动采集 cell 执行、agent 调用、hook 事件、用户反馈到 `.run/sessions/{id}.jsonl`，用于改进 agent 准确性和 LLM 训练。
+Telemetry 自动采集 cell 执行、agent 调用、hook 事件到 `.run/sessions/{id}.jsonl`，用于改进 agent 准确性和 LLM 训练。反馈可通过 panel 的 plan 修订流程提交。
 
 ### Session + SubAgent
 

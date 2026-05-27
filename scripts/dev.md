@@ -289,40 +289,64 @@ results/
 
 ```bash
 jupyter.sh [lab|notebook] [options]
+jupyter.sh --rebuild              # 仅重建前端扩展（不改 Python 时）
 ```
 
 ### 功能
 
-启动 Jupyter 并自动注册 `%%agent` cell magic。脚本执行：
+启动 Jupyter 并自动注册 `%agent_config` + `%%sql` magic + Agent Panel。脚本执行：
 1. 安装依赖（ipython + jupyter + notebook + jupyterlab + pandas + ipykernel）
-2. 注册 "skillbot (Python 3.12)" kernel（使用 .venv Python + 自动加载 %%agent）
+2. 注册 "skillbot (Python 3.12)" kernel（使用 .venv Python + 自动加载 jupyter extension）
 3. 创建 IPython profile + 启动脚本
-4. 启动 Jupyter（工作目录：`.jupyter/run/`）
+4. 构建前端扩展（Shadow DOM panel + SQL 高亮）
+5. 启动 Jupyter（工作目录：`.jupyter/run/`）
 
-### %%agent magic
+### Agent Panel（右侧面板）
+
+所有 agent 交互通过右侧 "Agent" panel 进行，替代了原有的 `%%agent` cell magic。
+Panel 使用 Shadow DOM 完全隔离 JupyterLab CSS。
+
+**模式系统（Shift+Tab 循环）：**
+
+| 模式 | 标记 | 行为 |
+|------|:---:|------|
+| default | ❯ | cell 注入，手动执行 |
+| plan | ⏸ | 先调研出方案 → plan 确认 UI（3 选项 + 反馈修订）→ 确认后执行 |
+| auto | ⏵⏵ | cell 注入 + 自动执行 + 错误自动修复（最多 3 次） |
+
+**输入框快捷键（对齐 cc-haha）：**
+
+| 类别 | 快捷键 | 功能 |
+|------|--------|------|
+| 光标 | Ctrl+A/E, Ctrl+B/F, Alt+B/F | 行首/尾、字符、单词跳转 |
+| 编辑 | Ctrl+H/D/K/U/W/Y | 退格、删除、剪切、粘贴（kill ring） |
+| 历史 | ↑↓（首/末行）、Ctrl+P/N | 历史导航（保存草稿） |
+| 提交 | Enter / Shift+Enter | 发送 / 换行 |
+| 面板 | Ctrl+L | 清空面板 |
+
+**计划确认 UI：**
+- 计划预览（可滚动，深色背景 + 青色边框）
+- 3 选项：Yes (审查后执行) / Yes (自动执行) / No (修订)
+- No 选项支持反馈文本域输入修订意见
+
+**自动错误修复（auto 模式）：**
+- cell 执行失败 → AI 分析错误 → 生成修复代码 → 替换原 cell → 自动执行
+- 最多重试 3 次，递归保护
+
+### 配置 agent
 
 ```
-
-默认使用 claude-code，参数：
-  --timeout N    超时秒数（默认 600）
+%agent_config --agent claude-code --timeout 600
+%agent_config --config conf/jupyter_agent.yaml
+%agent_config --claude-md conf/claude-md.example
+%agent_config --debug
 ```
 
-示例：
-
-```
-%%agent
-1+1=?
-
-write a sort function
-# → 下一 cell 自动填入代码
-
-%%agent --timeout 1200
-complex multi-step analysis
-```
+不调用 `%agent_config` 时默认使用 `claude-code`。切换 agent 自动重建 session。
 
 ### 流式输出
 
-文本逐 token 显示，tool 调用实时展示 `[Bash]`，thinking 摘要灰色显示。
+文本逐 token 显示在 panel 中，tool 调用实时展示 `⬢ [Bash]`，thinking 摘要灰色斜体显示。
 
 ### 变量上下文
 
@@ -330,22 +354,22 @@ complex multi-step analysis
 
 ### 单元追踪
 
-通过 `post_run_cell` hook 自动记录所有 cell 执行（含非 `%%agent` 的普通 cell），为 agent 提供完整的执行历史上下文。
+通过 `post_run_cell` hook 自动记录所有 cell 执行（含普通 cell），为 agent 提供完整的执行历史上下文。
 
 ### 会话关联
 
-同一个 `.ipynb` 文件共享同一个 agent session（session key = MD5(notebook_path)）。Kernel 重启时 `atexit` 自动清理 session。
+同一个 `.ipynb` 文件共享同一个 agent session（session key = MD5(notebook_path)）。Kernel 重启时自动重建。
 
 ### 输出格式
 
 | Block | 行为 |
 |------|------|
-| 纯文本 | streaming 逐 token 输出 |
-| `python` | 填入下一 cell（不执行） |
+| 纯文本 | streaming 逐 token 输出到 panel |
+| `python` | 注入下一 cell（auto 模式自动执行） |
 | `csv:name` / `file:name.csv` | → DataFrame |
 | `image` | 内联渲染 |
 | `file:name` | → 字符串变量 |
 
 ### 日志
 
-每次调用记录到 `.run/agent-YYYYMMDD.log`（文本格式），含 session、变量、prompt、result、耗时。
+每次调用记录到 `.run/jupyter.log` + `.run/claude-code.log`。

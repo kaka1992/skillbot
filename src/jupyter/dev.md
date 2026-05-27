@@ -1,4 +1,4 @@
-# Jupyter Integration — %%agent / %%sql Cell Magic
+# Jupyter Integration — Agent Panel + %%sql Cell Magic
 
 ## 文件结构
 
@@ -14,18 +14,26 @@ src/task/
 └── task.py                  # Task (dataclass)
 
 src/jupyter/
-├── __init__.py              # extension 加载 + logging 初始化 + magics 注册
-├── comm.py                  # Comm 通知前端扩展（fire-and-forget）
+├── __init__.py              # extension 加载 + logging 初始化 + magics 注册 + panel bridge
+├── comm.py                  # Comm 通知前端扩展（fire-and-forget，无阻塞）
 ├── config.py                # agent_config: CLI/YAML 解析、tools 加载、debug
-├── feedback.py              # %feedback / %fb 行魔法（yes/no + --comment）
-├── magic.py                 # 调度层: AgentMagic + MAGIC_PROMPT + session helpers
+├── magic.py                 # 调度层: AgentMagic + panel 交互（prompt/confirm/mode/auto-fix）
 ├── namespace.py             # Namespace: vars / context / delta / cell tracking
+├── panel.py                 # 前端 panel comm bridge（send_to_panel + init_panel_comm）
 ├── parser.py                # Parser: JSON→code fence→raw + parse_review_result + md 检测
 ├── render.py                # 统一输出层 + SQL 自动检测（sqlparse）
 ├── telemetry.py             # TelemetryRecorder: JSONL session 事件采集
 ├── dsl/
 │   └── sql/
 └── extension/
+    ├── src/
+    │   ├── index.ts          # 插件注册（panel + sql）
+    │   ├── panel.ts          # AgentPanel 主组件（widget、kernel/comm、keyboard、send）
+    │   ├── panelStyles.ts    # CC 色板 + Shadow DOM CSS（隔离 JupyterLab 样式）
+    │   ├── panelRenderer.ts  # 输出渲染（text/tool/thinking/code/plan/result）
+    │   ├── panelPlanConfirm.ts # 计划确认 UI（3 选项 + 反馈文本域）
+    │   └── sql.ts            # SQL 格式化 (Ctrl+Shift+F) + SQL 高亮 (@codemirror/lang-sql)
+    └── lib/                  # 编译输出
 
 src/hook/
 ├── __init__.py
@@ -42,20 +50,30 @@ src/hook/
 __init__ (extension 加载时)
   ├── logging 初始化 + Namespace(shell)
   ├── AgentSession(agent, timeout) → configure_subs + init_session
-  │   └── SYSTEM_PROMPT + MAGIC_PROMPT 合并 → seed prompt
+  │   └── SYSTEM_PROMPT + project prompt 合并 → seed prompt
   │   └── _register_hooks → CODE_REVIEW + AGENT_CELL_REVIEW
-  └── TelemetryRecorder + ns.delta() baseline
+  ├── TelemetryRecorder + ns.delta() baseline
+  └── init_panel_comm(shell) → 注册 comm target（前端主动创建）
 
-%%agent cell
-  ↓ AgentMagic.agent_func()
-  ├── ns.delta() → 增量上下文
-  ├── session.stream(prompt, timeout) → 流式进度
-  ├── parse(raw) → ParsedResult
-  ├── render_output(ns, result) → render 层
-  │   ├── is_markdown → render_markdown / render_text
-  │   ├── code_list → render_code (SQL 自动检测 %%sql) → comm → 新 cell
-  │   └── files → _load_csv / _display_image_file / ns.inject
-  └── telemetry: record("agent_call", ...) + (--trace) → dispatch AGENT_CELL_REVIEW
+Panel 交互流
+  ↓ 用户在右侧 panel 输入 prompt
+  ├── panel.ts _sendPrompt() → kernel.requestExecute → magic.py _panel_input()
+  ├── _handle_panel_prompt(prompt, mode) → session.stream() → 流式输出到 panel
+  │   ├── mode="default" → render_output(auto=False) → cell 注入，手动执行
+  │   ├── mode="plan" → 注入 plan 指令前缀 → 仅显示 plan，不注入 cell
+  │   │   └── plan_confirm → 前端显示计划确认 UI（3 选项 + 反馈）
+  │   │       ├── Yes (accept_edits) → _implement_plan(auto=False) → cell 注入
+  │   │       ├── Yes (auto-execute) → _implement_plan(auto=True) → cell 注入+执行
+  │   │       └── No, revise → 反馈文本域 → 修订 plan → 重新确认
+  │   └── mode="auto" → render_output(auto=True, on_cell_id=...) → 自动执行
+  │       └── cell 错误 → _on_cell_run → _auto_fix_cell → AI 修复 → 替换 cell
+  └── send_to_panel() → comm 消息 → panel.ts onMsg → 渲染
+
+%agent_config (行魔法)
+  ↓ AgentMagic.agent_config_func()
+  ├── 解析 CLI/YAML 参数 → configure_agent
+  ├── session_rebuild → _init_session（切换 agent / 更新 system prompt）
+  └── timeout 更新 → 热更新 client timeout
 
 Hook 执行
   ↓ dispatch(event, context, session=self._session)
@@ -64,6 +82,69 @@ Hook 执行
   │       └── SubAgentSession: 独立 client + session + seed prompt
   └── telemetry: record("hook_event", ...)
 ```
+
+## 前端 Panel 架构
+
+### 模式系统（cc-haha 风格）
+
+| 模式 | 标记 | 颜色 | 行为 |
+|------|:---:|------|------|
+| default | ❯ | — | cell 注入，手动执行 |
+| plan | ⏸ | cyan | 先调研出方案，确认后执行 |
+| auto | ⏵⏵ | purple | cell 注入 + 自动执行 + 错误自动修复 |
+
+Shift+Tab 循环切换模式。模式切换时 info bar 显示随机提示（4s 后回退到持久指示符）。
+
+### 输入框能力（对齐 cc-haha TUI）
+
+| 类别 | 快捷键 | 功能 |
+|------|--------|------|
+| 光标 | Ctrl+A/E | 行首/行尾 |
+| 光标 | Ctrl+B/F | 字符左/右 |
+| 光标 | Alt+B/F | 单词左/右 |
+| 编辑 | Ctrl+H | 退格 |
+| 编辑 | Ctrl+D | 前向删除 / 空输入清空 |
+| 编辑 | Ctrl+K | 剪切到行尾 |
+| 编辑 | Ctrl+U | 剪切到行首 |
+| 编辑 | Ctrl+W | 剪切前一个词 |
+| 编辑 | Ctrl+Y | 粘贴（kill ring） |
+| 编辑 | Ctrl+C | 清空输入（无选中时） |
+| 提交 | Enter | 发送 prompt |
+| 提交 | Shift/Meta/Enter | 插入换行 |
+| 历史 | ↑/↓（首/末行） | 历史导航 |
+| 历史 | Ctrl+P/N | 历史导航 |
+| 模式 | Shift+Tab | 循环模式 |
+| 模式 | Tab | 补全 / 命令 |
+| 面板 | Ctrl+L | 清空面板 |
+
+### 计划确认 UI
+
+计划生成后，输入区替换为确认界面：
+- **计划预览** — 可滚动（max 200px），深色背景 + 青色左边框
+- **3 个选项** — Tab/↑↓ 选择，Enter 确认：
+  1. Yes (accept edits) — 注入 cell，手动审查
+  2. Yes (auto-execute) — 注入 cell + 自动执行
+  3. No, revise — 显示反馈文本域
+- **反馈模式** — 输入修订意见，Enter 提交，Esc 返回选项
+- Esc 取消，Ctrl+C 放弃计划
+
+### 自动错误修复（auto 模式）
+
+```
+cell 执行失败 → _on_cell_run 检测 "# %%agent generate code" 标记
+  → _auto_fix_cell → AI 分析错误 + 生成修复
+  → render_code(auto=True, replace_cell_id=...) → 替换原 cell + 自动执行
+  → 最多重试 3 次，递归保护防止无限循环
+```
+
+### 文件职责
+
+| 文件 | 内容 |
+|------|------|
+| `panel.ts` | AgentPanel 主组件（widget、构造器、kernel/comm、_sendPrompt、block 管理、清理、状态栏、模式循环、cell comm handler、插件注册） |
+| `panelStyles.ts` | CC 色板 + Shadow DOM CSS（约 280 行） |
+| `panelRenderer.ts` | 输出渲染：text/tool/thinking/code_block/plan_block/result |
+| `panelPlanConfirm.ts` | 计划确认 UI：渲染选项、提交/取消、反馈处理 |
 
 ## 输出分层 (render.py)
 
@@ -74,11 +155,11 @@ Hook 执行
 | `render_info(text)` | 状态/进度/提示 | stdout |
 | `render_error(text)` | 错误 | stderr (红) |
 | `render_debug(text)` | 诊断（需 --debug） | stdout |
-| `render_code(ns, code, auto, trace)` | 创建新 cell | comm → 前端 |
+| `render_code(ns, code, auto, trace, replace_cell_id, on_cell_id)` | 创建/替换 cell | comm → 前端 |
 | `render_variables(ns)` | 变量上下文 | stdout |
 | `render_image(data)` | 内联图片 | IPython.display.Image |
 | `render_sql_dataframe(ns, data, name)` | SQL 结果注入 | CSV→DataFrame + preview |
-| `render_output(ns, result, skip_text, auto, trace)` | 调度所有 render 方法 | — |
+| `render_output(ns, result, ..., on_cell_id)` | 调度所有 render + 追踪 cell ID | — |
 
 render 函数**只做显示**，不写 log。
 
@@ -88,36 +169,39 @@ render 函数**只做显示**，不写 log。
 bash scripts/jupyter.sh
 bash scripts/jupyter.sh lab
 bash scripts/jupyter.sh notebook --port 9999
+
+# 仅重建前端（不改 Python 时）
+bash scripts/jupyter.sh --rebuild
 ```
 
 新建 notebook 选择 "skillbot (Python 3.12)" kernel。
 
 ## 用法
 
-### Agent
+### Agent Panel（右侧面板）
+
+所有 agent 交互通过右侧 "Agent" 面板进行：
+- 输入 prompt → Enter 发送
+- Shift+Tab 切换模式（default/plan/auto）
+- ↑↓ 历史导航（首/末行时）
+- Ctrl+L 清空面板
+
+### Agent 配置
 
 ```
 %agent_config --agent claude-code --timeout 600 --debug
-
-%%agent
-1+1=?
-
-%%agent --trace
-fix the bug in the cell above
+%agent_config --config conf/jupyter_agent.yaml
+%agent_config --claude-md conf/claude-md.example
 ```
 
 | Flag | 说明 |
 |------|------|
-| `--trace` | 执行后触发 AgentCellReviewHook |
-| `--auto` | 自动执行生成的 cell |
+| `--config PATH` | YAML 配置路径 |
+| `--agent NAME` | agent 名称（claude-code / nanobot / hermes-agent） |
 | `--timeout N` | 超时秒数（默认 600） |
-
-### Feedback
-
-```
-%fb yes / %fb no
-%fb yes --comment "图表正确"
-```
+| `--claude-md PATH` | CLAUDE.md 项目约束 |
+| `--debug` | 开启 debug 日志 |
+| `--KEY=VALUE` | 注入环境变量 |
 
 ### SQL / Spark
 
@@ -179,15 +263,23 @@ SOLVED/NOT_SOLVED/SOLVING 三态。用 `ns.context()` 获取完整上下文。SO
 | 事件 | 采集点 |
 |------|------|
 | `cell_executed` | `_on_cell_run` |
-| `agent_call` | `agent_func` |
+| `agent_call` | agent 调用完成 |
 | `hook_event` | `HookRegistry.dispatch` |
-| `feedback` | `%feedback` |
 
 ## 前端扩展
 
-| 插件 | 功能 |
-|------|------|
-| comm.ts | 接收 comm → 创建 cell + 可选执行 |
-| sql.ts | SQL 格式化 (Ctrl+Shift+F) + SQL 高亮 (@codemirror/lang-sql) |
+### 构建
 
-构建：`jlpm install && jlpm run build`
+```bash
+cd src/jupyter/extension
+jlpm install && jlpm run build
+# 或通过脚本一键重建：
+bash scripts/jupyter.sh --rebuild
+```
+
+### 插件
+
+| 插件 | 文件 | 功能 |
+|------|------|------|
+| panel | panel.ts + panelStyles.ts + panelRenderer.ts + panelPlanConfirm.ts | Agent TUI panel（Shadow DOM 隔离 CSS） |
+| sql | sql.ts | SQL 格式化 (Ctrl+Shift+F) + SQL 高亮 |
