@@ -1,5 +1,7 @@
 """Render parsed agent output into Jupyter cell — unified output layer."""
 
+from __future__ import annotations
+
 import logging
 import sys
 from io import StringIO
