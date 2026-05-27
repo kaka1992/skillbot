@@ -123,6 +123,7 @@ class AgentMagic(Magics):
         self.ns.delta()
         shell.events.register("pre_run_cell", self._on_pre_run_cell)
         shell.events.register("post_run_cell", self._on_cell_run)
+        self._register_panel_comm()
 
     def _init_session(self, agent: str, timeout: int, claude_md: str | None = None) -> None:
         self._session = AgentSession(agent, timeout)
@@ -185,6 +186,85 @@ class AgentMagic(Magics):
                 error=str(error)[:2000] if error else None,
                 elapsed=0.0,
             )
+
+    # ---- panel comm ----
+
+    def _register_panel_comm(self) -> None:
+        """Register comm target for right-side Agent TUI panel."""
+        try:
+            from comm import create_comm
+            shell = self.ns._shell
+            kernel = shell.kernel
+            if not hasattr(kernel, "comm_manager"):
+                return
+
+            def _on_open(comm, msg):
+                @comm.on_msg
+                def _on_msg(m):
+                    data = m.get("content", {}).get("data", {})
+                    self._on_panel_msg(data)
+
+            kernel.comm_manager.register_target("skillbot:tui", _on_open)
+        except Exception:
+            pass
+
+    def _on_panel_msg(self, data: dict) -> None:
+        """Handle message from right-side panel."""
+        action = data.get("action", "")
+        text = (data.get("text") or "").strip()
+
+        if text.startswith("/confirm "):
+            self._handle_panel_confirm(text[9:])
+        elif text.startswith("/feedback "):
+            self._handle_panel_feedback(text[10:])
+        elif text.startswith("/clear"):
+            from .panel import send_to_panel
+            send_to_panel(self.ns, "clear")
+        elif text:
+            self._handle_panel_prompt(text)
+
+    def _handle_panel_prompt(self, prompt: str) -> None:
+        """Execute agent prompt from panel: stream to panel + inject cells to left."""
+        ctx = self.ns.delta()
+        full = f"{ctx}\n\n{prompt}" if ctx else prompt
+
+        from .panel import send_to_panel
+
+        raw = self._session.stream(full, show_text=False,
+                                    on_chunk=lambda t: send_to_panel(self.ns, "text", content=t))
+        send_to_panel(self.ns, "text", content="\n")
+
+        if raw.strip():
+            result = parse(raw)
+            render_output(self.ns, result, auto=False, trace=False)
+
+    def _handle_panel_confirm(self, arg: str) -> None:
+        """Handle /confirm from panel."""
+        from .panel import send_to_panel
+        arg = arg.strip()
+        if arg == "yes":
+            self._plan_confirmed = True
+            self._plan_replace = False
+            send_to_panel(self.ns, "text", content="✓ plan confirmed\n")
+        elif arg == "no":
+            self._plan_confirmed = False
+            send_to_panel(self.ns, "text", content="✗ plan cancelled\n")
+        else:
+            self._plan_feedback = arg
+            self._plan_replace = True
+            send_to_panel(self.ns, "text", content=f"↻ adjusting: {arg}\n")
+
+    def _handle_panel_feedback(self, arg: str) -> None:
+        """Handle /feedback from panel."""
+        from .panel import send_to_panel
+        parts = arg.split("--comment", 1)
+        result = parts[0].strip()
+        comment = parts[1].strip() if len(parts) > 1 else ""
+        rec = get_recorder()
+        if rec:
+            rec.record("feedback", result=result, comment=comment)
+        label = "meets expectation" if result == "yes" else "does not meet expectation"
+        send_to_panel(self.ns, "text", content=f"[feedback] {label}" + (f" — {comment}\n" if comment else "\n"))
 
     def _split_at_trace(self, code: str) -> tuple[str, int]:
         """Return (code_before, idx) of _TRACE_MARKER in *code*."""

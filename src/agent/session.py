@@ -65,12 +65,13 @@ class AgentSession:
     # -- streaming --
 
     def stream(self, prompt: str, timeout: int | None = None,
-               show_text: bool = True) -> str:
-        return self._stream(self._client, prompt, self._session_id, timeout, show_text)
+               show_text: bool = True, on_chunk=None) -> str:
+        return self._stream(self._client, prompt, self._session_id, timeout, show_text, on_chunk)
 
     @staticmethod
     def _stream(client, prompt: str, session: str,
-                timeout: int | None = None, show_text: bool = True) -> str:
+                timeout: int | None = None, show_text: bool = True,
+                on_chunk=None) -> str:
         if timeout is not None and client is not None:
             client._backend._timeout = timeout
 
@@ -85,6 +86,8 @@ class AgentSession:
                 if show_text:
                     sys.stdout.write(chunk.text)
                     sys.stdout.flush()
+                if on_chunk:
+                    on_chunk(chunk.text)
 
             if chunk.blocks:
                 for b in chunk.blocks:
@@ -98,8 +101,8 @@ class AgentSession:
                             tool_names.add(name)
                             _log.debug("tool_use: %s", name)
                             print(f"\n\033[90m[{name}]\033[0m")
-                    elif b.type == "tool_result" and b.data:
-                        pass
+                            if on_chunk:
+                                on_chunk(f"\n\033[90m[{name}]\033[0m\n")
 
         elapsed = round(time.time() - t0, 1)
         print()
