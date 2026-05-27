@@ -30,14 +30,14 @@ function handleComm(comm, msg, tracker, sessionContext) {
     const code = data.code || '';
     const auto = data.auto !== false;
     const cellType = data.cell_type || 'code';
-    const marker = data.replace_cell_marker || '';
+    const replaceId = data.replace_cell_id || '';
     if (!code)
         return;
-    // Replace existing cell by marker
-    if (marker) {
+    // Replace existing cell by ID
+    if (replaceId) {
         const cells = model.sharedModel.cells;
         for (let i = cells.length - 1; i >= 0; i--) {
-            if (cells[i].source.includes(marker)) {
+            if (cells[i].id === replaceId) {
                 cells[i].source = code;
                 notebook.content.activeCellIndex = i;
                 comm.send({ cell_id: cells[i].id }).catch(() => { });

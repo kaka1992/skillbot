@@ -39,14 +39,14 @@ function handleComm(
   const code: string = data.code || '';
   const auto: boolean = data.auto !== false;
   const cellType: string = data.cell_type || 'code';
-  const marker: string = data.replace_cell_marker || '';
+  const replaceId: string = data.replace_cell_id || '';
   if (!code) return;
 
-  // Replace existing cell by marker
-  if (marker) {
+  // Replace existing cell by ID
+  if (replaceId) {
     const cells = model.sharedModel.cells;
     for (let i = cells.length - 1; i >= 0; i--) {
-      if (cells[i].source.includes(marker)) {
+      if (cells[i].id === replaceId) {
         cells[i].source = code;
         notebook.content.activeCellIndex = i;
         comm.send({ cell_id: cells[i].id }).catch(() => {});

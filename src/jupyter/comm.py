@@ -12,7 +12,7 @@ _log = logging.getLogger(__name__)
 
 
 def send_cell_via_comm(ns, code: str, auto: bool = False, cell_type: str = "code",
-                       replace_cell_marker: str = "", on_cell_id: callable | None = None) -> str:
+                       replace_cell_id: str = "", on_cell_id: callable | None = None) -> str:
     """Notify frontend extension to create + optionally execute a cell.
 
     Returns the cell ID if the frontend replies, or "" on failure.
@@ -34,7 +34,7 @@ def send_cell_via_comm(ns, code: str, auto: bool = False, cell_type: str = "code
             warnings.simplefilter("ignore", RuntimeWarning)
             comm = create_comm(TARGET_NAME,
                                data={"code": code, "auto": auto, "cell_type": cell_type,
-                                      "replace_cell_marker": replace_cell_marker})
+                                      "replace_cell_id": replace_cell_id})
 
             @comm.on_msg
             def _on_msg(msg):

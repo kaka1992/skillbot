@@ -495,8 +495,9 @@ class AgentMagic(Magics):
                 f"agent parse: text={len(result.text or '')} chars files={len(result.files)} code={len(result.code_list)}")
             _log.debug(
                 f"agent parse detail: text={len(result.text or '')} files={len(result.files)} code={len(result.code_list)}")
+            plan_cell_id = self.ns._shell.user_ns.pop("__plan_cell_id__", "") if self._plan_replace else ""
             render_output(self.ns, result, auto=auto, trace=trace,
-                          replace_plan=self._plan_replace)
+                          plan_cell_id=plan_cell_id)
             self._plan_replace = False
             has_new_cell = bool(result.code_list)
 

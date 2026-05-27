@@ -57,7 +57,8 @@ def render_error(text: str) -> None:
 
 
 def render_code(ns: Namespace, code: str, auto: bool = False, trace: bool = False,
-                cell_type: str = "code", replace_cell_marker: str = "") -> None:
+                cell_type: str = "code", replace_cell_id: str = "",
+                on_cell_id: callable | None = None) -> None:
     """Send code to frontend via comm; extension creates cell + optionally executes.
 
     *auto* tells the extension to execute the cell immediately.
@@ -82,7 +83,8 @@ def render_code(ns: Namespace, code: str, auto: bool = False, trace: bool = Fals
     _log.info("render_code: %d chars auto=%s trace=%s type=%s", len(code), auto, trace, cell_type)
 
     from .comm import send_cell_via_comm
-    send_cell_via_comm(ns, code, auto=auto, cell_type=cell_type, replace_cell_marker=replace_cell_marker)
+    send_cell_via_comm(ns, code, auto=auto, cell_type=cell_type,
+                       replace_cell_id=replace_cell_id, on_cell_id=on_cell_id)
 
 
 def render_variables(ns: Namespace) -> None:
@@ -133,7 +135,7 @@ def render_sql_dataframe(ns: Namespace, data: dict, var_name: str):
 def render_output(ns: Namespace, result: ParsedResult,
                   skip_text: bool = False,
                   auto: bool = False, trace: bool = False,
-                  replace_plan: bool = False) -> None:
+                  plan_cell_id: str = "") -> None:
     """Dispatch parsed agent result to render methods."""
     if result.text and not skip_text:
         if result.is_markdown:
@@ -142,9 +144,11 @@ def render_output(ns: Namespace, result: ParsedResult,
             render_text(result.text)
 
     if result.plan:
-        marker = "# %%plan" if replace_plan else ""
         content = "# %%plan\n\n" + result.plan
-        render_code(ns, content, cell_type="markdown", replace_cell_marker=marker)
+        def _on_plan_cell(cid):
+            ns._shell.user_ns["__plan_cell_id__"] = cid
+        render_code(ns, content, cell_type="markdown", replace_cell_id=plan_cell_id,
+                    on_cell_id=_on_plan_cell)
 
     for name, content in result.csv.items():
         _load_csv(name, content, ns)
