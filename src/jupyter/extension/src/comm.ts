@@ -8,7 +8,6 @@ import { ISessionContext } from '@jupyterlab/apputils';
 
 const TARGET = 'skillbot:execute-cell';
 
-/** Insert code cell below active cell, optionally auto-execute. */
 function handleComm(
   comm: any,
   msg: any,
@@ -16,20 +15,20 @@ function handleComm(
   sessionContext: ISessionContext,
 ): void {
   const data = msg.content?.data || {};
-  const runMarker: string = data.run_cell_marker || '';
   const notebook = tracker.currentWidget;
   if (!notebook) return;
   const model = notebook.model;
   if (!model) return;
 
-  // Run cell by ID (used by %confirm to re-execute agent cell)
+  // Run cell by ID
   const runCellId: string = data.run_cell_id || '';
   if (runCellId) {
     const cells = model.sharedModel.cells;
     for (let i = cells.length - 1; i >= 0; i--) {
       if (cells[i].id === runCellId) {
         notebook.content.activeCellIndex = i;
-        NotebookActions.run(notebook.content, sessionContext);
+        const kernel = sessionContext.session?.kernel;
+        if (kernel) kernel.requestExecute({ code: cells[i].source, store_history: true });
         return;
       }
     }
@@ -65,11 +64,26 @@ function handleComm(
   const newCell = model.sharedModel.cells[activeIndex + 1];
   notebook.content.activeCellIndex = activeIndex + 1;
 
-  // Reply with cell ID so kernel can track it
   comm.send({ cell_id: newCell.id }).catch(() => {});
 
   if (cellType === 'markdown' || !auto) return;
-  NotebookActions.run(notebook.content, sessionContext);
+  // retry loop: wait for cell widget to render, then execute
+  const cellIndex = activeIndex + 1;
+  let retries = 0;
+  const execute = () => {
+    notebook.content.activeCellIndex = cellIndex;
+    const cell = notebook.content.activeCell;
+    if (cell && cell.model.type === 'code') {
+      NotebookActions.run(notebook.content, sessionContext)
+        .catch(e => console.error('[comm] run failed:', e));
+    } else if (retries < 20) {
+      retries++;
+      setTimeout(execute, 100);
+    } else {
+      console.error('[comm] cell widget never appeared at index', cellIndex);
+    }
+  };
+  setTimeout(execute, 100);
 }
 
 export const commPlugin: JupyterFrontEndPlugin<void> = {
@@ -81,24 +95,34 @@ export const commPlugin: JupyterFrontEndPlugin<void> = {
       const notebook = tracker.currentWidget;
       if (!notebook) return;
       const ctx = notebook.context.sessionContext;
+      if (!ctx) return;
       const kernel = ctx.session?.kernel;
       if (kernel) {
         kernel.registerCommTarget(TARGET, (comm: any, msg: any) =>
           handleComm(comm, msg, tracker, ctx),
         );
+        console.log('[comm] registered target:', TARGET);
       }
     };
 
-    tracker.currentChanged.connect(() => {
-      const notebook = tracker.currentWidget;
-      if (notebook) {
-        notebook.context.sessionContext.kernelChanged.connect(() => {
-          registerOnKernel();
-        });
-      }
-      registerOnKernel();
-    });
+    let currentCtx: any = null;
+    const onKernelChanged = () => registerOnKernel();
 
-    registerOnKernel();
+    const setup = () => {
+      const notebook = tracker.currentWidget;
+      if (!notebook) return;
+      const ctx = notebook.context.sessionContext;
+      if (!ctx || ctx === currentCtx) return;
+      // disconnect old, connect new
+      if (currentCtx) {
+        currentCtx.kernelChanged.disconnect(onKernelChanged);
+      }
+      currentCtx = ctx;
+      ctx.kernelChanged.connect(onKernelChanged);
+      registerOnKernel();
+    };
+
+    tracker.currentChanged.connect(() => setup());
+    setTimeout(setup, 500);
   },
 };

@@ -1,12 +1,9 @@
-"""%%agent / %%sql cell magics — thin scheduling layer."""
+"""%%sql cell magic + agent panel integration — thin scheduling layer."""
 
 import hashlib
 import logging
 import os as _os
 import shlex
-import sys
-import time
-from pathlib import Path
 
 from IPython.core.magic import Magics, cell_magic, line_magic, magics_class
 
@@ -16,10 +13,10 @@ from chat import _AGENTS
 from hook import HookGroup, HookRegistry, HookEvent
 from jupyter.telemetry import get_recorder, TelemetryRecorder, set_recorder
 from .config import pop_flag, parse_kv, configure_agent, load_yaml_config
-from .feedback import parse_feedback_line
 from .namespace import Namespace
+from .panel import send_to_panel
 from .parser import parse, traceback_line
-from .render import render_debug, render_error, render_info, render_output, render_sql_dataframe, render_code, render_variables
+from .render import render_debug, render_error, render_info, render_output, render_sql_dataframe
 from .dsl.sql import SqlRunner, sql_progress
 from hook.impl.code_review import AgentCodeReviewHook
 from hook.impl.cell_review import AgentCellReviewHook
@@ -40,18 +37,6 @@ SUB_AGENT_DEFAULTS = {
         tools=["Read"],
     ),
 }
-
-
-def _extract_trailing_agent(cell: str) -> tuple[str, str]:
-    """Split *cell* into (code_before, agent_line) if last line is ``%agent``."""
-    lines = cell.split("\n")
-    for i in reversed(range(len(lines))):
-        stripped = lines[i].strip()
-        if stripped:
-            if stripped.startswith("%agent"):
-                return "\n".join(lines[:i]).strip(), stripped
-            break
-    return cell, ""
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +62,34 @@ def _notebook_path() -> str:
 
 def _session_key() -> str:
     return hashlib.md5(_notebook_path().encode()).hexdigest()[:12]
+
+
+def _get_magic():
+    """Return the singleton AgentMagic instance, or None."""
+    import sys as _sys
+    mod = _sys.modules.get(__name__)
+    return getattr(mod, "_agent_magic_instance", None)
+
+
+def _panel_input(text: str, mode: str = "default") -> None:
+    """Bridge: called by frontend requestExecute → dispatches to AgentMagic."""
+    inst = _get_magic()
+    if inst:
+        inst._on_panel_input(text, mode)
+
+
+def _panel_set_mode(mode: str) -> None:
+    """Set mode without triggering agent execution."""
+    inst = _get_magic()
+    if inst:
+        inst._handle_panel_mode(mode)
+
+
+def _panel_track_cell_edit(source: str) -> None:
+    """Record unexecuted cell edit in namespace."""
+    inst = _get_magic()
+    if inst:
+        inst.ns.track_pending_edit(source)
 
 
 def _merge_prompt(claude_md_path: str | None = None) -> str:
@@ -106,12 +119,16 @@ class AgentMagic(Magics):
 
     def __init__(self, shell):
         super().__init__(shell)
+        import sys as _sys
+        _sys.modules[__name__]._agent_magic_instance = self
         self.ns = Namespace(shell)
         self._plan = False
-        self._plan_replace = False
-        self._plan_feedback = ""
-        self._last_agent_cell = ""
-        self._last_agent_line = ""
+        self._plan_mode_active = False
+        self._last_plan_prompt = ""
+        self._last_plan_output = ""
+        self._agent_cells: dict[str, str] = {}  # cell_id → code, for auto-fix on error
+        self._auto_fixing = False  # guard against recursive auto-fix
+        self._auto_fix_count = 0   # limit retries per batch
         cfg = load_yaml_config("conf/jupyter_agent.yaml")
         self._hook_cfg = cfg.get("hooks", {})
         self._init_session(self._agent, self._timeout, self._claude_md_path)
@@ -121,9 +138,9 @@ class AgentMagic(Magics):
         )
         set_recorder(rec)
         self.ns.delta()
-        shell.events.register("pre_run_cell", self._on_pre_run_cell)
         shell.events.register("post_run_cell", self._on_cell_run)
-        self._register_panel_comm()
+        from .panel import init_panel_comm
+        init_panel_comm(shell)
 
     def _init_session(self, agent: str, timeout: int, claude_md: str | None = None) -> None:
         self._session = AgentSession(agent, timeout)
@@ -134,9 +151,6 @@ class AgentMagic(Magics):
             on_init=lambda s: _register_hooks(timeout, self._hook_cfg),
         )
 
-    def _on_pre_run_cell(self, info):
-        self._raw_cell = getattr(info, "raw_cell", "")
-
     def _on_cell_run(self, result):
         info = getattr(result, "info", None)
         if info is None:
@@ -145,11 +159,14 @@ class AgentMagic(Magics):
         if not code:
             return
 
-        # %%sql + trailing %agent → dispatch (sql() already tracked result)
-        if code.startswith("%%sql") and "%agent" in code:
-            HookRegistry.dispatch(HookEvent.AGENT_CELL_REVIEW, {
-                "ns": self.ns, "auto": "--auto" in code,
-            }, session=self._session)
+        # Auto-fix: agent-generated cell failed → send error to AI
+        if not result.success and "# %%agent generate code" in code:
+            error = result.error_in_exec or result.error_before_exec
+            _log.info("auto-fix triggered: error=%s", type(error).__name__ if error else "None")
+            if error is not None:
+                import traceback as _tb
+                error_msg = "".join(_tb.format_exception_only(type(error), error))
+                self._auto_fix_cell(code.strip(), error_msg)
             return
 
         # Detect: code before %agent --trace errored → auto-trigger trace
@@ -165,18 +182,13 @@ class AgentMagic(Magics):
                     self._trace_on_error(code, error_msg)
             return
 
-        if code.startswith("%%agent") or code.startswith("%agent"):
-            return
-
         output = str(info.result) if getattr(info, "result", None) else ""
         self.ns.track_cell(code.strip(), output.strip())
 
         rec = get_recorder()
         if rec:
             cell_type = "plain"
-            if code.startswith("%%agent"): cell_type = "%%agent"
-            elif code.startswith("%agent"): cell_type = "%agent"
-            elif code.startswith("%%sql"): cell_type = "%%sql"
+            if code.startswith("%%sql"): cell_type = "%%sql"
             error = getattr(result, "error_in_exec", None) or getattr(result, "error_before_exec", None)
             rec.record("cell_executed",
                 cell_id="",
@@ -187,48 +199,38 @@ class AgentMagic(Magics):
                 elapsed=0.0,
             )
 
-    # ---- panel comm ----
+    # ---- panel handler ----
 
-    def _register_panel_comm(self) -> None:
-        """Register comm target for right-side Agent TUI panel."""
-        try:
-            from comm import create_comm
-            shell = self.ns._shell
-            kernel = shell.kernel
-            if not hasattr(kernel, "comm_manager"):
-                return
-
-            def _on_open(comm, msg):
-                @comm.on_msg
-                def _on_msg(m):
-                    data = m.get("content", {}).get("data", {})
-                    self._on_panel_msg(data)
-
-            kernel.comm_manager.register_target("skillbot:tui", _on_open)
-        except Exception:
-            pass
-
-    def _on_panel_msg(self, data: dict) -> None:
-        """Handle message from right-side panel."""
-        action = data.get("action", "")
-        text = (data.get("text") or "").strip()
-
+    def _on_panel_input(self, text: str, mode: str = "default") -> None:
+        """Handle input from right-side panel."""
+        text = text.strip()
         if text.startswith("/confirm "):
             self._handle_panel_confirm(text[9:])
-        elif text.startswith("/feedback "):
-            self._handle_panel_feedback(text[10:])
-        elif text.startswith("/clear"):
-            from .panel import send_to_panel
+        elif text == "/clear":
             send_to_panel(self.ns, "clear")
-        elif text:
-            self._handle_panel_prompt(text)
+        elif text.startswith("/mode "):
+            self._handle_panel_mode(text[6:].strip())
+        else:
+            self._handle_panel_prompt(text, mode)
 
-    def _handle_panel_prompt(self, prompt: str) -> None:
+    def _handle_panel_prompt(self, prompt: str, mode: str = "default") -> None:
         """Execute agent prompt from panel: stream to panel + inject cells to left."""
         ctx = self.ns.delta()
         full = f"{ctx}\n\n{prompt}" if ctx else prompt
 
-        from .panel import send_to_panel
+        # plan mode: inject plan-mode instruction prefix + set state
+        if mode == "plan":
+            self._plan = True
+            self._last_plan_prompt = full
+            self._plan_mode_active = True
+            plan_prefix = (
+                "[System: You are in plan mode. Explore the request, research the codebase, "
+                "and design an implementation approach. Present your plan as structured markdown. "
+                "Do NOT write or execute any code until the user confirms the plan.]\n\n"
+            )
+            full = plan_prefix + full
+        else:
+            self._plan = False
 
         raw = self._session.stream(full, show_text=False,
                                     on_chunk=lambda t: send_to_panel(self.ns, "text", content=t))
@@ -236,35 +238,200 @@ class AgentMagic(Magics):
 
         if raw.strip():
             result = parse(raw)
-            render_output(self.ns, result, auto=False, trace=False)
+            if mode == "plan":
+                # plan mode: show plan in panel only, NO cell injection yet
+                self._last_plan_output = raw.strip()
+                plan_text = result.plan or result.text or ""
+                send_to_panel(self.ns, "plan_confirm", summary=plan_text)
+            elif mode == "auto":
+                _log.info("auto mode: %d code blocks, tracking cells for auto-fix", len(result.code_list))
+                self._agent_cells.clear()
+                self._auto_fix_count = 0
+                def _on_cid(cid, code_str):
+                    if cid:
+                        self._agent_cells[cid] = code_str
+                        _log.debug("auto mode: tracked cell %s (%d chars)", cid, len(code_str))
+                render_output(self.ns, result, auto=True, trace=False, on_cell_id=_on_cid)
+                _log.info("auto mode: tracked %d cells", len(self._agent_cells))
+                send_to_panel(self.ns, "result", summary="")
+            else:
+                self._agent_cells.clear()
+                def _on_cid_default(cid, code_str):
+                    if cid:
+                        self._agent_cells[cid] = code_str
+                render_output(self.ns, result, auto=False, trace=False, on_cell_id=_on_cid_default)
+                send_to_panel(self.ns, "result", summary="")
+        else:
+            # no output — still signal completion
+            send_to_panel(self.ns, "result", summary="")
+
+    def _handle_panel_mode(self, mode: str) -> None:
+        """Handle /mode from panel: cycle between default, plan, auto."""
+        self._plan = (mode == "plan")
 
     def _handle_panel_confirm(self, arg: str) -> None:
         """Handle /confirm from panel."""
-        from .panel import send_to_panel
         arg = arg.strip()
-        if arg == "yes":
-            self._plan_confirmed = True
-            self._plan_replace = False
-            send_to_panel(self.ns, "text", content="✓ plan confirmed\n")
-        elif arg == "no":
-            self._plan_confirmed = False
-            send_to_panel(self.ns, "text", content="✗ plan cancelled\n")
-        else:
-            self._plan_feedback = arg
-            self._plan_replace = True
-            send_to_panel(self.ns, "text", content=f"↻ adjusting: {arg}\n")
+        if not arg:
+            return  # empty /confirm — do nothing
 
-    def _handle_panel_feedback(self, arg: str) -> None:
-        """Handle /feedback from panel."""
-        from .panel import send_to_panel
-        parts = arg.split("--comment", 1)
-        result = parts[0].strip()
-        comment = parts[1].strip() if len(parts) > 1 else ""
-        rec = get_recorder()
-        if rec:
-            rec.record("feedback", result=result, comment=comment)
-        label = "meets expectation" if result == "yes" else "does not meet expectation"
-        send_to_panel(self.ns, "text", content=f"[feedback] {label}" + (f" — {comment}\n" if comment else "\n"))
+        if arg == "yes":
+            self._plan = False
+            self._plan_mode_active = False
+            plan = getattr(self, '_last_plan_output', '') or ""
+            if plan:
+                self._implement_plan(plan, auto=True)
+            send_to_panel(self.ns, "result", summary="")
+        elif arg == "accept_edits":
+            self._plan = False
+            self._plan_mode_active = False
+            plan = getattr(self, '_last_plan_output', '') or ""
+            if plan:
+                self._implement_plan(plan, auto=False)
+            send_to_panel(self.ns, "result", summary="")
+        elif arg == "no":
+            self._plan = False
+            self._plan_mode_active = False
+            self._last_plan_output = ""
+            send_to_panel(self.ns, "text", content="✗ plan cancelled\n")
+            send_to_panel(self.ns, "result", summary="")
+        else:
+            # Revision feedback
+            send_to_panel(self.ns, "text", content=f"↻ revising plan: {arg}\n")
+            plan = getattr(self, '_last_plan_output', '') or ""
+            prompt = getattr(self, '_last_plan_prompt', '') or ""
+            if plan and prompt:
+                full = f"User feedback on the plan: {arg}\n\nOriginal request:\n{prompt}\n\nPrevious plan:\n{plan}\n\nRevise the plan based on the feedback."
+                raw = self._session.stream(full, show_text=False,
+                    on_chunk=lambda t: send_to_panel(self.ns, "text", content=t))
+                send_to_panel(self.ns, "text", content="\n")
+                if raw.strip():
+                    self._last_plan_output = raw.strip()
+                    result = parse(raw)
+                    plan_text = result.plan or result.text or ""
+                    send_to_panel(self.ns, "plan_confirm", summary=plan_text)
+                else:
+                    # Revision produced empty output — clear stale state
+                    self._last_plan_output = ""
+                    send_to_panel(self.ns, "text", content="✗ plan revision failed (no output)\n")
+                    send_to_panel(self.ns, "result", summary="")
+            else:
+                send_to_panel(self.ns, "text", content="✗ no plan to revise\n")
+                send_to_panel(self.ns, "result", summary="")
+
+    def _auto_fix_cell(self, code: str, error_msg: str) -> None:
+        """Auto mode: cell execution failed → ask AI to fix and replace in-place."""
+        if self._auto_fixing:
+            _log.warning("auto-fix: already fixing, skipping recursive call")
+            return
+        self._auto_fixing = True
+        try:
+            self._auto_fix_cell_impl(code, error_msg)
+        finally:
+            self._auto_fixing = False
+
+    def _auto_fix_cell_impl(self, code: str, error_msg: str) -> None:
+        # Retry limit: prevent infinite fix loops for unfixable errors
+        self._auto_fix_count += 1
+        if self._auto_fix_count > 3:
+            _log.warning("auto-fix: retry limit reached (%d)", self._auto_fix_count)
+            send_to_panel(self.ns, "text", content="✗ auto-fix retry limit reached, stopping\n")
+            send_to_panel(self.ns, "result", summary="")
+            return
+
+        # Find the cell_id for this code to replace in-place
+        cell_id = ""
+        for cid, ccode in self._agent_cells.items():
+            if ccode.strip() == code.strip():
+                cell_id = cid
+                break
+
+        _log.info("auto-fix #%d: cell=%s error=%s", self._auto_fix_count, cell_id or "(new)", error_msg[:100])
+        action = "replacing failed cell" if cell_id else "inserting fix below"
+        send_to_panel(self.ns, "text",
+            content=f"⚠ execution error — {action} (attempt {self._auto_fix_count}/3)...\n{error_msg[:300]}\n")
+
+        # Strip magic markers that could confuse the AI
+        clean_code = code
+        for marker in ["\n%confirm", "\n%agent", "\n# %%agent generate code"]:
+            clean_code = clean_code.replace(marker, "")
+
+        prompt = (
+            f"The following code cell failed with an error. "
+            f"Analyze the error and provide a corrected version of the code.\n\n"
+            f"## Error\n```\n{error_msg}\n```\n\n"
+            f"## Failed Code\n```python\n{clean_code}\n```\n\n"
+            f"IMPORTANT: Output ONLY the corrected Python code in a fenced code block. "
+            f"Do NOT include any Jupyter magic commands (like %confirm or %agent). "
+            f"Do not add explanations."
+        )
+        raw = self._session.stream(prompt, show_text=False,
+            on_chunk=lambda t: send_to_panel(self.ns, "text", content=t))
+        send_to_panel(self.ns, "text", content="\n")
+
+        if raw.strip():
+            result = parse(raw)
+            if result.code_list:
+                fixed_code = result.code_list[0]
+                from .render import render_code
+                # Replace if we have cell_id, otherwise insert new cell
+                render_code(self.ns, fixed_code, auto=True, trace=False,
+                           replace_cell_id=cell_id)
+                send_to_panel(self.ns, "text",
+                    content="✓ auto-fixed (replaced)\n" if cell_id else "✓ auto-fixed (new cell)\n")
+            else:
+                send_to_panel(self.ns, "text", content="✗ auto-fix: no code in response\n")
+        else:
+            send_to_panel(self.ns, "text", content="✗ auto-fix failed (no output)\n")
+        send_to_panel(self.ns, "result", summary="")
+
+    def _implement_plan(self, plan: str, auto: bool = False) -> None:
+        """Execute a confirmed plan: inject code blocks if present, or send as implementation prompt."""
+        result = parse(plan)
+        _log.info("plan implement: %d code blocks, auto=%s", len(result.code_list), auto)
+
+        _log.info("implement_plan: auto=%s tracking cells", auto)
+        self._agent_cells.clear()
+        self._auto_fix_count = 0
+        def _on_cid(cid, code_str):
+            if cid:
+                self._agent_cells[cid] = code_str
+                _log.debug("implement_plan: tracked cell %s", cid)
+
+        if result.code_list:
+            # Plan contains executable code blocks → inject directly
+            render_output(self.ns, result, auto=auto, trace=False, on_cell_id=_on_cid)
+            label = "✓ plan implemented\n" if auto else "✓ plan accepted (code cells generated)\n"
+            send_to_panel(self.ns, "text", content=label)
+            return
+
+        # Plan has no code blocks → send as implementation prompt
+        prompt = getattr(self, '_last_plan_prompt', '') or ""
+        send_to_panel(self.ns, "text", content="↻ implementing plan...\n")
+
+        # Build implementation prompt with clear instructions
+        impl_instruction = (
+            "[System: Plan mode has ended. The plan has been approved. "
+            "You are now in implementation mode. "
+            "Generate executable code cells to implement the approved plan below. "
+            "Write complete, working code that the user can run directly — "
+            "do NOT output plan descriptions or markdown explanations.]"
+        )
+        full = f"{impl_instruction}\n\n## Approved Plan\n\n{plan}\n\nImplement this plan by writing executable code cells."
+        if prompt:
+            full = f"Original request:\n{prompt}\n\n{full}"
+
+        raw = self._session.stream(full, show_text=False,
+            on_chunk=lambda t: send_to_panel(self.ns, "text", content=t))
+        send_to_panel(self.ns, "text", content="\n")
+
+        if raw.strip():
+            result = parse(raw)
+            render_output(self.ns, result, auto=auto, trace=False, on_cell_id=_on_cid)
+            label = "✓ plan implemented\n" if auto else "✓ plan accepted (code cells generated)\n"
+            send_to_panel(self.ns, "text", content=label)
+        else:
+            send_to_panel(self.ns, "text", content="✗ plan implementation failed (no output)\n")
 
     def _split_at_trace(self, code: str) -> tuple[str, int]:
         """Return (code_before, idx) of _TRACE_MARKER in *code*."""
@@ -280,61 +447,6 @@ class AgentMagic(Magics):
         HookRegistry.dispatch(HookEvent.AGENT_CELL_REVIEW, {
             "ns": self.ns, "auto": auto,
         }, session=self._session)
-
-    def _flush_current_cell(self) -> str:
-        code = getattr(self, "_raw_cell", "")
-        if not code:
-            return ""
-        code_before, idx = self._split_at_trace(code)
-        if idx < 0:
-            return ""
-        if code_before:
-            self.ns.track_cell(code_before, "")
-        return code_before
-
-
-    # ---- %feedback / %fb ----
-
-    @line_magic("fb")
-    def fb_fuc(self, line: str) -> None:
-        """%fb yes|no [--comment '...'] — confirm whether agent output meets expectation."""
-        self.feedback_func(line)
-
-    @line_magic("feedback")
-    def feedback_func(self, line: str) -> None:
-        """%feedback yes|no [--comment '...'] — short: %fb."""
-        result, comment = parse_feedback_line(line)
-        if result is None:
-            render_error("Usage: %feedback yes|no [--comment '...']")
-            return
-
-        rec = get_recorder()
-        if rec:
-            rec.record("feedback", result=result, comment=comment)
-
-        label = "meets expectation" if result == "yes" else "does not meet expectation"
-        render_info(f"[feedback] {label}" + (f" — {comment}" if comment else ""))
-
-    # ---- %confirm ----
-
-    @line_magic("confirm")
-    def confirm_func(self, line: str) -> None:
-        """%confirm yes|no|message — confirm or adjust agent plan."""
-        line = line.strip()
-        if line == "yes":
-            self._plan_confirmed = True
-            self._plan_replace = False
-            render_info("[plan] ✓ confirmed, executing...")
-        elif line == "no":
-            self._plan_confirmed = False
-            render_info("[plan] ✗ cancelled")
-        else:
-            self._plan_feedback = line
-            self._plan_replace = True
-            render_info(f"[plan] ↻ adjusting: {line}")
-            # re-trigger agent with feedback
-            if self._last_agent_cell:
-                self.agent_func(self._last_agent_line, self._last_agent_cell)
 
     # ---- agent_config ----
 
@@ -451,24 +563,15 @@ class AgentMagic(Magics):
             return
 
         # ---- cell magic: %%sql [query|submit] ----
-        # Detect %agent on last non-empty line → SQL first, then agent trace
-        cell, _trailing_agent = _extract_trailing_agent(cell)
-        _has_trailing_agent = bool(_trailing_agent)
-
         mode = args[0] if args and not args[0].startswith("--") else "query"
-
-        sql_output = ""
-        sql_error = ""
 
         if mode == "submit":
             try:
                 result = SqlRunner().submit(cell)
                 job_id = result.get("data", {}).get("job_id", "")
                 render_info(f"job submitted: {job_id}")
-                sql_output = f"[SQL] submitted: {job_id}"
             except RuntimeError as e:
                 render_error(f"{e}")
-                sql_error = str(e)
         else:
             var_name = pop_flag(args, "--var")
             timeout = pop_flag(args, "--timeout", convert=int) or 600
@@ -482,136 +585,11 @@ class AgentMagic(Magics):
                 df = render_sql_dataframe(self.ns, data, var_name)
                 if df is not None:
                     render_info(f"sql query: var={var_name} rows={len(df)} sql={cell[:500]}")
-                    preview = df.head(3).to_string(max_rows=3, max_cols=5)
-                    sql_output = f"[SQL] {var_name}: {len(df)} rows\n{preview}"
                 else:
                     render_error("sql query returned no data")
                     _log.error(f"sql={cell[:500]}")
-                    sql_error = "sql query returned no data"
             except (RuntimeError, TimeoutError) as e:
                 render_error(str(e))
                 _log.error(f"sql query error: {e}")
-                sql_error = str(e)
 
-        if _has_trailing_agent:
-            self.ns.track_cell(cell, output=sql_output, error=sql_error)
-
-    # ---- %%agent (cell magic) ----
-
-    @line_magic("agent")
-    @cell_magic("agent")
-    def agent_func(self, line: str, cell: str = None) -> None:
-        """%%agent [--timeout N] [--trace] [--auto]  |  %agent --trace [--auto]"""
-        if cell is None:
-            self._agent_line_func(line)
-            return
-        self._last_agent_cell = cell
-        self._last_agent_line = line
-
-        timeout = self._timeout
-        trace = False
-        auto = False
-        args = shlex.split(line)
-        i = 0
-        while i < len(args):
-            if args[i] == "--timeout" and i + 1 < len(args):
-                timeout = int(args[i + 1]); i += 2
-            elif args[i] == "--trace":
-                trace = True; i += 1
-            elif args[i] == "--auto":
-                auto = True; i += 1
-            else:
-                i += 1
-
-        src = str(Path(__file__).resolve().parents[1])
-        if src not in sys.path:
-            sys.path.insert(0, src)
-
-        ctx = self.ns.delta()
-        prompt = f"{ctx}\n\n{cell}" if ctx else cell
-        if self._plan_feedback:
-            prompt = (
-                f"Previous plan feedback: {self._plan_feedback}\n"
-                f"Adjust your plan in the \"plan\" field, then include %confirm.\n\n"
-                + prompt
-            )
-            self._plan_feedback = ""
-        t0 = time.time()
-        raw = ""
-        try:
-            raw = self._session.stream(prompt, timeout, show_text=True)
-        except Exception as e:
-            render_error(f"Error: {e}")
-            _log.error(f"agent error session={self._session.session_id} elapsed={round(time.time()-t0,1)}s")
-            if trace:
-                render_code(self.ns, f"# Fix: {str(e)[:500]}\n{cell}", auto=auto, trace=True)
-                render_info("[trace] auto retry after error" if auto else "[trace] retry cell generated")
-            return
-
-        elapsed = round(time.time() - t0, 1)
-
-        rec = get_recorder()
-        if rec:
-            rec.record("agent_call",
-                call_id="",
-                cell_id="",
-                prompt=prompt[:3000],
-                raw_output=raw[:5000],
-                tool_calls=[],
-                thinking_summary="",
-                elapsed=elapsed,
-                parse_error=None,
-            )
-
-        render_info(f"agent done: elapsed={elapsed:.1f}s output={len(raw)} chars")
-
-        render_debug(f"agent output: {len(raw)} chars")
-        _log.debug(raw[:5000])
-
-        has_new_cell = False
-        if raw.strip():
-            result = parse(raw)
-            render_debug(
-                f"agent parse: text={len(result.text or '')} chars files={len(result.files)} code={len(result.code_list)}")
-            _log.debug(
-                f"agent parse detail: text={len(result.text or '')} files={len(result.files)} code={len(result.code_list)}")
-            plan_cell_id = self.ns._shell.user_ns.pop("__plan_cell_id__", "") if self._plan_replace else ""
-            render_output(self.ns, result, auto=auto, trace=trace,
-                          plan_cell_id=plan_cell_id)
-            self._plan_replace = False
-            has_new_cell = bool(result.code_list)
-
-        self.ns.track_cell(cell, raw.strip())
-
-        # ---- trace post-execution ----
-        if not trace:
-            return
-
-        agent_output = raw.strip()[:2000] if raw.strip() else "(no output)"
-
-        if has_new_cell:
-            render_info(f"[trace] new cell with %agent --trace")
-        else:
-            HookRegistry.dispatch(HookEvent.AGENT_CELL_REVIEW, {
-                "ns": self.ns, "auto": auto, "output": agent_output,
-            }, session=self._session)
-
-    def _agent_line_func(self, line: str) -> None:
-        """%agent --trace [--auto] — trigger trace review from current cell."""
-        args = shlex.split(line)
-        trace = "--trace" in args
-        auto = "--auto" in args
-
-        if not trace:
-            render_error("use %agent --trace to trigger trace review")
-            return
-
-        code_before = self._flush_current_cell()
-        if not code_before:
-            render_error("[trace] no cell content found before %agent --trace")
-            return
-
-        from hook import HookRegistry, HookEvent
-        HookRegistry.dispatch(HookEvent.AGENT_CELL_REVIEW, {
-            "ns": self.ns, "auto": auto,
-        }, session=self._session)
+    # Agent interaction now handled via right-side panel only

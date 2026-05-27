@@ -15,13 +15,12 @@ def send_cell_via_comm(ns, code: str, auto: bool = False, cell_type: str = "code
                        replace_cell_id: str = "", on_cell_id: callable | None = None) -> str:
     """Notify frontend extension to create + optionally execute a cell.
 
-    Returns the cell ID if the frontend replies, or "" on failure.
-    *on_cell_id* callback receives the cell ID for async tracking.
+    Fire-and-forget: creates a comm, registers on_msg for async reply,
+    does NOT block or poll. The comm stays alive to receive the reply.
     """
     if len(code) > _MAX_CODE_SIZE:
         _log.warning("send_cell_via_comm: code too large (%d bytes), truncating", len(code))
         code = code[:_MAX_CODE_SIZE] + "\n# ...truncated..."
-    cell_id = ""
     try:
         from comm import create_comm
         shell = ns._shell
@@ -38,18 +37,12 @@ def send_cell_via_comm(ns, code: str, auto: bool = False, cell_type: str = "code
 
             @comm.on_msg
             def _on_msg(msg):
-                nonlocal cell_id
                 cell_id = msg.get("content", {}).get("data", {}).get("cell_id", "")
                 if cell_id and on_cell_id:
-                    on_cell_id(cell_id)
-                comm.close()
+                    on_cell_id(cell_id, code)
 
-            # wait briefly for reply, then close
-            import time as _time
-            _time.sleep(0.1)
-            if not cell_id:
-                comm.close()
-        return cell_id
+            # Don't close — comm stays alive for async reply, GC cleans up later
+        return ""
     except Exception:
         _log.debug("send_cell_via_comm: failed", exc_info=True)
         return ""

@@ -91,7 +91,8 @@ BOOTSTRAP_EOF
             cp -r lib labextension/
             PATH="${PROJECT_DIR}/.venv/bin:${HOME}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
                 "${VENV_PYTHON}" -m jupyter labextension install labextension/ 2>&1 | tail -3
-            # also install to shared labextensions/ for Notebook v7 compatibility
+            # Clean then copy to shared labextensions/ — prevents stale webpack chunks
+            rm -rf "${PROJECT_DIR}/.venv/share/jupyter/labextensions/skillbot-jupyter"
             cp -r labextension/ "${PROJECT_DIR}/.venv/share/jupyter/labextensions/skillbot-jupyter"
             cd "${PROJECT_DIR}"
             echo "  [OK] frontend extension: comm-based cell execution"
@@ -121,6 +122,37 @@ PYEOF
         sed -i '' "s|SRC_PLACEHOLDER|${SRC}|" "${_dir}/startup/00-agent-magic.py"
     done
     echo "  [OK] startup: auto-load %%agent + %%sql via IPython startup"
+}
+
+# -----------------------------------------------------------
+# rebuild: quick frontend-only rebuild (no server restart needed)
+# -----------------------------------------------------------
+_rebuild() {
+    echo "=== Rebuilding frontend extension ==="
+    local ext_dir="${PROJECT_DIR}/src/jupyter/extension"
+    local ext_install_dir="${PROJECT_DIR}/.venv/share/jupyter/labextensions/skillbot-jupyter"
+
+    if ! command -v node &>/dev/null || [ "$(node -v | sed 's/^v//' | cut -d. -f1)" -lt 18 ] 2>/dev/null; then
+        echo "ERROR: need Node >=18" >&2
+        exit 1
+    fi
+
+    cd "$ext_dir"
+    echo "  [1/3] tsc..."
+    npx tsc
+    echo "  [2/3] webpack..."
+    local lp_file="node_modules/@jupyterlab/builder/node_modules/license-webpack-plugin/dist/WebpackModuleFileIterator.js"
+    if [ -f "$lp_file" ]; then
+        sed -i '' "s/return filename.split('=')\[1\].trim()/var parts = filename.split('=')\n            return parts.length > 1 ? parts[1].trim() : null/" "$lp_file"
+    fi
+    PATH="${PROJECT_DIR}/.venv/bin:${HOME}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+        "${VENV_PYTHON}" -m jupyter labextension build .
+    cp -r lib labextension/
+    echo "  [3/3] sync to labextensions..."
+    rm -rf "${ext_install_dir}"
+    cp -r labextension/ "${ext_install_dir}"
+    echo "  [OK] frontend rebuilt — hard refresh browser (Cmd+Shift+R) to pick up changes"
+    cd "${PROJECT_DIR}"
 }
 
 # -----------------------------------------------------------
@@ -154,6 +186,11 @@ _start() {
 main() {
     if [[ $# -gt 0 && ("$1" == "-h" || "$1" == "--help" || "$1" == "help") ]]; then
         usage
+    fi
+
+    if [[ $# -gt 0 && "$1" == "--rebuild" ]]; then
+        _rebuild
+        exit 0
     fi
 
     local mode="notebook"

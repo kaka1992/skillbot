@@ -30,6 +30,8 @@ class Namespace:
         self._hook_events: list[str] = []
         self._hook_idx: int = 0
         self._sql_var_counter: int = 0
+        self._pending_edits: list[str] = []   # unexecuted cell sources from frontend
+        self._pending_idx: int = 0
 
     def next_sql_var(self) -> str:
         self._sql_var_counter += 1
@@ -55,23 +57,41 @@ class Namespace:
         self._hook_idx = len(self._hook_events)
         return self._build_context(self.vars(), self._cells, self._hook_events)
 
+    def track_pending_edit(self, source: str) -> None:
+        """Record an unexecuted cell edit from the frontend."""
+        src = source.strip()
+        if src:
+            self._pending_edits.append(src[:3000])
+
     def delta(self) -> str:
-        """Incremental: new variables + new cells + new hook events since last context/delta."""
+        """Incremental: new variables + new cells + pending edits + new hook events."""
         current = self.vars()
         new_vars = {k: v for k, v in current.items() if k not in self._seen}
         self._seen.update(new_vars.keys())
         new_cells = self._cells[self._cell_idx:]
         self._cell_idx = len(self._cells)
+        pending = self._pending_edits[self._pending_idx:]
+        self._pending_idx = len(self._pending_edits)
         new_hooks = self._hook_events[self._hook_idx:]
         self._hook_idx = len(self._hook_events)
-        if not new_vars and not new_cells and not new_hooks:
+        if not new_vars and not new_cells and not pending and not new_hooks:
             return ""
-        return self._build_context(new_vars, new_cells, new_hooks)
+        return self._build_context(new_vars, new_cells, new_hooks, pending_edits=pending)
+
+    def context(self) -> str:
+        """Full snapshot: variables + recent cells + pending edits."""
+        self._seen = set(self.vars().keys())
+        self._cell_idx = len(self._cells)
+        self._pending_idx = len(self._pending_edits)
+        self._hook_idx = len(self._hook_events)
+        return self._build_context(self.vars(), self._cells, self._hook_events)
 
     def reset(self) -> None:
         self._seen.clear()
         self._cell_idx = 0
         self._hook_idx = 0
+        self._pending_idx = 0
+        self._pending_edits.clear()
 
     def track_hook(self, event: str) -> None:
         """Record a hook activity event for agent context."""
@@ -109,7 +129,8 @@ class Namespace:
 
     @staticmethod
     def _build_context(variables: dict, cells: list[dict],
-                       hook_events: list[str]) -> str:
+                       hook_events: list[str],
+                       pending_edits: list[str] | None = None) -> str:
         parts: list[str] = []
         if variables:
             parts.append("Available variables:")
@@ -125,6 +146,12 @@ class Namespace:
                     parts.append(f"    → {c['output'][:150]}")
                 if c.get("error"):
                     parts.append(f"    ✗ {c['error'][:150]}")
+        if pending_edits:
+            if parts:
+                parts.append("")
+            parts.append("Unexecuted cell edits (user modified but hasn't run):")
+            for src in pending_edits[-3:]:
+                parts.append(f"  ```\n  {src[:1500]}\n  ```")
         if hook_events:
             if parts:
                 parts.append("")

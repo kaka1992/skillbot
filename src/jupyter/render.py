@@ -137,7 +137,8 @@ def render_sql_dataframe(ns: Namespace, data: dict, var_name: str):
 def render_output(ns: Namespace, result: ParsedResult,
                   skip_text: bool = False,
                   auto: bool = False, trace: bool = False,
-                  plan_cell_id: str = "") -> None:
+                  plan_cell_id: str = "",
+                  on_cell_id: callable | None = None) -> None:
     """Dispatch parsed agent result to render methods."""
     if result.text and not skip_text:
         if result.is_markdown:
@@ -179,7 +180,8 @@ def render_output(ns: Namespace, result: ParsedResult,
 
         for i, c in enumerate(result.code_list):
             is_last = (i == len(result.code_list) - 1)
-            render_code(ns, c, auto=auto, trace=(trace and is_last))
+            render_code(ns, c, auto=auto, trace=(trace and is_last),
+                       on_cell_id=on_cell_id)
 
 
 # ---------------------------------------------------------------------------
