@@ -54,10 +54,19 @@ export function renderThinking(panel: any, content: string): void {
     panel._thinkingEl.textContent = `∴ ${content}`;
     panel._appendToBlock(panel._thinkingEl);
   } else {
+    // If currently collapsed, restore full text before appending new chunk
+    if (panel._thinkingCollapsed && panel._thinkingEl.hasAttribute('data-full')) {
+      panel._thinkingEl.textContent = panel._thinkingEl.getAttribute('data-full') || '';
+      panel._thinkingEl.removeAttribute('data-full');
+    }
     // Add space between chunks (thinking tokens arrive without whitespace)
     const prev = panel._thinkingEl.textContent;
     const needSpace = prev.length > 0 && !prev.endsWith(' ') && !content.startsWith(' ') && !prev.endsWith('\n');
     panel._thinkingEl.textContent += (needSpace ? ' ' : '') + content;
+  }
+  // Apply collapse if active (Ctrl+T default: collapsed 150 chars)
+  if (panel._thinkingCollapsed !== undefined) {
+    panel._applyThinkingCollapse();
   }
 }
 

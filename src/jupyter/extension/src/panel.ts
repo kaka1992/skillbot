@@ -58,6 +58,7 @@ class AgentPanel extends Widget {
   private _responseStarted = false;
   private _textEl: HTMLElement | null = null;  // accumulated text element for streaming
   _thinkingEl: HTMLElement | null = null;      // accumulated thinking element
+  private _thinkingCollapsed = true;            // Ctrl+T: default collapsed (150 chars)
 
   constructor() {
     super();
@@ -84,13 +85,21 @@ class AgentPanel extends Widget {
     welcome.className = 'skillbot-welcome';
     welcome.innerHTML = `
       <div style="font-size:14px;font-weight:600;color:${CC.text};margin-bottom:4px;">Agent Panel</div>
-      <div style="font-size:12px;font-weight:500;color:rgb(180,180,180);">Shift+Tab mode · Ctrl+A/E/B/F/H/K/U/W/Y · Ctrl+P/N history · Shift+↵ newline</div>
+      <div style="font-size:12px;font-weight:500;color:rgb(180,180,180);">Shift+Tab mode · Ctrl+A/E/B/F/H/K/U/W/Y · Ctrl+P/N history · Ctrl+T thinking · Shift+↵ newline</div>
     `;
     this._root.appendChild(welcome);
 
-    // output — click to focus input
+    // output — click to focus input + keyboard for Ctrl+T
     this._outputEl = document.createElement('div');
     this._outputEl.className = 'skillbot-output';
+    this._outputEl.tabIndex = 0;
+    this._outputEl.addEventListener('keydown', (e) => {
+      if (document.activeElement === this._inputEl) return;
+      if (e.ctrlKey && !e.altKey && e.key === 't') {
+        e.preventDefault();
+        this._toggleThinkingCollapse();
+      }
+    });
     this._outputEl.addEventListener('click', () => {
       // Don't steal focus if user was selecting text (drag, double-click, etc.)
       const sel = document.getSelection();
@@ -327,6 +336,7 @@ class AgentPanel extends Widget {
           return;
         }
         case 'l': e.preventDefault(); this._clear(); return;
+        case 't': e.preventDefault(); this._toggleThinkingCollapse(); return;
       }
     }
 
@@ -673,11 +683,48 @@ class AgentPanel extends Widget {
   private _renderPlanBlock(text: string): void { R.renderPlanBlock(this, text); }
   private _renderResult(summary: string): void { R.renderResult(this, summary); }
 
+  // ---- thinking collapse (Ctrl+T) ----
+
+  private _toggleThinkingCollapse(): void {
+    this._thinkingCollapsed = !this._thinkingCollapsed;
+    this._applyThinkingCollapse();
+    const status = this._thinkingCollapsed ? 'collapsed' : 'expanded';
+    this._infoEl.innerHTML = `<span style="color:rgb(0,180,180)">thinking ${status} · ctrl+t to toggle</span>`;
+    if (this._infoTimer) clearTimeout(this._infoTimer);
+    this._infoTimer = setTimeout(() => { this._infoEl.innerHTML = ''; }, 4000);
+  }
+
+  private _applyThinkingCollapse(): void {
+    // Use live _thinkingEl during streaming, DOM search for Ctrl+T toggle
+    const els = (this._thinkingEl && this._thinkingEl.parentElement)
+      ? [this._thinkingEl]
+      : Array.from(this._outputEl.querySelectorAll('.skillbot-thinking-line') as NodeListOf<HTMLElement>);
+    els.forEach((el: HTMLElement) => {
+      if (this._thinkingCollapsed) {
+        const currentFull = el.getAttribute('data-full') || el.textContent || '';
+        el.setAttribute('data-full', currentFull);
+        const truncated = currentFull.length > 150 ? currentFull.slice(0, 150) + '...' : currentFull;
+        if (el.textContent !== truncated) el.textContent = truncated;
+        el.style.cursor = 'pointer';
+        el.title = 'ctrl+t to expand';
+      } else {
+        const fullText = el.getAttribute('data-full');
+        if (fullText) {
+          el.textContent = fullText;
+          el.removeAttribute('data-full');
+        }
+        el.style.cursor = '';
+        el.title = '';
+      }
+    });
+  }
+
   _clear(): void {
     this._outputEl.innerHTML = '';
     this._currentBlock = null;
     this._textEl = null;
     this._thinkingEl = null;
+    this._thinkingCollapsed = true;
     this._streaming = false;
     this._stopSpinner();
     this._setStatus('○', 'idle');
