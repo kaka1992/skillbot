@@ -14,7 +14,7 @@ from hook import HookGroup, HookRegistry, HookEvent
 from jupyter.telemetry import get_recorder, TelemetryRecorder, set_recorder
 from .config import pop_flag, parse_kv, configure_agent, load_yaml_config
 from .namespace import Namespace
-from .panel import send_to_panel
+from .panel import send_to_panel, send_thinking
 from .parser import parse, traceback_line
 from .render import render_debug, render_error, render_info, render_output, render_sql_dataframe
 from .dsl.sql import SqlRunner, sql_progress
@@ -233,7 +233,8 @@ class AgentMagic(Magics):
             self._plan = False
 
         raw = self._session.stream(full, show_text=False,
-                                    on_chunk=lambda t: send_to_panel(self.ns, "text", content=t))
+                                    on_chunk=lambda t: send_to_panel(self.ns, "text", content=t),
+                                    on_thinking=lambda t: send_thinking(t))
         send_to_panel(self.ns, "text", content="\n")
 
         if raw.strip():
@@ -303,7 +304,8 @@ class AgentMagic(Magics):
             if plan and prompt:
                 full = f"User feedback on the plan: {arg}\n\nOriginal request:\n{prompt}\n\nPrevious plan:\n{plan}\n\nRevise the plan based on the feedback."
                 raw = self._session.stream(full, show_text=False,
-                    on_chunk=lambda t: send_to_panel(self.ns, "text", content=t))
+                    on_chunk=lambda t: send_to_panel(self.ns, "text", content=t),
+                    on_thinking=lambda t: send_thinking(t))
                 send_to_panel(self.ns, "text", content="\n")
                 if raw.strip():
                     self._last_plan_output = raw.strip()
@@ -349,7 +351,7 @@ class AgentMagic(Magics):
         _log.info("auto-fix #%d: cell=%s error=%s", self._auto_fix_count, cell_id or "(new)", error_msg[:100])
         action = "replacing failed cell" if cell_id else "inserting fix below"
         send_to_panel(self.ns, "text",
-            content=f"⚠ execution error — {action} (attempt {self._auto_fix_count}/3)...\n{error_msg[:300]}\n")
+            content=f"\n⚠ execution error (attempt {self._auto_fix_count}/3) — {action}:\n{error_msg}\n")
 
         # Strip magic markers that could confuse the AI
         clean_code = code
@@ -366,7 +368,8 @@ class AgentMagic(Magics):
             f"Do not add explanations."
         )
         raw = self._session.stream(prompt, show_text=False,
-            on_chunk=lambda t: send_to_panel(self.ns, "text", content=t))
+            on_chunk=lambda t: send_to_panel(self.ns, "text", content=t),
+            on_thinking=lambda t: send_thinking(t))
         send_to_panel(self.ns, "text", content="\n")
 
         if raw.strip():
@@ -422,7 +425,8 @@ class AgentMagic(Magics):
             full = f"Original request:\n{prompt}\n\n{full}"
 
         raw = self._session.stream(full, show_text=False,
-            on_chunk=lambda t: send_to_panel(self.ns, "text", content=t))
+            on_chunk=lambda t: send_to_panel(self.ns, "text", content=t),
+            on_thinking=lambda t: send_thinking(t))
         send_to_panel(self.ns, "text", content="\n")
 
         if raw.strip():

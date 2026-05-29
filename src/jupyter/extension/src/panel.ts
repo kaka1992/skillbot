@@ -57,6 +57,7 @@ class AgentPanel extends Widget {
   private _streaming = false;
   private _responseStarted = false;
   private _textEl: HTMLElement | null = null;  // accumulated text element for streaming
+  _thinkingEl: HTMLElement | null = null;      // accumulated thinking element
 
   constructor() {
     super();
@@ -651,6 +652,7 @@ class AgentPanel extends Widget {
     this._streaming = true;
     this._responseStarted = false;
     this._textEl = null;
+    this._thinkingEl = null;
   }
 
   private _appendToBlock(el: HTMLElement): void {
@@ -675,6 +677,7 @@ class AgentPanel extends Widget {
     this._outputEl.innerHTML = '';
     this._currentBlock = null;
     this._textEl = null;
+    this._thinkingEl = null;
     this._streaming = false;
     this._stopSpinner();
     this._setStatus('○', 'idle');

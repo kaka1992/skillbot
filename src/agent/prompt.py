@@ -43,14 +43,14 @@ SECTIONS = {
         '{\n'
         '  "text": "explanatory text",\n'
         '  "plan": "## Plan\\n1. Step one\\n2. Step two",\n'
-        '  "code": ["print(\'hello\')"],\n'
+        '  "code": ["print(\'hello\')", "import numpy as np\\nnp.array([1,2,3])"],\n'
         '  "files": ["/tmp/chart.png", "/tmp/data.csv"]\n'
         '}\n'
         '```\n'
         '- "text": explanatory text (optional). Supports markdown.\n'
         '- "plan": analysis plan as markdown (plan mode). Rendered as a markdown cell.\n'
         '- "files": file paths created by tools (optional).\n'
-        '- "code": string or array of strings (optional). Each element → new Jupyter cell.\n'
+        '- "code": array of strings (optional). Each element → new Jupyter cell. Always use array format, even for single code blocks.\n'
         'Include only non-empty fields.'
     ),
     "tool_usage": (

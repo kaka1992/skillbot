@@ -284,7 +284,7 @@ exports.STYLES = `
   resize: vertical;
   min-height: 60px;
   outline: none;
-  border-radius: 2px;
+  border-r、adius: 2px;
   box-sizing: border-box;
 }
 .skillbot-confirm-feedback:focus {

@@ -65,13 +65,13 @@ class AgentSession:
     # -- streaming --
 
     def stream(self, prompt: str, timeout: int | None = None,
-               show_text: bool = True, on_chunk=None) -> str:
-        return self._stream(self._client, prompt, self._session_id, timeout, show_text, on_chunk)
+               show_text: bool = True, on_chunk=None, on_thinking=None) -> str:
+        return self._stream(self._client, prompt, self._session_id, timeout, show_text, on_chunk, on_thinking)
 
     @staticmethod
     def _stream(client, prompt: str, session: str,
                 timeout: int | None = None, show_text: bool = True,
-                on_chunk=None) -> str:
+                on_chunk=None, on_thinking=None) -> str:
         if timeout is not None and client is not None:
             client._backend._timeout = timeout
 
@@ -95,6 +95,8 @@ class AgentSession:
                         t = b.data.get("thinking", "").strip()
                         if t:
                             thinking_lines.append(t)
+                            if on_thinking:
+                                on_thinking(t)
                     elif b.type == "tool_use" and b.data:
                         name = b.data.get("name", "?")
                         if name not in tool_names:
@@ -108,7 +110,7 @@ class AgentSession:
         print()
         if tool_names:
             print(f"\033[90m# tools: {', '.join(sorted(tool_names))}\033[0m")
-        if thinking_lines:
+        if thinking_lines and show_text:
             summary = " ".join(thinking_lines)[:200]
             print(f"\033[90m# thinking: {summary}\033[0m")
         print()

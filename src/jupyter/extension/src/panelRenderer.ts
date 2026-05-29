@@ -20,7 +20,7 @@ export function renderPrompt(panel: any, text: string): void {
 
 export function renderResponseText(panel: any, content: string): void {
   ensureResponsePrefix(panel);
-  panel._textEl = null;
+  panel._textEl = null; panel._thinkingEl = null;
   appendTextChunk(panel, content);
 }
 
@@ -37,7 +37,7 @@ export function appendTextChunk(panel: any, content: string): void {
 
 export function renderTool(panel: any, name: string): void {
   ensureResponsePrefix(panel);
-  panel._textEl = null;
+  panel._textEl = null; panel._thinkingEl = null; panel._thinkingEl = null;
   const div = document.createElement('div');
   div.className = 'skillbot-tool-line';
   div.textContent = `⬢ ${name}`;
@@ -46,16 +46,24 @@ export function renderTool(panel: any, name: string): void {
 
 export function renderThinking(panel: any, content: string): void {
   ensureResponsePrefix(panel);
-  panel._textEl = null;
-  const div = document.createElement('div');
-  div.className = 'skillbot-thinking-line';
-  div.textContent = `∴ ${content}`;
-  panel._appendToBlock(div);
+  // Accumulate thinking into a single element (each token arrives separately)
+  if (!panel._thinkingEl || !panel._thinkingEl.parentElement) {
+    panel._textEl = null; panel._thinkingEl = null;
+    panel._thinkingEl = document.createElement('div');
+    panel._thinkingEl.className = 'skillbot-thinking-line';
+    panel._thinkingEl.textContent = `∴ ${content}`;
+    panel._appendToBlock(panel._thinkingEl);
+  } else {
+    // Add space between chunks (thinking tokens arrive without whitespace)
+    const prev = panel._thinkingEl.textContent;
+    const needSpace = prev.length > 0 && !prev.endsWith(' ') && !content.startsWith(' ') && !prev.endsWith('\n');
+    panel._thinkingEl.textContent += (needSpace ? ' ' : '') + content;
+  }
 }
 
 export function renderCodeBlock(panel: any, _language: string, code: string): void {
   ensureResponsePrefix(panel);
-  panel._textEl = null;
+  panel._textEl = null; panel._thinkingEl = null;
   const wrapper = document.createElement('div');
   wrapper.className = 'skillbot-code-block';
   wrapper.innerHTML = `<pre><code>${panel._esc(code)}</code></pre>`;
@@ -64,7 +72,7 @@ export function renderCodeBlock(panel: any, _language: string, code: string): vo
 
 export function renderPlanBlock(panel: any, text: string): void {
   ensureResponsePrefix(panel);
-  panel._textEl = null;
+  panel._textEl = null; panel._thinkingEl = null;
   const wrapper = document.createElement('div');
   wrapper.className = 'skillbot-plan-block';
   wrapper.innerHTML = `<div class="skillbot-plan-header">⏸ Plan</div>${panel._esc(text)}`;
@@ -73,7 +81,7 @@ export function renderPlanBlock(panel: any, text: string): void {
 
 export function renderResult(panel: any, summary: string): void {
   ensureResponsePrefix(panel);
-  panel._textEl = null;
+  panel._textEl = null; panel._thinkingEl = null;
   const div = document.createElement('div');
   div.className = 'skillbot-result-line';
   div.innerHTML = `<span style="color:rgb(78,186,101)">✓</span> ${panel._esc(summary)}`;

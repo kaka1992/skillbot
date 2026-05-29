@@ -75,6 +75,7 @@ class AgentPanel extends widgets_1.Widget {
         this._streaming = false;
         this._responseStarted = false;
         this._textEl = null; // accumulated text element for streaming
+        this._thinkingEl = null; // accumulated thinking element
         this.id = 'skillbot:tui';
         this.title.label = 'Agent';
         this.title.closable = true;
@@ -687,6 +688,7 @@ class AgentPanel extends widgets_1.Widget {
         this._streaming = true;
         this._responseStarted = false;
         this._textEl = null;
+        this._thinkingEl = null;
     }
     _appendToBlock(el) {
         const target = this._currentBlock || this._outputEl;
@@ -707,6 +709,7 @@ class AgentPanel extends widgets_1.Widget {
         this._outputEl.innerHTML = '';
         this._currentBlock = null;
         this._textEl = null;
+        this._thinkingEl = null;
         this._streaming = false;
         this._stopSpinner();
         this._setStatus('○', 'idle');
