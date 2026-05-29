@@ -77,6 +77,8 @@ class AgentPanel extends widgets_1.Widget {
         this._textEl = null; // accumulated text element for streaming
         this._thinkingEl = null; // accumulated thinking element
         this._thinkingCollapsed = true; // Ctrl+T: default collapsed (150 chars)
+        this._busy = false; // agent is working → queue new prompts
+        this._promptQueue = [];
         this.id = 'skillbot:tui';
         this.title.label = 'Agent';
         this.title.closable = true;
@@ -649,10 +651,23 @@ class AgentPanel extends widgets_1.Widget {
         const text = this._inputEl.value.trim();
         if (!text)
             return;
+        // Slash commands bypass queue
+        const isSlash = text.startsWith('/');
+        if (this._busy && !isSlash) {
+            this._promptQueue.push({ text, mode: this._mode });
+            this._updateStatusDisplay();
+            this._inputEl.value = '';
+            this._historyDraft = '';
+            this._resizeInput();
+            return;
+        }
         if (this._history.length === 0 || this._history[this._history.length - 1] !== text) {
             this._history.push(text);
         }
         this._historyIdx = -1;
+        if (!isSlash) {
+            this._busy = true;
+        }
         this._startBlock();
         this._renderPrompt(text);
         this._startSpinner();
@@ -762,6 +777,8 @@ class AgentPanel extends widgets_1.Widget {
         this._thinkingEl = null;
         this._thinkingCollapsed = true;
         this._streaming = false;
+        this._busy = false;
+        this._promptQueue = [];
         this._stopSpinner();
         this._setStatus('○', 'idle');
         this._closeConfirm(); // ensure confirm UI is dismissed
@@ -770,6 +787,20 @@ class AgentPanel extends widgets_1.Widget {
         this._historyIdx = -1;
         this._historyDraft = '';
         this._resizeInput();
+    }
+    _dequeueNext() {
+        if (this._promptQueue.length === 0) {
+            this._updateStatusDisplay();
+            return;
+        }
+        const next = this._promptQueue.shift();
+        // Temporarily switch mode for the queued prompt
+        const savedMode = this._mode;
+        this._mode = next.mode;
+        this._inputEl.value = next.text;
+        this._busy = false;
+        this._sendPrompt();
+        this._mode = savedMode;
     }
     // ---- persistence (localStorage) ----
     _saveState() {
@@ -853,12 +884,15 @@ class AgentPanel extends widgets_1.Widget {
     _updateStatusDisplay() {
         const icon = this._statusIcon;
         const label = this._statusLabel;
+        const q = this._promptQueue.length > 0
+            ? ` <span style="color:rgb(215,119,87)">queued:${this._promptQueue.length}</span>`
+            : '';
         if (icon === '…' && this._execStartTime > 0) {
             const elapsed = Math.floor((Date.now() - this._execStartTime) / 1000);
-            this._statusEl.innerHTML = `<span>${icon} ${label} (${elapsed}s)</span><span>skillbot</span>`;
+            this._statusEl.innerHTML = `<span>${icon} ${label} (${elapsed}s)${q}</span><span>skillbot</span>`;
         }
         else {
-            this._statusEl.innerHTML = `<span>${icon} ${label}</span><span>skillbot</span>`;
+            this._statusEl.innerHTML = `<span>${icon} ${label}${q}</span><span>skillbot</span>`;
         }
     }
     // ---- plan confirmation (delegates to panelPlanConfirm) ------------------
@@ -993,6 +1027,10 @@ class AgentPanel extends widgets_1.Widget {
                         this._renderPlanBlock(d.summary || '');
                         this._renderPlanConfirm(d.summary || '');
                         this._saveState();
+                        break;
+                    case 'ready':
+                        this._busy = false;
+                        this._dequeueNext();
                         break;
                     case 'clear':
                         this._clear();

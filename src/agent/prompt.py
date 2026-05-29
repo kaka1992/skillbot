@@ -50,7 +50,8 @@ SECTIONS = {
         '- "text": explanatory text (optional). Supports markdown.\n'
         '- "plan": analysis plan as markdown (plan mode). Rendered as a markdown cell.\n'
         '- "files": file paths created by tools (optional).\n'
-        '- "code": array of strings (optional). Each element → new Jupyter cell. Always use array format, even for single code blocks.\n'
+        '- "code": array of strings (optional). Each element → new Jupyter cell. Always use array format, even for single code blocks. '
+        'For multi-part queries, put each independent task in its own code element — never merge unrelated logic into one cell.\n'
         'Include only non-empty fields.'
     ),
     "tool_usage": (

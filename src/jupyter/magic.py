@@ -129,18 +129,29 @@ class AgentMagic(Magics):
         self._agent_cells: dict[str, str] = {}  # cell_id → code, for auto-fix on error
         self._auto_fixing = False  # guard against recursive auto-fix
         self._auto_fix_count = 0   # limit retries per batch
+        self._auto_pending = 0     # count of auto-exec cells still running
+        self._busy = False          # block input while agent is working
+        self._session_ready = False  # lazy-init session on first query
         cfg = load_yaml_config("conf/jupyter_agent.yaml")
         self._hook_cfg = cfg.get("hooks", {})
+        self.ns.delta()
+        shell.events.register("post_run_cell", self._on_cell_run)
+        from .panel import init_panel_comm
+        init_panel_comm(shell)
+
+    def _ensure_session(self) -> None:
+        """Lazy-init agent session on first query (keeps kernel startup fast)."""
+        if self._session_ready:
+            return
         self._init_session(self._agent, self._timeout, self._claude_md_path)
+        if self._session.client is None:
+            raise RuntimeError("session init failed — is Claude server (port 9000) running?")
         rec = TelemetryRecorder(
             session_id=self._session.session_id,
             path=_os.path.join(".run", "sessions", f"{self._session.session_id}.jsonl"),
         )
         set_recorder(rec)
-        self.ns.delta()
-        shell.events.register("post_run_cell", self._on_cell_run)
-        from .panel import init_panel_comm
-        init_panel_comm(shell)
+        self._session_ready = True
 
     def _init_session(self, agent: str, timeout: int, claude_md: str | None = None) -> None:
         self._session = AgentSession(agent, timeout)
@@ -159,8 +170,14 @@ class AgentMagic(Magics):
         if not code:
             return
 
+        # Track auto-exec cell completion (decrement only, signal after auto-fix check)
+        is_agent_cell = "# %%agent generate code" in code
+        if is_agent_cell and self._auto_pending > 0:
+            self._auto_pending -= 1
+            _log.debug("auto pending: %d remaining", self._auto_pending)
+
         # Auto-fix: agent-generated cell failed → send error to AI
-        if not result.success and "# %%agent generate code" in code:
+        if not result.success and is_agent_cell:
             error = result.error_in_exec or result.error_before_exec
             _log.info("auto-fix triggered: error=%s", type(error).__name__ if error else "None")
             if error is not None:
@@ -199,6 +216,11 @@ class AgentMagic(Magics):
                 elapsed=0.0,
             )
 
+        # Signal ready when all auto-exec cells complete (success path)
+        if is_agent_cell and self._auto_pending == 0 and self._busy:
+            self._busy = False
+            send_to_panel(self.ns, "ready")
+
     # ---- panel handler ----
 
     def _on_panel_input(self, text: str, mode: str = "default") -> None:
@@ -215,8 +237,21 @@ class AgentMagic(Magics):
 
     def _handle_panel_prompt(self, prompt: str, mode: str = "default") -> None:
         """Execute agent prompt from panel: stream to panel + inject cells to left."""
+        try:
+            self._ensure_session()
+        except Exception:
+            _log.exception("_handle_panel_prompt: session init failed")
+            send_to_panel(self.ns, "text", content="✗ session initialization failed, check server logs\n")
+            send_to_panel(self.ns, "result", summary="")
+            return
+        if self._busy:
+            send_to_panel(self.ns, "text", content="⏳ agent is working, please wait...\n")
+            send_to_panel(self.ns, "result", summary="")
+            return
+
         ctx = self.ns.delta()
         full = f"{ctx}\n\n{prompt}" if ctx else prompt
+        self._busy = True
 
         # plan mode: inject plan-mode instruction prefix + set state
         if mode == "plan":
@@ -244,10 +279,16 @@ class AgentMagic(Magics):
                 self._last_plan_output = raw.strip()
                 plan_text = result.plan or result.text or ""
                 send_to_panel(self.ns, "plan_confirm", summary=plan_text)
+                self._busy = False
+                send_to_panel(self.ns, "ready")
             elif mode == "auto":
                 _log.info("auto mode: %d code blocks, tracking cells for auto-fix", len(result.code_list))
                 self._agent_cells.clear()
                 self._auto_fix_count = 0
+                self._auto_pending += len(result.code_list)
+                if self._auto_pending == 0:
+                    self._busy = False
+                    send_to_panel(self.ns, "ready")
                 def _on_cid(cid, code_str):
                     if cid:
                         self._agent_cells[cid] = code_str
@@ -262,9 +303,13 @@ class AgentMagic(Magics):
                         self._agent_cells[cid] = code_str
                 render_output(self.ns, result, auto=False, trace=False, on_cell_id=_on_cid_default)
                 send_to_panel(self.ns, "result", summary="")
+                self._busy = False
+                send_to_panel(self.ns, "ready")
         else:
             # no output — still signal completion
             send_to_panel(self.ns, "result", summary="")
+            self._busy = False
+            send_to_panel(self.ns, "ready")
 
     def _handle_panel_mode(self, mode: str) -> None:
         """Handle /mode from panel: cycle between default, plan, auto."""
@@ -333,12 +378,16 @@ class AgentMagic(Magics):
             self._auto_fixing = False
 
     def _auto_fix_cell_impl(self, code: str, error_msg: str) -> None:
-        # Retry limit: prevent infinite fix loops for unfixable errors
+        self._busy = True  # re-set — failed cell's completion may have cleared it
+        # Retry limit: 2 attempts, then force-stop to unblock the queue
         self._auto_fix_count += 1
-        if self._auto_fix_count > 3:
+        if self._auto_fix_count >= 3:
             _log.warning("auto-fix: retry limit reached (%d)", self._auto_fix_count)
             send_to_panel(self.ns, "text", content="✗ auto-fix retry limit reached, stopping\n")
             send_to_panel(self.ns, "result", summary="")
+            self._auto_pending = 0
+            self._busy = False
+            send_to_panel(self.ns, "ready")
             return
 
         # Find the cell_id for this code to replace in-place
@@ -377,15 +426,25 @@ class AgentMagic(Magics):
             if result.code_list:
                 fixed_code = result.code_list[0]
                 from .render import render_code
-                # Replace if we have cell_id, otherwise insert new cell
+                self._auto_pending += 1
                 render_code(self.ns, fixed_code, auto=True, trace=False,
                            replace_cell_id=cell_id)
                 send_to_panel(self.ns, "text",
                     content="✓ auto-fixed (replaced)\n" if cell_id else "✓ auto-fixed (new cell)\n")
+                # Last retry: unblock queue even if fix cell never executes
+                if self._auto_fix_count >= 2:
+                    self._busy = False
+                    send_to_panel(self.ns, "ready")
             else:
                 send_to_panel(self.ns, "text", content="✗ auto-fix: no code in response\n")
+                self._auto_pending = 0
+                self._busy = False
+                send_to_panel(self.ns, "ready")
         else:
             send_to_panel(self.ns, "text", content="✗ auto-fix failed (no output)\n")
+            self._auto_pending = 0
+            self._busy = False
+            send_to_panel(self.ns, "ready")
         send_to_panel(self.ns, "result", summary="")
 
     def _implement_plan(self, plan: str, auto: bool = False) -> None:
@@ -396,6 +455,12 @@ class AgentMagic(Magics):
         _log.info("implement_plan: auto=%s tracking cells", auto)
         self._agent_cells.clear()
         self._auto_fix_count = 0
+        if auto:
+            self._busy = True
+            self._auto_pending = len(result.code_list)
+            if self._auto_pending == 0:
+                self._busy = False
+                send_to_panel(self.ns, "ready")
         def _on_cid(cid, code_str):
             if cid:
                 self._agent_cells[cid] = code_str
@@ -431,11 +496,19 @@ class AgentMagic(Magics):
 
         if raw.strip():
             result = parse(raw)
+            if auto:
+                self._auto_pending += len(result.code_list)
             render_output(self.ns, result, auto=auto, trace=False, on_cell_id=_on_cid)
+            if auto and self._auto_pending == 0:
+                self._busy = False
+                send_to_panel(self.ns, "ready")
             label = "✓ plan implemented\n" if auto else "✓ plan accepted (code cells generated)\n"
             send_to_panel(self.ns, "text", content=label)
         else:
             send_to_panel(self.ns, "text", content="✗ plan implementation failed (no output)\n")
+            if auto:
+                self._busy = False
+                send_to_panel(self.ns, "ready")
 
     def _split_at_trace(self, code: str) -> tuple[str, int]:
         """Return (code_before, idx) of _TRACE_MARKER in *code*."""
@@ -448,9 +521,10 @@ class AgentMagic(Magics):
         auto = "--auto" in code
         code_before, _ = self._split_at_trace(code)
         self.ns.track_cell(code_before, error=error_msg)
-        HookRegistry.dispatch(HookEvent.AGENT_CELL_REVIEW, {
-            "ns": self.ns, "auto": auto,
-        }, session=self._session)
+        if self._session_ready:
+            HookRegistry.dispatch(HookEvent.AGENT_CELL_REVIEW, {
+                "ns": self.ns, "auto": auto,
+            }, session=self._session)
 
     # ---- agent_config ----
 
@@ -514,10 +588,12 @@ class AgentMagic(Magics):
             agent = self._agent
 
         if resolved["session_rebuild"]:
-            self._session.cleanup()
+            if self._session_ready:
+                self._session.cleanup()
             self._init_session(agent, timeout, claude_md_path)
+            self._session_ready = True
         elif timeout != self._timeout:
-            if self._session.client is not None:
+            if self._session_ready and self._session.client is not None:
                 self._session.client._backend._timeout = timeout
 
         self._agent = agent

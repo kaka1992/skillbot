@@ -37,7 +37,15 @@ class AgentSession:
 
         self._client = ChatClient(self._agent, timeout=self._timeout)
         self._session_id = session_key
-        self._client.chat(system_prompt, session=session_key)
+        try:
+            # Drain the full system-prompt response so the session is clean for queries
+            for _ in self._client.stream(system_prompt, session=session_key):
+                pass
+        except Exception:
+            _log.warning("session init: stream failed, clearing client for retry", exc_info=True)
+            self._client = None
+            self._session_id = ""
+            return
         if on_init:
             on_init(self)
         _log.info("session init: agent=%s timeout=%ds session=%s",
