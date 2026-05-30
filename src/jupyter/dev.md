@@ -128,6 +128,24 @@ Shift+Tab 循环切换模式。模式切换时 info bar 显示随机提示（4s 
 - **反馈模式** — 输入修订意见，Enter 提交，Esc 返回选项
 - Esc 取消，Ctrl+C 放弃计划
 
+### Ctrl+C 中断机制
+
+```
+Ctrl+C (kernel.interrupt) → KeyboardInterrupt 在 AgentSession._stream() 中抛出
+  → _stream handler: ChatClient.interrupt(session) → POST /sessions/{sid}/interrupt
+    → Server: Session.interrupt() → ClaudeSDKClient.interrupt() → subprocess 停止
+  → gen.close() → finally: resp.close() → TCP 关闭 → Server CancelledError
+  → KeyboardInterrupt 传播到 magic 层 handler
+  → 清理 _busy / _auto_pending / _session_dirty
+  → send_to_panel("ready") → 前端 dequeue 下一个 query
+  → handler 不再 raise（避免堵塞 IPython Shell channel）
+```
+
+- `_session.py` 的 `_stream()` 负责调用 `interrupt()` + `gen.close()`
+- magic 层 handler 只做状态清理 + 发送 `ready`，**不 propagate KeyboardInterrupt**
+- 服务端 `_apply_tool_fix()` 在下次查询前补全中断留下的未完成 tool_use
+- plan / auto / auto-fix 三种模式下中断均适用
+
 ### 自动错误修复（auto 模式）
 
 ```

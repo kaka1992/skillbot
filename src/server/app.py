@@ -93,6 +93,15 @@ async def delete_session(sid: str):
         raise HTTPException(404, f"Session {sid} not found")
 
 
+@app.post("/sessions/{sid}/interrupt")
+async def interrupt_session(sid: str):
+    s = manager.get(sid)
+    if not s:
+        raise HTTPException(404, f"Session {sid} not found")
+    await s.interrupt()
+    return {"status": "ok"}
+
+
 @app.post("/sessions/{sid}/chat", response_model=ChatResponse)
 async def chat(sid: str, body: ChatRequest):
     s = manager.get(sid)

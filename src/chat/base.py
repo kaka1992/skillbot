@@ -119,6 +119,14 @@ class AbstractBackend(ABC):
                 raise value
             yield value
 
+    def interrupt(self, session: str) -> None:
+        """Interrupt the current streaming query for a session.
+
+        Stops the running query while preserving conversation context.
+        Subsequent queries on the same session continue with full history.
+        """
+        ...
+
     def list_sessions(self) -> list[str]:
         """List active session IDs."""
         return []

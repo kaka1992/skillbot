@@ -110,6 +110,8 @@ class Session:
         self.created_at = time.time()
         self.lock = asyncio.Lock()
         self._client: ClaudeSDKClient | None = None
+        self._pending_tool_ids: list[str] = []
+        self._needs_tool_fix: bool = False
 
     def add(self, role: str, content: str) -> None:
         self.history.append(Message(role=role, content=content))
@@ -125,6 +127,8 @@ class Session:
         self.add("user", message)
         options = _build_options(allowed_tools=allowed_tools, cwd=cwd)
 
+        await self._apply_tool_fix()
+
         try:
             text = await asyncio.wait_for(
                 self._send_inner(message, options),
@@ -132,6 +136,8 @@ class Session:
             )
         except asyncio.TimeoutError:
             raise RuntimeError(f"claude timed out after {timeout}s")
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.exception("Session %s error", self.sid)
             self.add("error", message)
@@ -177,6 +183,8 @@ class Session:
         self.add("user", message)
         options = _build_options(allowed_tools=allowed_tools, cwd=cwd)
 
+        await self._apply_tool_fix()
+
         full_text_parts: list[str] = []
         gen = self._send_inner_stream(message, options)
         try:
@@ -191,6 +199,13 @@ class Session:
                 yield chunk
         except asyncio.TimeoutError:
             raise RuntimeError(f"claude timed out after {timeout}s")
+        except asyncio.CancelledError:
+            if gen is not None:
+                try:
+                    await gen.aclose()
+                except Exception:
+                    pass
+            raise
         except Exception:
             logger.exception("Session %s error", self.sid)
             self.add("error", message)
@@ -236,6 +251,11 @@ class Session:
         self.add("user", message)
         options = _build_options(allowed_tools=allowed_tools, cwd=cwd)
 
+        # Fix interrupted tool_use state before next query
+        if self._needs_tool_fix:
+            logger.info("Session %s: applying tool fix, pending_ids=%s", self.sid, self._pending_tool_ids)
+        await self._apply_tool_fix()
+
         text_parts: list[str] = []
         gen = self._send_inner_chunks(message, options)
         try:
@@ -248,9 +268,25 @@ class Session:
                     break
                 if chunk.text:
                     text_parts.append(chunk.text)
+                # Track tool_use IDs for interrupt recovery
+                if chunk.blocks:
+                    for b in chunk.blocks:
+                        if b.type == "tool_use" and b.data:
+                            tid = b.data.get("id", "")
+                            if tid:
+                                self._pending_tool_ids.append(tid)
                 yield chunk
         except asyncio.TimeoutError:
             raise RuntimeError(f"claude timed out after {timeout}s")
+        except asyncio.CancelledError:
+            # Interrupt leaves unresolved tool_use — _apply_tool_fix handles it.
+            # Must properly close the inner generator so the SDK client is usable.
+            if gen is not None:
+                try:
+                    await gen.aclose()
+                except Exception:
+                    pass
+            raise
         except Exception:
             logger.exception("Session %s error", self.sid)
             self.add("error", message)
@@ -352,6 +388,52 @@ class Session:
                 text="".join(text_parts),
                 blocks=blocks if blocks else None,
             )
+
+    async def interrupt(self) -> None:
+        """Interrupt current query — sends signal to subprocess, preserves context."""
+        if self._client is not None:
+            logger.info("Session %s: interrupt — tool_ids=%s", self.sid, self._pending_tool_ids)
+            self._needs_tool_fix = True
+            await self._client.interrupt()
+            logger.info("Session %s: interrupt done", self.sid)
+
+    async def _apply_tool_fix(self) -> None:
+        """Send synthetic tool_results to complete interrupted tool_use blocks."""
+        if not self._needs_tool_fix or not self._client:
+            return
+        self._needs_tool_fix = False
+        ids = list(self._pending_tool_ids)  # copy before clearing
+        self._pending_tool_ids.clear()
+        if not ids:
+            # No tool_use ID tracked — must recreate client
+            logger.warning("Session %s: interrupt without tool_use ID, disconnecting + recreating client", self.sid)
+            if self._client is not None:
+                try:
+                    await self._client.disconnect()
+                except Exception:
+                    pass
+                self._client = None
+            return
+        async def _fix_stream():
+            for tid in ids:
+                yield {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": tid,
+                        "content": "[interrupted by user]",
+                        "is_error": True,
+                    }],
+                }
+        try:
+            await self._client.query(_fix_stream())
+            async for _ in self._client.receive_response():
+                pass
+        except Exception:
+            logger.exception("Session %s tool fix failed", self.sid)
+            if self._client is not None:
+                await self._client.disconnect()
+                self._client = None
 
     async def close(self) -> None:
         if self._client is not None:

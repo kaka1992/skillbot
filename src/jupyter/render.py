@@ -58,31 +58,21 @@ def render_error(text: str) -> None:
         print(f"\033[91m{text}\033[0m", file=sys.stderr)
 
 
-def render_code(ns: Namespace, code: str, auto: bool = False, trace: bool = False,
+def render_code(ns: Namespace, code: str, auto: bool = False,
                 cell_type: str = "code", replace_cell_id: str = "",
                 on_cell_id: callable | None = None) -> None:
-    """Send code to frontend via comm; extension creates cell + optionally executes.
-
-    *auto* tells the extension to execute the cell immediately.
-    *trace* appends ``%agent --trace`` to the code.
-    *cell_type*: "code" or "markdown".
-    Cell visibility and execution are entirely handled by the frontend extension;
-    nothing is done kernel-side.
-    """
+    """Send code to frontend via comm; extension creates cell + optionally executes."""
     if not code:
         return
     code = code.strip()
     if cell_type == "markdown":
-        # markdown cell: no magic header, no SQL detection
         pass
     else:
         if _is_sql(code) and not code.startswith("%%sql"):
             code = f"%%sql\n{code}"
         code = f"{code}\n# %%agent generate code"
-        if trace:
-            code += f"\n%agent --trace{' --auto' if auto else ''}"
 
-    _log.info("render_code: %d chars auto=%s trace=%s type=%s", len(code), auto, trace, cell_type)
+    _log.info("render_code: %d chars auto=%s type=%s", len(code), auto, cell_type)
 
     from .comm import send_cell_via_comm
     send_cell_via_comm(ns, code, auto=auto, cell_type=cell_type,
@@ -136,8 +126,7 @@ def render_sql_dataframe(ns: Namespace, data: dict, var_name: str):
 
 def render_output(ns: Namespace, result: ParsedResult,
                   skip_text: bool = False,
-                  auto: bool = False, trace: bool = False,
-                  plan_cell_id: str = "",
+                  auto: bool = False, plan_cell_id: str = "",
                   on_cell_id: callable | None = None) -> None:
     """Dispatch parsed agent result to render methods."""
     if result.text and not skip_text:
@@ -178,10 +167,8 @@ def render_output(ns: Namespace, result: ParsedResult,
         HookRegistry.dispatch(HookEvent.CODE_REVIEW, context)
         result.code_list = context["code_list"]
 
-        for i, c in enumerate(result.code_list):
-            is_last = (i == len(result.code_list) - 1)
-            render_code(ns, c, auto=auto, trace=(trace and is_last),
-                       on_cell_id=on_cell_id)
+        for c in result.code_list:
+            render_code(ns, c, auto=auto, on_cell_id=on_cell_id)
 
 
 # ---------------------------------------------------------------------------

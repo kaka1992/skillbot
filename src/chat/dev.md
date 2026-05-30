@@ -65,7 +65,7 @@ src/chat/
 ├── deerflow.py          # DeerFlowBackend（LangGraph SSE + messages-tuple + custom events）
 ├── nanobot.py           # NanobotBackend（OpenAI REST，stream_chunks 默认 wrap）
 ├── hermes.py            # HermesBackend（OpenAI SSE + hermes.tool.progress events）
-├── claude.py            # ClaudeBackend（HTTP :9000 + trace SSE endpoint）
+├── claude.py            # ClaudeBackend（HTTP :9000 + trace SSE + interrupt 端点）
 └── dev.md               # 设计文档
 ```
 
@@ -82,6 +82,7 @@ ChatClient(
 
 chat(content: str, session: str, model: str | None = None) -> str
 stream(content: str, session: str, model: str | None = None) -> Iterator[str]
+interrupt(session: str) -> None
 list_sessions() -> list[str]
 clear_session(session: str) -> None
 ```
@@ -95,6 +96,8 @@ class AbstractBackend(ABC):
 
     @abstractmethod
     def stream(self, content: str, session: str, model: str | None) -> Iterator[str]: ...
+
+    def interrupt(self, session: str) -> None: ...
 
     @abstractmethod
     def list_sessions(self) -> list[str]: ...

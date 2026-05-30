@@ -41,6 +41,11 @@ class AgentSession:
             # Drain the full system-prompt response so the session is clean for queries
             for _ in self._client.stream(system_prompt, session=session_key):
                 pass
+        except KeyboardInterrupt:
+            _log.warning("session init: interrupted, clearing client for retry")
+            self._client = None
+            self._session_id = ""
+            raise
         except Exception:
             _log.warning("session init: stream failed, clearing client for retry", exc_info=True)
             self._client = None
@@ -70,6 +75,11 @@ class AgentSession:
     def session_id(self) -> str:
         return self._session_id
 
+    def interrupt(self) -> None:
+        """Interrupt the current streaming query, preserving context."""
+        if self._client and self._session_id:
+            self._client.interrupt(self._session_id)
+
     # -- streaming --
 
     def stream(self, prompt: str, timeout: int | None = None,
@@ -88,31 +98,39 @@ class AgentSession:
         tool_names: set[str] = set()
         t0 = time.time()
 
-        for chunk in client._backend.stream_chunks(prompt, session=session):
-            if chunk.text:
-                raw += chunk.text
-                if show_text:
-                    sys.stdout.write(chunk.text)
-                    sys.stdout.flush()
-                if on_chunk:
-                    on_chunk(chunk.text)
+        gen = client._backend.stream_chunks(prompt, session=session)
+        try:
+            for chunk in gen:
+                if chunk.text:
+                    raw += chunk.text
+                    if show_text:
+                        sys.stdout.write(chunk.text)
+                        sys.stdout.flush()
+                    if on_chunk:
+                        on_chunk(chunk.text)
 
-            if chunk.blocks:
-                for b in chunk.blocks:
-                    if b.type == "thinking" and b.data:
-                        t = b.data.get("thinking", "").strip()
-                        if t:
-                            thinking_lines.append(t)
-                            if on_thinking:
-                                on_thinking(t)
-                    elif b.type == "tool_use" and b.data:
-                        name = b.data.get("name", "?")
-                        if name not in tool_names:
-                            tool_names.add(name)
-                            _log.debug("tool_use: %s", name)
-                            print(f"\n\033[90m[{name}]\033[0m")
-                            if on_chunk:
-                                on_chunk(f"\n\033[90m[{name}]\033[0m\n")
+                if chunk.blocks:
+                    for b in chunk.blocks:
+                        if b.type == "thinking" and b.data:
+                            t = b.data.get("thinking", "").strip()
+                            if t:
+                                thinking_lines.append(t)
+                                if on_thinking:
+                                    on_thinking(t)
+                        elif b.type == "tool_use" and b.data:
+                            name = b.data.get("name", "?")
+                            if name not in tool_names:
+                                tool_names.add(name)
+                                _log.debug("tool_use: %s", name)
+                                print(f"\n\033[90m[{name}]\033[0m")
+                                if on_chunk:
+                                    on_chunk(f"\n\033[90m[{name}]\033[0m\n")
+        except KeyboardInterrupt:
+            # Tell the server to interrupt the subprocess, then close the stream.
+            if client:
+                client.interrupt(session)
+            gen.close()
+            raise
 
         elapsed = round(time.time() - t0, 1)
         print()

@@ -98,7 +98,7 @@ class AgentPanel extends widgets_1.Widget {
         welcome.className = 'skillbot-welcome';
         welcome.innerHTML = `
       <div style="font-size:14px;font-weight:600;color:${panelStyles_1.CC.text};margin-bottom:4px;">Agent Panel</div>
-      <div style="font-size:12px;font-weight:500;color:rgb(180,180,180);">Shift+Tab mode · Ctrl+A/E/B/F/H/K/U/W/Y · Ctrl+P/N history · Ctrl+T thinking · Shift+↵ newline</div>
+      <div style="font-size:12px;font-weight:500;color:rgb(180,180,180);">Shift+Tab mode · Ctrl+A/E/B/F/H/K/U/W/Y · Ctrl+P/N history · Ctrl+T thinking · Ctrl+C interrupt · Shift+↵ newline</div>
     `;
         this._root.appendChild(welcome);
         // output — click to focus input + keyboard for Ctrl+T
@@ -106,11 +106,21 @@ class AgentPanel extends widgets_1.Widget {
         this._outputEl.className = 'skillbot-output';
         this._outputEl.tabIndex = 0;
         this._outputEl.addEventListener('keydown', (e) => {
+            var _a;
             if (document.activeElement === this._inputEl)
                 return;
-            if (e.ctrlKey && !e.altKey && e.key === 't') {
-                e.preventDefault();
-                this._toggleThinkingCollapse();
+            if (e.ctrlKey && !e.altKey) {
+                switch (e.key) {
+                    case 't':
+                        e.preventDefault();
+                        this._toggleThinkingCollapse();
+                        break;
+                    case 'c':
+                        e.preventDefault();
+                        (_a = this._kernel) === null || _a === void 0 ? void 0 : _a.interrupt();
+                        this._setStatus('⏏', 'interrupted');
+                        break;
+                }
             }
         });
         this._outputEl.addEventListener('click', () => {
@@ -161,6 +171,7 @@ class AgentPanel extends widgets_1.Widget {
     }
     // ---- keyboard -----------------------------------------------------------
     _onKeydown(e) {
+        var _a;
         // plan confirm mode: intercept navigation and commit keys
         if (this._planConfirmActive) {
             // Feedback mode: let typing pass through to textarea, intercept Enter/Esc
@@ -383,7 +394,7 @@ class AgentPanel extends widgets_1.Widget {
                     if (ss !== se)
                         return; // has selection → let browser handle copy (Cmd+C)
                     if (v.length > 0) {
-                        // Clear input (same as Escape)
+                        // First Ctrl+C: clear input
                         el.value = '';
                         this._historyIdx = -1;
                         this._historyDraft = '';
@@ -391,7 +402,11 @@ class AgentPanel extends widgets_1.Widget {
                         this._lastKill = '';
                         this._resizeInput();
                     }
-                    // On empty input, Ctrl+C is a no-op (panel stays open)
+                    else {
+                        // Second Ctrl+C (or first on empty input): interrupt agent
+                        (_a = this._kernel) === null || _a === void 0 ? void 0 : _a.interrupt();
+                        this._setStatus('⏏', 'interrupted');
+                    }
                     return;
                 }
                 case 'l':
@@ -794,6 +809,10 @@ class AgentPanel extends widgets_1.Widget {
             return;
         }
         const next = this._promptQueue.shift();
+        // Cancel any active plan confirm — dequeued prompt takes priority
+        if (this._planConfirmActive) {
+            this._cancelPlanConfirm();
+        }
         // Temporarily switch mode for the queued prompt
         const savedMode = this._mode;
         this._mode = next.mode;
@@ -1015,6 +1034,8 @@ class AgentPanel extends widgets_1.Widget {
                         this._renderCodeBlock(d.language || '', d.code || '');
                         break;
                     case 'result':
+                        if (this._planConfirmActive)
+                            this._closeConfirm();
                         this._renderResult(d.summary || '');
                         break;
                     case 'plan_confirm':
@@ -1079,6 +1100,7 @@ exports.panelPlugin = {
         _panelInstance = panel;
         let _panelOpened = false;
         let _currentCtx = null;
+        let _cellsChangedModel = null;
         const onKernelChanged = (_sender, args) => {
             if (args.oldValue) {
                 panel.resetComm();
@@ -1114,6 +1136,25 @@ exports.panelPlugin = {
                     console.error('[panel] registerCommTarget failed:', e);
                 }
                 panel.connectKernel(kernel);
+            }
+            // Wire cell deletion tracking (disconnect old on notebook change)
+            const model = nb.model;
+            if (model && model.sharedModel !== _cellsChangedModel) {
+                _cellsChangedModel = model.sharedModel;
+                model.sharedModel.cellsChanged.connect((_sender, args) => {
+                    var _a;
+                    if (args.type === 'remove' && args.oldValues) {
+                        for (const cell of args.oldValues) {
+                            const src = cell.source || ((_a = cell.getSource) === null || _a === void 0 ? void 0 : _a.call(cell)) || '';
+                            if (src.trim()) {
+                                kernel === null || kernel === void 0 ? void 0 : kernel.requestExecute({
+                                    code: `get_ipython().user_ns['_panel_track_cell_delete'](${JSON.stringify(src)})`,
+                                    store_history: false,
+                                });
+                            }
+                        }
+                    }
+                });
             }
             // open panel once, after layout restore settles (avoid flash-close)
             if (!_panelOpened) {

@@ -110,6 +110,10 @@ class ChatClient:
         """Clear a session."""
         self._backend.clear_session(session)
 
+    def interrupt(self, session: str) -> None:
+        """Interrupt the current streaming query."""
+        self._backend.interrupt(session)
+
     @property
     def agent(self) -> str:
         return self._agent

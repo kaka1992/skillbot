@@ -111,6 +111,7 @@ DELETE /sessions/{sid}
 POST /sessions/{sid}/chat         {"message": "...", "timeout": 600}
 POST /sessions/{sid}/chat/stream  {"message": "...", "timeout": 600}
 POST /sessions/{sid}/chat/trace   {"message": "...", "timeout": 600}
+POST /sessions/{sid}/interrupt      # 中断当前查询，保留上下文
 GET  /sessions/{sid}/history
 GET  /skills
 GET  /skills/{name}
@@ -118,3 +119,17 @@ GET  /skills/{name}
 
 - `/skills` 从 `_resolve_claude_home()/.claude/skills/` 读取
 - WORK_DIR 默认为 `_resolve_claude_home()/run/`，自动创建
+
+## 中断机制
+
+`POST /sessions/{sid}/interrupt` 调用 `Session.interrupt()` → `ClaudeSDKClient.interrupt()`。
+SDK 向 subprocess 发送中断信号，停止当前查询。
+
+中断后 subprocess 可能留下未完成的 `tool_use` 状态。`send_stream_chunks` 在下次查询前调用
+`_apply_tool_fix()` 补全对话：
+
+- **有 tool_use ID**：发送合成 `tool_result`（`is_error=True`）→ SDK 补全 tool_use → tool_result 周期 → 上下文保留
+- **无 tool_use ID**：`disconnect + _client = None` → 下次查询创建新 client → 上下文丢失但可靠
+
+`_send_inner_chunks` 的 `asyncio.CancelledError`（TCP 断开）时调用 `gen.aclose()` 确保
+SDK client 状态清理干净，允许后续查询复用同一 client。

@@ -106,7 +106,7 @@ skillbot/
 | plan | ⏸ | 先调研出方案 → 确认 UI（3 选项 + 反馈修订）→ 执行 |
 | auto | ⏵⏵ | cell 自动执行 + 错误自动修复（最多 3 次） |
 
-**输入框快捷键（对齐 cc-haha TUI）：** Ctrl+A/E/B/F/H/K/U/W/Y, ↑↓ 历史, Tab 补全, Shift+Enter 换行。
+**输入框快捷键（对齐 cc-haha TUI）：** Ctrl+A/E/B/F/H/K/U/W/Y, ↑↓ 历史, Tab 补全, Shift+Enter 换行, Ctrl+T 折叠 thinking, Ctrl+C 中断（清空输入 → 中断 agent）。
 
 **配置 agent：**
 
@@ -195,6 +195,9 @@ for chunk in c.stream("讲个笑话", session="s2"):
 cc = ChatClient("claude-code", timeout=60)
 for chunk in cc.stream("数 1 到 3", session="s3"):
     print(repr(chunk))   # → '1' '\n' '2' '\n' '3'
+
+# 中断查询（保留会话上下文）
+cc.interrupt("s3")
 
 # stream_chunks — 结构化 trace 采集
 from eval.trace import TraceCollector

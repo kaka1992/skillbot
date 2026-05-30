@@ -1,6 +1,7 @@
 """Claude backend — HTTP wrapper server on port 9000."""
 
 import json
+import logging
 import time
 from collections.abc import Iterator
 from typing import Optional
@@ -8,6 +9,8 @@ from typing import Optional
 import requests
 
 from .base import AbstractBackend, AgentStartupTimeout, StreamChunk, TraceBlock
+
+_log = logging.getLogger(__name__)
 
 CLAUDE_PORT = 9000
 CLAUDE_BASE = f"http://127.0.0.1:{CLAUDE_PORT}"
@@ -136,33 +139,49 @@ class ClaudeBackend(AbstractBackend):
         resp.raise_for_status()
         text_parts: list[str] = []
         blocks: list[TraceBlock] = []
-        for line in resp.iter_lines(decode_unicode=True):
-            if not line.startswith("data: "):
-                continue
-            data = json.loads(line[6:])
-            event_type = data.get("type")
-            if event_type == "text":
-                text_parts.append(data.get("text", ""))
-            elif event_type == "error":
-                raise RuntimeError(data["error"])
-            elif event_type == "done":
-                if text_parts or blocks:
-                    yield StreamChunk(
-                        text="".join(text_parts), blocks=blocks or None
-                    )
-                return
-            else:
-                # trace event: thinking, tool_use, tool_result, subagent, usage
-                # flush accumulated text first
-                if text_parts:
-                    yield StreamChunk(text="".join(text_parts))
-                    text_parts.clear()
-                blocks.append(TraceBlock(
-                    type=event_type,
-                    data=data.get("data"),
-                ))
-        if text_parts or blocks:
-            yield StreamChunk(text="".join(text_parts), blocks=blocks or None)
+        try:
+            for line in resp.iter_lines(decode_unicode=True):
+                if not line.startswith("data: "):
+                    continue
+                data = json.loads(line[6:])
+                event_type = data.get("type")
+                if event_type == "text":
+                    text_parts.append(data.get("text", ""))
+                elif event_type == "error":
+                    raise RuntimeError(data["error"])
+                elif event_type == "done":
+                    if text_parts or blocks:
+                        yield StreamChunk(
+                            text="".join(text_parts), blocks=blocks or None
+                        )
+                    return
+                else:
+                    # trace event: thinking, tool_use, tool_result, subagent, usage
+                    # flush accumulated text first
+                    if text_parts:
+                        yield StreamChunk(text="".join(text_parts))
+                        text_parts.clear()
+                    blocks.append(TraceBlock(
+                        type=event_type,
+                        data=data.get("data"),
+                    ))
+            if text_parts or blocks:
+                yield StreamChunk(text="".join(text_parts), blocks=blocks or None)
+        finally:
+            resp.close()
+
+    def interrupt(self, session: str) -> None:
+        """POST /sessions/{sid}/interrupt — signal subprocess to stop."""
+        sid = self._server_sids.get(session)
+        if not sid:
+            return
+        try:
+            resp = requests.post(f"{CLAUDE_BASE}/sessions/{sid}/interrupt", timeout=5)
+            if resp.status_code != 200:
+                _log.warning("claude interrupt: session=%s sid=%s status=%d body=%s",
+                             session, sid, resp.status_code, resp.text[:200])
+        except Exception:
+            _log.exception("claude interrupt failed: session=%s sid=%s", session, sid)
 
     def list_sessions(self) -> list[str]:
         return sorted(self._sessions)

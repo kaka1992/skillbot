@@ -15,7 +15,7 @@ from jupyter.telemetry import get_recorder, TelemetryRecorder, set_recorder
 from .config import pop_flag, parse_kv, configure_agent, load_yaml_config
 from .namespace import Namespace
 from .panel import send_to_panel, send_thinking
-from .parser import parse, traceback_line
+from .parser import parse
 from .render import render_debug, render_error, render_info, render_output, render_sql_dataframe
 from .dsl.sql import SqlRunner, sql_progress
 from hook.impl.code_review import AgentCodeReviewHook
@@ -23,7 +23,11 @@ from hook.impl.cell_review import AgentCellReviewHook
 
 _log = logging.getLogger(__name__)
 
-_TRACE_MARKER = "%agent --trace"
+_INTERRUPT_NOTE = (
+    "[System note: The user cancelled the previous request with Ctrl+C. "
+    "Completely disregard the prior exchange — do NOT continue, reference, or respond to it. "
+    "Respond ONLY to the current prompt below as if starting fresh.]"
+)
 
 SUB_AGENT_DEFAULTS = {
     "code_review": SubAgentConfig(
@@ -92,6 +96,13 @@ def _panel_track_cell_edit(source: str) -> None:
         inst.ns.track_pending_edit(source)
 
 
+def _panel_track_cell_delete(source: str) -> None:
+    """Remove deleted cell from namespace context."""
+    inst = _get_magic()
+    if inst:
+        inst.ns.remove_cell(source)
+
+
 def _merge_prompt(claude_md_path: str | None = None) -> str:
     return PromptBuilder.main(claude_md_path)
 
@@ -132,6 +143,7 @@ class AgentMagic(Magics):
         self._auto_pending = 0     # count of auto-exec cells still running
         self._busy = False          # block input while agent is working
         self._session_ready = False  # lazy-init session on first query
+        self._session_dirty = False  # set on interrupt, prepend note on next query
         cfg = load_yaml_config("conf/jupyter_agent.yaml")
         self._hook_cfg = cfg.get("hooks", {})
         self.ns.delta()
@@ -143,6 +155,10 @@ class AgentMagic(Magics):
         """Lazy-init agent session on first query (keeps kernel startup fast)."""
         if self._session_ready:
             return
+        # Drop stale client from interrupted session (avoid lingering TCP connections)
+        old = getattr(self, '_session', None)
+        if old is not None:
+            old.cleanup()
         self._init_session(self._agent, self._timeout, self._claude_md_path)
         if self._session.client is None:
             raise RuntimeError("session init failed — is Claude server (port 9000) running?")
@@ -186,19 +202,6 @@ class AgentMagic(Magics):
                 self._auto_fix_cell(code.strip(), error_msg)
             return
 
-        # Detect: code before %agent --trace errored → auto-trigger trace
-        if _TRACE_MARKER in code and not result.success:
-            error = result.error_in_exec or result.error_before_exec
-            if error is not None:
-                tb = getattr(error, "__traceback__", None)
-                err_line = traceback_line(tb) if tb else 10**9
-                _, tr_idx = self._split_at_trace(code)
-                if err_line <= code[:tr_idx].count("\n") + 1:
-                    import traceback
-                    error_msg = "".join(traceback.format_exception_only(type(error), error))
-                    self._trace_on_error(code, error_msg)
-            return
-
         output = str(info.result) if getattr(info, "result", None) else ""
         self.ns.track_cell(code.strip(), output.strip())
 
@@ -237,9 +240,16 @@ class AgentMagic(Magics):
 
     def _handle_panel_prompt(self, prompt: str, mode: str = "default") -> None:
         """Execute agent prompt from panel: stream to panel + inject cells to left."""
+        was_ready = self._session_ready  # snapshot before _ensure_session may change it
         try:
             self._ensure_session()
-        except Exception:
+        except KeyboardInterrupt:
+            self._session_dirty = True
+            send_to_panel(self.ns, "text", content="\n⏏ interrupted\n")
+            send_to_panel(self.ns, "result", summary="")
+            send_to_panel(self.ns, "ready")
+            # raise removed — let cell execution finish
+        except Exception as _ex:
             _log.exception("_handle_panel_prompt: session init failed")
             send_to_panel(self.ns, "text", content="✗ session initialization failed, check server logs\n")
             send_to_panel(self.ns, "result", summary="")
@@ -251,9 +261,12 @@ class AgentMagic(Magics):
 
         ctx = self.ns.delta()
         full = f"{ctx}\n\n{prompt}" if ctx else prompt
+        if self._session_dirty:
+            self._session_dirty = False
+            if was_ready:
+                full = _INTERRUPT_NOTE + "\n\n" + full
         self._busy = True
 
-        # plan mode: inject plan-mode instruction prefix + set state
         if mode == "plan":
             self._plan = True
             self._last_plan_prompt = full
@@ -267,15 +280,25 @@ class AgentMagic(Magics):
         else:
             self._plan = False
 
-        raw = self._session.stream(full, show_text=False,
-                                    on_chunk=lambda t: send_to_panel(self.ns, "text", content=t),
-                                    on_thinking=lambda t: send_thinking(t))
+        # Only wrap the blocking I/O — result processing must not be interrupted
+        try:
+            raw = self._session.stream(full, show_text=False,
+                                        on_chunk=lambda t: send_to_panel(self.ns, "text", content=t),
+                                        on_thinking=lambda t: send_thinking(t))
+        except KeyboardInterrupt:
+            self._session_dirty = True
+            send_to_panel(self.ns, "text", content="\n⏏ interrupted\n")
+            send_to_panel(self.ns, "result", summary="")
+            self._busy = False
+            self._auto_pending = 0
+            send_to_panel(self.ns, "ready")
+            # raise removed — let cell execution finish
+
         send_to_panel(self.ns, "text", content="\n")
 
         if raw.strip():
             result = parse(raw)
             if mode == "plan":
-                # plan mode: show plan in panel only, NO cell injection yet
                 self._last_plan_output = raw.strip()
                 plan_text = result.plan or result.text or ""
                 send_to_panel(self.ns, "plan_confirm", summary=plan_text)
@@ -293,7 +316,7 @@ class AgentMagic(Magics):
                     if cid:
                         self._agent_cells[cid] = code_str
                         _log.debug("auto mode: tracked cell %s (%d chars)", cid, len(code_str))
-                render_output(self.ns, result, auto=True, trace=False, on_cell_id=_on_cid)
+                render_output(self.ns, result, auto=True, on_cell_id=_on_cid)
                 _log.info("auto mode: tracked %d cells", len(self._agent_cells))
                 send_to_panel(self.ns, "result", summary="")
             else:
@@ -301,12 +324,11 @@ class AgentMagic(Magics):
                 def _on_cid_default(cid, code_str):
                     if cid:
                         self._agent_cells[cid] = code_str
-                render_output(self.ns, result, auto=False, trace=False, on_cell_id=_on_cid_default)
+                render_output(self.ns, result, auto=False, on_cell_id=_on_cid_default)
                 send_to_panel(self.ns, "result", summary="")
                 self._busy = False
                 send_to_panel(self.ns, "ready")
         else:
-            # no output — still signal completion
             send_to_panel(self.ns, "result", summary="")
             self._busy = False
             send_to_panel(self.ns, "ready")
@@ -348,20 +370,27 @@ class AgentMagic(Magics):
             prompt = getattr(self, '_last_plan_prompt', '') or ""
             if plan and prompt:
                 full = f"User feedback on the plan: {arg}\n\nOriginal request:\n{prompt}\n\nPrevious plan:\n{plan}\n\nRevise the plan based on the feedback."
-                raw = self._session.stream(full, show_text=False,
-                    on_chunk=lambda t: send_to_panel(self.ns, "text", content=t),
-                    on_thinking=lambda t: send_thinking(t))
-                send_to_panel(self.ns, "text", content="\n")
-                if raw.strip():
-                    self._last_plan_output = raw.strip()
-                    result = parse(raw)
-                    plan_text = result.plan or result.text or ""
-                    send_to_panel(self.ns, "plan_confirm", summary=plan_text)
-                else:
-                    # Revision produced empty output — clear stale state
-                    self._last_plan_output = ""
-                    send_to_panel(self.ns, "text", content="✗ plan revision failed (no output)\n")
+                try:
+                    raw = self._session.stream(full, show_text=False,
+                        on_chunk=lambda t: send_to_panel(self.ns, "text", content=t),
+                        on_thinking=lambda t: send_thinking(t))
+                    send_to_panel(self.ns, "text", content="\n")
+                    if raw.strip():
+                        self._last_plan_output = raw.strip()
+                        result = parse(raw)
+                        plan_text = result.plan or result.text or ""
+                        send_to_panel(self.ns, "plan_confirm", summary=plan_text)
+                    else:
+                        self._last_plan_output = ""
+                        send_to_panel(self.ns, "text", content="✗ plan revision failed (no output)\n")
+                        send_to_panel(self.ns, "result", summary="")
+                except KeyboardInterrupt:
+                    self._session_dirty = True
+                    send_to_panel(self.ns, "text", content="\n⏏ interrupted\n")
                     send_to_panel(self.ns, "result", summary="")
+                    self._busy = False
+                    send_to_panel(self.ns, "ready")
+                    # raise removed — let cell execution finish
             else:
                 send_to_panel(self.ns, "text", content="✗ no plan to revise\n")
                 send_to_panel(self.ns, "result", summary="")
@@ -416,36 +445,44 @@ class AgentMagic(Magics):
             f"Do NOT include any Jupyter magic commands (like %confirm or %agent). "
             f"Do not add explanations."
         )
-        raw = self._session.stream(prompt, show_text=False,
-            on_chunk=lambda t: send_to_panel(self.ns, "text", content=t),
-            on_thinking=lambda t: send_thinking(t))
-        send_to_panel(self.ns, "text", content="\n")
+        try:
+            raw = self._session.stream(prompt, show_text=False,
+                on_chunk=lambda t: send_to_panel(self.ns, "text", content=t),
+                on_thinking=lambda t: send_thinking(t))
+            send_to_panel(self.ns, "text", content="\n")
 
-        if raw.strip():
-            result = parse(raw)
-            if result.code_list:
-                fixed_code = result.code_list[0]
-                from .render import render_code
-                self._auto_pending += 1
-                render_code(self.ns, fixed_code, auto=True, trace=False,
-                           replace_cell_id=cell_id)
-                send_to_panel(self.ns, "text",
-                    content="✓ auto-fixed (replaced)\n" if cell_id else "✓ auto-fixed (new cell)\n")
-                # Last retry: unblock queue even if fix cell never executes
-                if self._auto_fix_count >= 2:
+            if raw.strip():
+                result = parse(raw)
+                if result.code_list:
+                    fixed_code = result.code_list[0]
+                    from .render import render_code
+                    self._auto_pending += 1
+                    render_code(self.ns, fixed_code, auto=True,
+                               replace_cell_id=cell_id)
+                    send_to_panel(self.ns, "text",
+                        content="✓ auto-fixed (replaced)\n" if cell_id else "✓ auto-fixed (new cell)\n")
+                    if self._auto_fix_count >= 2:
+                        self._busy = False
+                        send_to_panel(self.ns, "ready")
+                else:
+                    send_to_panel(self.ns, "text", content="✗ auto-fix: no code in response\n")
+                    self._auto_pending = 0
                     self._busy = False
                     send_to_panel(self.ns, "ready")
             else:
-                send_to_panel(self.ns, "text", content="✗ auto-fix: no code in response\n")
+                send_to_panel(self.ns, "text", content="✗ auto-fix failed (no output)\n")
                 self._auto_pending = 0
                 self._busy = False
                 send_to_panel(self.ns, "ready")
-        else:
-            send_to_panel(self.ns, "text", content="✗ auto-fix failed (no output)\n")
+            send_to_panel(self.ns, "result", summary="")
+        except KeyboardInterrupt:
+            self._session_dirty = True
+            send_to_panel(self.ns, "text", content="\n⏏ interrupted\n")
+            send_to_panel(self.ns, "result", summary="")
             self._auto_pending = 0
             self._busy = False
             send_to_panel(self.ns, "ready")
-        send_to_panel(self.ns, "result", summary="")
+            # raise removed — let cell execution finish
 
     def _implement_plan(self, plan: str, auto: bool = False) -> None:
         """Execute a confirmed plan: inject code blocks if present, or send as implementation prompt."""
@@ -468,7 +505,7 @@ class AgentMagic(Magics):
 
         if result.code_list:
             # Plan contains executable code blocks → inject directly
-            render_output(self.ns, result, auto=auto, trace=False, on_cell_id=_on_cid)
+            render_output(self.ns, result, auto=auto, on_cell_id=_on_cid)
             label = "✓ plan implemented\n" if auto else "✓ plan accepted (code cells generated)\n"
             send_to_panel(self.ns, "text", content=label)
             return
@@ -489,42 +526,35 @@ class AgentMagic(Magics):
         if prompt:
             full = f"Original request:\n{prompt}\n\n{full}"
 
-        raw = self._session.stream(full, show_text=False,
-            on_chunk=lambda t: send_to_panel(self.ns, "text", content=t),
-            on_thinking=lambda t: send_thinking(t))
-        send_to_panel(self.ns, "text", content="\n")
+        try:
+            raw = self._session.stream(full, show_text=False,
+                on_chunk=lambda t: send_to_panel(self.ns, "text", content=t),
+                on_thinking=lambda t: send_thinking(t))
+            send_to_panel(self.ns, "text", content="\n")
 
-        if raw.strip():
-            result = parse(raw)
-            if auto:
-                self._auto_pending += len(result.code_list)
-            render_output(self.ns, result, auto=auto, trace=False, on_cell_id=_on_cid)
-            if auto and self._auto_pending == 0:
-                self._busy = False
-                send_to_panel(self.ns, "ready")
-            label = "✓ plan implemented\n" if auto else "✓ plan accepted (code cells generated)\n"
-            send_to_panel(self.ns, "text", content=label)
-        else:
-            send_to_panel(self.ns, "text", content="✗ plan implementation failed (no output)\n")
-            if auto:
-                self._busy = False
-                send_to_panel(self.ns, "ready")
-
-    def _split_at_trace(self, code: str) -> tuple[str, int]:
-        """Return (code_before, idx) of _TRACE_MARKER in *code*."""
-        idx = code.find(_TRACE_MARKER)
-        if idx < 0:
-            return code, -1
-        return code[:idx].strip(), idx
-
-    def _trace_on_error(self, code: str, error_msg: str) -> None:
-        auto = "--auto" in code
-        code_before, _ = self._split_at_trace(code)
-        self.ns.track_cell(code_before, error=error_msg)
-        if self._session_ready:
-            HookRegistry.dispatch(HookEvent.AGENT_CELL_REVIEW, {
-                "ns": self.ns, "auto": auto,
-            }, session=self._session)
+            if raw.strip():
+                result = parse(raw)
+                if auto:
+                    self._auto_pending += len(result.code_list)
+                render_output(self.ns, result, auto=auto, on_cell_id=_on_cid)
+                if auto and self._auto_pending == 0:
+                    self._busy = False
+                    send_to_panel(self.ns, "ready")
+                label = "✓ plan implemented\n" if auto else "✓ plan accepted (code cells generated)\n"
+                send_to_panel(self.ns, "text", content=label)
+            else:
+                send_to_panel(self.ns, "text", content="✗ plan implementation failed (no output)\n")
+                if auto:
+                    self._busy = False
+                    send_to_panel(self.ns, "ready")
+        except KeyboardInterrupt:
+            self._session_dirty = True
+            send_to_panel(self.ns, "text", content="\n⏏ interrupted\n")
+            send_to_panel(self.ns, "result", summary="")
+            self._auto_pending = 0
+            self._busy = False
+            send_to_panel(self.ns, "ready")
+            # Don't raise — let cell execution complete so next requestExecute works
 
     # ---- agent_config ----
 

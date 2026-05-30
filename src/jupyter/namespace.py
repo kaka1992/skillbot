@@ -63,8 +63,19 @@ class Namespace:
         if src:
             self._pending_edits.append(src[:3000])
 
+    def remove_cell(self, source: str) -> None:
+        """Remove cells matching *source* from tracked history (deleted in notebook)."""
+        src = source.strip()[:1500]
+        if not src:
+            return
+        # Remove last matching cell (newest first)
+        for i in range(len(self._cells) - 1, -1, -1):
+            if self._cells[i]["code"][:1500] == src:
+                del self._cells[i]
+                break
+
     def delta(self) -> str:
-        """Incremental: new variables + new cells + pending edits + new hook events."""
+        """Incremental: new variables + new cells + pending edits + hook events."""
         current = self.vars()
         new_vars = {k: v for k, v in current.items() if k not in self._seen}
         self._seen.update(new_vars.keys())
