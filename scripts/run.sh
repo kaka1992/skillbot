@@ -901,18 +901,30 @@ cmd_sync() {
     # Parse skills_arg
     # "skills/*"              -> copy all skills under src_dir
     # "skills/sA,skills/sB"   -> copy specific skills (comma-separated)
-    # "/abs/path/to/skills"   -> absolute path (treated as "skills/*")
+    # "/abs/path/to/skills"   -> absolute path — copy all from that dir
     if [[ "$skills_arg" == "skills/*" ]] || [[ "$skills_arg" == "${src_dir}" ]] || [[ "$skills_arg" == "${src_dir}/" ]]; then
         shopt -s dotglob 2>/dev/null || true
         cp -r "${src_dir}/"* "$dest"/
         shopt -u dotglob 2>/dev/null || true
         echo "  [OK] synced all skills"
+    elif [[ "$skills_arg" == /* ]]; then
+        # Absolute path — copy skills from external directory
+        local count=0
+        shopt -s dotglob 2>/dev/null || true
+        for s in "$skills_arg"/*/; do
+            local skill_name
+            skill_name="$(basename "$s")"
+            cp -r "$s" "$dest/"
+            echo "  [OK] ${skill_name}"
+            count=$((count + 1))
+        done
+        shopt -u dotglob 2>/dev/null || true
+        echo "  [OK] synced ${count} skills from ${skills_arg}"
     else
         local count=0
         local IFS=','
         for s in $skills_arg; do
             local skill_name="${s#skills/}"
-            # Handle absolute paths: strip src_dir prefix to get just the skill name
             skill_name="${skill_name#${src_dir}/}"
             skill_name="${skill_name#${src_dir}}"
             local skill_src="${src_dir}/${skill_name}"
