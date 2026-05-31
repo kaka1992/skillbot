@@ -128,6 +128,28 @@ Shift+Tab 循环切换模式。模式切换时 info bar 显示随机提示（4s 
 - **反馈模式** — 输入修订意见，Enter 提交，Esc 返回选项
 - Esc 取消，Ctrl+C 放弃计划
 
+### Skill 管理面板（`/skills` 命令）
+
+输入 `/skills` 进入独立的 skill 管理视图，输入框隐藏，所有操作在面板内完成：
+
+| 层级 | 操作 | 说明 |
+|------|------|------|
+| 列表 | ↑↓ | 选择 skill |
+| 列表 | Enter | 进入详情（描述 + 截断 body） |
+| 列表 | Space | 启用/禁用（即时生效，下一条 query 注入变更通知） |
+| 列表 | d | 卸载（二次确认，3s 超时取消） |
+| 列表 | i | 安装（弹出路径输入框，Enter 提交，自动识别 SKILL.md 大小写） |
+| 列表 | Esc | 退出 skills 模式，恢复 Agent 输入框 |
+| 详情 | Enter | 查看完整 SKILL.md body（350px 可滚动） |
+| 详情 | Esc | 返回列表 |
+| 安装框 | Enter | 提交安装，自动关闭输入框 |
+| 安装框 | Esc | 取消安装 |
+
+- 后端通过 `SkillManager`（`src/chat/skill.py`）操作，不经过 agent
+- 前端 `panel.ts` 中 `_enterSkillsMode()` / `_exitSkillsMode()` 控制视图切换
+- Comm 协议：`skill_list`（列表数据）、`skill_info`（详情）
+- macOS zip 的 `__MACOSX` / `._*` 垃圾文件自动过滤
+
 ### Ctrl+C 中断机制
 
 ```

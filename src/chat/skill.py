@@ -19,6 +19,19 @@ _FRONTMATTER_RE = re.compile(r"^---\s*\r?\n(.*?)\r?\n---\s*(?:\r?\n|$)", re.DOTA
 _STATE_FILE = ".skill_state.json"
 
 
+def _clean_macos_junk(root: Path) -> None:
+    """Remove macOS resource forks and __MACOSX dirs from extracted zip."""
+    for item in list(root.rglob("*")):
+        if item.name == "__MACOSX" or item.name.startswith("._"):
+            try:
+                if item.is_dir():
+                    shutil.rmtree(item)
+                else:
+                    item.unlink()
+            except Exception:
+                pass
+
+
 @dataclass
 class SkillInfo:
     name: str
@@ -72,17 +85,30 @@ class SkillManager:
         skills: list[SkillInfo] = []
         if not self._dir.is_dir():
             return skills
-        for md_file in sorted(self._dir.glob("*/SKILL.md")):
-            info = self._parse_skill(md_file)
-            if info:
-                info.enabled = info.name not in self._disabled
-                skills.append(info)
+        for skill_dir in sorted(self._dir.iterdir()):
+            if not skill_dir.is_dir() or skill_dir.name.startswith("."):
+                continue
+            md = self._find_skill_md(skill_dir)
+            if md:
+                info = self._parse_skill(md)
+                if info:
+                    info.enabled = info.name not in self._disabled
+                    skills.append(info)
         return skills
+
+    def _find_skill_md(self, skill_dir: Path) -> Path | None:
+        """Find SKILL.md in a directory, case-insensitive."""
+        if not skill_dir.is_dir():
+            return None
+        for f in skill_dir.iterdir():
+            if f.is_file() and f.name.lower() == "skill.md":
+                return f
+        return None
 
     def get_skill(self, name: str) -> SkillInfo | None:
         """Get a single skill by name."""
-        md = self._dir / name / "SKILL.md"
-        if not md.is_file():
+        md = self._find_skill_md(self._dir / name)
+        if not md:
             return None
         info = self._parse_skill(md)
         if info:
@@ -111,7 +137,8 @@ class SkillManager:
                 zf.extractall(tmp)
 
             tmp_path = Path(tmp)
-            entries = list(tmp_path.iterdir())
+            entries = [e for e in tmp_path.iterdir()
+                       if e.name not in ("__MACOSX",) and not e.name.startswith("._")]
 
             if not entries:
                 raise ValueError("zip is empty")
@@ -127,17 +154,21 @@ class SkillManager:
             if name.startswith(".") or name in ("__pycache__",):
                 raise ValueError(f"invalid skill name: {name}")
 
-            skill_md = skill_root / "SKILL.md"
-            if not skill_md.is_file():
+            # Find SKILL.md case-insensitively
+            skill_md = self._find_skill_md(skill_root)
+            if not skill_md:
+                files = [f.name for f in skill_root.iterdir()] if skill_root.is_dir() else []
                 raise ValueError(
-                    f"SKILL.md not found in skill root. "
-                    f"Expected: {skill_md}"
+                    f"SKILL.md not found. Contents: {files or '(empty directory)'}"
                 )
 
             # Parse to validate frontmatter
             info = self._parse_skill(skill_md)
             if not info:
                 raise ValueError("SKILL.md has invalid or missing YAML frontmatter")
+
+            # Clean macOS resource forks before install
+            _clean_macos_junk(skill_root)
 
             # Install
             self._dir.mkdir(parents=True, exist_ok=True)
@@ -171,7 +202,7 @@ class SkillManager:
 
     def enable(self, name: str) -> None:
         """Enable a skill. Persisted to disk."""
-        if not (self._dir / name / "SKILL.md").is_file():
+        if not self._find_skill_md(self._dir / name):
             raise FileNotFoundError(f"skill not installed: {name}")
         self._disabled.discard(name)
         self._save_state()
@@ -179,7 +210,7 @@ class SkillManager:
 
     def disable(self, name: str) -> None:
         """Disable a skill. Persisted to disk."""
-        if not (self._dir / name / "SKILL.md").is_file():
+        if not self._find_skill_md(self._dir / name):
             raise FileNotFoundError(f"skill not installed: {name}")
         self._disabled.add(name)
         self._save_state()
@@ -190,8 +221,10 @@ class SkillManager:
         """Return enabled skill names."""
         installed = set()
         if self._dir.is_dir():
-            for md_file in self._dir.glob("*/SKILL.md"):
-                installed.add(md_file.parent.name)
+            for skill_dir in self._dir.iterdir():
+                if skill_dir.is_dir() and not skill_dir.name.startswith("."):
+                    if self._find_skill_md(skill_dir):
+                        installed.add(skill_dir.name)
         return sorted(installed - self._disabled)
 
     @property
@@ -199,8 +232,10 @@ class SkillManager:
         """Return disabled skill names (only for currently installed skills)."""
         installed = set()
         if self._dir.is_dir():
-            for md_file in self._dir.glob("*/SKILL.md"):
-                installed.add(md_file.parent.name)
+            for skill_dir in self._dir.iterdir():
+                if skill_dir.is_dir() and not skill_dir.name.startswith("."):
+                    if self._find_skill_md(skill_dir):
+                        installed.add(skill_dir.name)
         return sorted(self._disabled & installed)
 
     # ------------------------------------------------------------------

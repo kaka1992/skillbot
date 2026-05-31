@@ -90,18 +90,44 @@ class ChatClient:
     # ------------------------------------------------------------------
 
     def _maybe_inject_skills(self, content: str) -> str:
-        """Inject skill prompt when config changes.  claude-code is no-op."""
-        if self._agent == "claude-code":
-            return content
+        """Inject skill prompt when config changes.
 
+        claude-code: injects a minimal delta notice on mid-session changes
+        (SDK handles full loading at startup).
+        Other agents: injects full skill body via SkillManager.inject_prompt().
+        """
         current = (
             tuple(self.skills.active_skills),
             tuple(self.skills.disabled_skills),
         )
         if current == self._skill_version:
-            return content  # config unchanged, skip injection
+            return content  # config unchanged
 
+        prev_active = set(self._skill_version[0]) if self._skill_version else set()
+        prev_disabled = set(self._skill_version[1]) if self._skill_version else set()
+        was_none = self._skill_version is None
         self._skill_version = current
+
+        new_active = set(self.skills.active_skills)
+        new_disabled = set(self.skills.disabled_skills)
+        enabled = new_active - prev_active
+        disabled = new_disabled - prev_disabled
+
+        if self._agent == "claude-code":
+            # First query: SDK handles skills, no injection needed
+            if was_none:
+                return content
+            # Mid-session change: inject delta notice
+            if not enabled and not disabled:
+                return content
+            parts = []
+            if enabled:
+                parts.append(f"skill ENABLED: {', '.join(sorted(enabled))}")
+            if disabled:
+                parts.append(f"skill DISABLED (do NOT use): {', '.join(sorted(disabled))}")
+            return "[System note: skill configuration changed]\n" + "\n".join(parts) + "\n\n" + content
+
+        # Non-claude agents: full prompt injection
         prompt = self.skills.inject_prompt()
         if prompt:
             return prompt + "\n\n" + content

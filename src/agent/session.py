@@ -84,6 +84,8 @@ class AgentSession:
 
     def stream(self, prompt: str, timeout: int | None = None,
                show_text: bool = True, on_chunk=None, on_thinking=None) -> str:
+        if self._client:
+            prompt = self._client._maybe_inject_skills(prompt)
         return self._stream(self._client, prompt, self._session_id, timeout, show_text, on_chunk, on_thinking)
 
     @staticmethod

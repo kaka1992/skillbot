@@ -61,6 +61,7 @@ class AgentPanel extends Widget {
   private _thinkingCollapsed = true;            // Ctrl+T: default collapsed (150 chars)
   private _busy = false;                        // agent is working → queue new prompts
   private _promptQueue: Array<{text: string, mode: 'default' | 'plan' | 'auto'}> = [];
+  private _skillsMode = false;                   // skills view active → input hidden
 
   constructor() {
     super();
@@ -102,6 +103,16 @@ class AgentPanel extends Widget {
           case 't': e.preventDefault(); this._toggleThinkingCollapse(); break;
           case 'c': e.preventDefault(); this._kernel?.interrupt(); this._setStatus('⏏', 'interrupted'); break;
         }
+      }
+      // Esc exits skills mode even when list is not focused
+      if (e.key === 'Escape' && this._skillsMode && this._expandedIdx === -1) {
+        e.preventDefault();
+        this._exitSkillsMode();
+      }
+      // Trap Tab within panel when in skills mode
+      if (e.key === 'Tab' && this._skillsMode) {
+        e.preventDefault();
+        this._skillListWrapper?.focus();
       }
     });
     this._outputEl.addEventListener('click', () => {
@@ -651,8 +662,10 @@ class AgentPanel extends Widget {
       this._busy = true;
     }
     if (isDisplay) {
-      // Display-only command — no block, no spinner, just execute
-      this._renderPrompt(text);
+      // Skills commands enter dedicated view (no prompt echo needed)
+      if (text === '/skills' || text.startsWith('/skills ')) {
+        this._enterSkillsMode();
+      }
     } else {
       this._startBlock();
       this._renderPrompt(text);
@@ -733,10 +746,40 @@ class AgentPanel extends Widget {
   private _skillRows: HTMLElement[] = [];
   private _skillSelectedIdx: number = 0;
   private _skillListWrapper: HTMLElement | null = null;
+  private _skillData: Array<{name: string, description: string, enabled: boolean, body: string}> = [];
+  private _expandedIdx: number = -1;   // -1=list, >=0=info view
+  private _fullBodyIdx: number = -1;   // -1=not in full body, >=0=full body view
+  private _installMode = false;        // showing install path input
+  private _installError = '';          // error message from last install
 
-  private _renderSkillList(skills: Array<{name: string, description: string, enabled: boolean}>): void {
+  private _enterSkillsMode(): void {
+    this._skillsMode = true;
+    this._inputWrapper.style.display = 'none';
+    this._outputEl.querySelectorAll('.skillbot-skill-list').forEach(el => el.remove());
+    this._inputEl.focus(); // keep focus so Esc works
+  }
+
+  private _exitSkillsMode(): void {
+    this._skillsMode = false;
+    this._inputWrapper.style.display = '';
     this._skillRows = [];
     this._skillSelectedIdx = 0;
+    this._expandedIdx = -1;
+    this._outputEl.querySelectorAll('.skillbot-skill-list').forEach(el => el.remove());
+    this._inputEl.focus();
+  }
+
+  private _renderSkillList(skills: Array<{name: string, description: string, enabled: boolean, body?: string}>): void {
+    this._skillData = skills.map(s => ({...s, body: s.body || ''}));
+    this._skillRows = [];
+    this._skillSelectedIdx = 0;
+    this._expandedIdx = -1;
+    this._fullBodyIdx = -1;
+    this._installMode = false;
+    this._installError = '';
+
+    // Remove old list, rebuild
+    this._outputEl.querySelectorAll('.skillbot-skill-list').forEach(el => el.remove());
 
     const wrapper = document.createElement('div');
     wrapper.className = 'skillbot-skill-list';
@@ -745,87 +788,258 @@ class AgentPanel extends Widget {
     wrapper.innerHTML = `<div style="font-size:13px;font-weight:600;color:${CC.text};margin-bottom:4px;padding:0 4px;">Skills</div>`;
 
     const listEl = document.createElement('div');
-    skills.forEach((s, i) => {
-      const row = this._makeSkillRow(s, i === 0);
-      listEl.appendChild(row);
-      this._skillRows.push(row);
-    });
+    listEl.className = 'skillbot-skill-items';
     wrapper.appendChild(listEl);
 
     const hint = document.createElement('div');
+    hint.className = 'skillbot-skill-hint';
     hint.style.cssText = `font-size:10px;color:rgb(120,120,120);margin-top:4px;padding:0 4px;`;
-    hint.textContent = '↑↓ select  Enter info  Space toggle  Esc close';
+    hint.textContent = '↑↓ select  Enter details  Space toggle  Esc close';
     wrapper.appendChild(hint);
 
-    // Keyboard navigation
-    wrapper.addEventListener('keydown', (e) => {
-      switch (e.key) {
-        case 'ArrowDown':
-          e.preventDefault();
-          this._skillSelectedIdx = Math.min(this._skillRows.length - 1, this._skillSelectedIdx + 1);
-          this._updateSkillSelection(skills);
-          break;
-        case 'ArrowUp':
-          e.preventDefault();
-          this._skillSelectedIdx = Math.max(0, this._skillSelectedIdx - 1);
-          this._updateSkillSelection(skills);
-          break;
-        case 'Enter':
-          e.preventDefault();
-          if (skills[this._skillSelectedIdx]) {
-            const s = skills[this._skillSelectedIdx];
-            this._inputEl.value = `/skills info ${s.name}`;
-            this._sendPrompt();
-          }
-          break;
-        case ' ':
-          e.preventDefault();
-          if (skills[this._skillSelectedIdx]) {
-            const s = skills[this._skillSelectedIdx];
-            this._inputEl.value = `/skills toggle ${s.name}`;
-            this._sendPrompt();
-          }
-          break;
-        case 'Escape':
-          e.preventDefault();
-          this._skillRows = [];
-          this._skillSelectedIdx = 0;
-          break;
-      }
-    });
-
-    // Focus after render
-    setTimeout(() => wrapper.focus(), 0);
+    wrapper.addEventListener('keydown', (e) => this._onSkillKeydown(e));
     this._skillListWrapper = wrapper;
-    this._appendToBlock(wrapper);
+    this._outputEl.appendChild(wrapper);
+    this._scrollBottom();
+    this._refreshSkillRows();
+    // Focus the list so keyboard nav works (input is hidden in skills mode)
+    setTimeout(() => wrapper.focus(), 50);
   }
 
-  private _makeSkillRow(s: {name: string, enabled: boolean, description: string}, selected: boolean): HTMLElement {
-    const dot = s.enabled
-      ? `<span style="color:rgb(100,200,100);font-size:14px;">●</span>`
-      : `<span style="color:rgb(200,100,100);font-size:14px;">●</span>`;
-    const status = s.enabled ? 'enabled' : 'disabled';
-    const statusColor = s.enabled ? 'rgb(100,200,100)' : 'rgb(200,100,100)';
-    const bg = selected ? 'rgba(255,255,255,0.08)' : '';
+  private _onSkillKeydown(e: KeyboardEvent): void {
+    // Install mode handled separately
+    if (this._installMode) {
+      if (e.key === 'Escape') {
+        e.preventDefault(); e.stopPropagation();
+        this._installMode = false;
+        this._refreshSkillRows();
+        setTimeout(() => this._skillListWrapper?.focus(), 0);
+      }
+      return;
+    }
 
-    const row = document.createElement('div');
-    row.style.cssText = `display:flex;align-items:center;gap:8px;padding:3px 4px;cursor:pointer;border-radius:3px;background:${bg};`;
-    row.innerHTML = `
-      ${dot}
-      <span style="color:${CC.text};font-size:12px;">${this._esc(s.name)}</span>
-      <span style="color:${statusColor};font-size:10px;margin-left:auto;">${status}</span>
-    `;
-    return row;
+    // Level 3: full body view — only Esc → back to info
+    if (this._fullBodyIdx !== -1) {
+      if (e.key === 'Escape') {
+        e.preventDefault(); e.stopPropagation();
+        this._fullBodyIdx = -1;
+        this._refreshSkillRows();
+        setTimeout(() => this._skillListWrapper?.focus(), 0);
+      }
+      return;
+    }
+
+    // Level 2: info view — Enter → full body, Esc → list
+    if (this._expandedIdx !== -1) {
+      if (e.key === 'Enter') {
+        e.preventDefault(); e.stopPropagation();
+        this._fullBodyIdx = this._expandedIdx;
+        this._refreshSkillRows();
+        setTimeout(() => this._skillListWrapper?.focus(), 0);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault(); e.stopPropagation();
+        this._expandedIdx = -1;
+        this._fullBodyIdx = -1;
+        this._refreshSkillRows();
+        setTimeout(() => this._skillListWrapper?.focus(), 0);
+      }
+      return;
+    }
+
+    const skills = this._skillData;
+    if (!skills.length) return;
+
+    switch (e.key) {
+      case 'i':
+        // Install — show inline path input
+        e.preventDefault(); e.stopPropagation();
+        this._installMode = true;
+        this._installError = '';
+        this._refreshSkillRows();
+        // Focus the input after render
+        setTimeout(() => {
+          const inp = this._skillListWrapper?.querySelector('.skillbot-install-input') as HTMLInputElement;
+          inp?.focus();
+        }, 50);
+        break;
+      case 'd':
+        // Uninstall — requires double-tap for safety
+        e.preventDefault(); e.stopPropagation();
+        const toRemove = skills[this._skillSelectedIdx];
+        if (!toRemove) break;
+        // Show confirmation hint
+        const hintEl = this._skillListWrapper?.querySelector('.skillbot-skill-hint') as HTMLElement | null;
+        if (hintEl) {
+          hintEl.textContent = `Press d again to confirm uninstall of "${toRemove.name}" (any other key to cancel)`;
+          hintEl.style.color = 'rgb(220,120,100)';
+        }
+        // Wait for second keypress (auto-cancel after 3s)
+        let cancelled = false;
+        const cancelTimer = setTimeout(() => {
+          cancelled = true;
+          this._skillListWrapper?.removeEventListener('keydown', onConfirm);
+          if (hintEl) { hintEl.style.color = ''; }
+          this._refreshSkillRows();
+        }, 3000);
+        const onConfirm = (e2: KeyboardEvent) => {
+          if (cancelled) return;
+          clearTimeout(cancelTimer);
+          this._skillListWrapper?.removeEventListener('keydown', onConfirm);
+          if (hintEl) { hintEl.style.color = ''; }
+          if (e2.key === 'd') {
+            if (this._kernel) {
+              this._kernel.requestExecute({
+                code: `get_ipython().user_ns['_panel_input']('/skills uninstall ${toRemove.name}')`,
+                store_history: false,
+              });
+            }
+            this._skillData.splice(this._skillSelectedIdx, 1);
+            this._skillSelectedIdx = Math.min(this._skillSelectedIdx, this._skillData.length - 1);
+            this._refreshSkillRows();
+          } else {
+            this._refreshSkillRows(); // reset hint
+          }
+        };
+        setTimeout(() => {
+          this._skillListWrapper?.addEventListener('keydown', onConfirm, { once: false });
+        }, 0);
+        break;
+      case 'Tab':
+      case 'ArrowDown':
+        e.preventDefault(); e.stopPropagation();
+        this._skillSelectedIdx = Math.min(skills.length - 1, this._skillSelectedIdx + 1);
+        this._refreshSkillRows();
+        break;
+      case 'ArrowUp':
+        e.preventDefault(); e.stopPropagation();
+        this._skillSelectedIdx = Math.max(0, this._skillSelectedIdx - 1);
+        this._refreshSkillRows();
+        break;
+      case 'Enter':
+        e.preventDefault(); e.stopPropagation();
+        this._expandedIdx = this._skillSelectedIdx;
+        this._refreshSkillRows();
+        break;
+      case ' ':
+        e.preventDefault(); e.stopPropagation();
+        const s = skills[this._skillSelectedIdx];
+        if (s && this._kernel) {
+          s.enabled = !s.enabled;
+          this._refreshSkillRows();
+          this._kernel.requestExecute({
+            code: `get_ipython().user_ns['_panel_input']('/skills toggle ${s.name}')`,
+            store_history: false,
+          });
+        }
+        break;
+      case 'Escape':
+        e.preventDefault(); e.stopPropagation();
+        this._exitSkillsMode();
+        break;
+    }
   }
 
-  private _updateSkillSelection(skills: Array<{name: string, enabled: boolean, description: string}>): void {
-    this._skillRows.forEach((row, i) => {
-      row.style.background = i === this._skillSelectedIdx ? 'rgba(255,255,255,0.08)' : '';
+  private _refreshSkillRows(): void {
+    const listEl = this._skillListWrapper?.querySelector('.skillbot-skill-items') as HTMLElement;
+    if (!listEl) return;
+    listEl.innerHTML = '';
+    this._skillRows = [];
+
+    // Install mode: show input row
+    if (this._installMode) {
+      const row = document.createElement('div');
+      row.style.cssText = `padding:4px;display:flex;gap:6px;align-items:center;`;
+      const input = document.createElement('input');
+      input.className = 'skillbot-install-input';
+      input.type = 'text';
+      input.placeholder = 'path/to/skill.zip';
+      input.style.cssText = `flex:1;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:${CC.text};padding:4px 8px;border-radius:3px;font-size:12px;outline:none;`;
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault(); e.stopPropagation();
+          const path = input.value.trim();
+          if (path && this._kernel) {
+            this._kernel.requestExecute({
+              code: `get_ipython().user_ns['_panel_input']('/skills install ${path.replace(/'/g, "\\'")}')`,
+              store_history: false,
+            });
+          }
+          // Close input, wait for skill_list refresh
+          this._installMode = false;
+          this._refreshSkillRows();
+          setTimeout(() => this._skillListWrapper?.focus(), 0);
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault(); e.stopPropagation();
+          this._installMode = false;
+          this._refreshSkillRows();
+          setTimeout(() => this._skillListWrapper?.focus(), 0);
+        }
+      });
+      row.appendChild(input);
+      const label = document.createElement('span');
+      label.style.cssText = `font-size:10px;color:rgb(140,140,140);white-space:nowrap;`;
+      label.textContent = 'Enter to install';
+      row.appendChild(label);
+      listEl.appendChild(row);
+      // Show last error
+      if (this._installError) {
+        const errRow = document.createElement('div');
+        errRow.style.cssText = `padding:4px;font-size:11px;color:rgb(220,120,100);`;
+        errRow.textContent = this._installError;
+        listEl.appendChild(errRow);
+      }
+    }
+    this._skillData.forEach((s, i) => {
+      const selected = i === this._skillSelectedIdx;
+      const expanded = i === this._expandedIdx;
+      const row = document.createElement('div');
+      row.style.cssText = `padding:2px 4px;border-radius:3px;background:${selected ? 'rgba(255,255,255,0.08)' : ''};`;
+
+      const header = document.createElement('div');
+      header.style.cssText = `display:flex;align-items:center;gap:8px;cursor:pointer;`;
+      const dot = s.enabled
+        ? `<span style="color:rgb(100,200,100);font-size:14px;">●</span>`
+        : `<span style="color:rgb(200,100,100);font-size:14px;">●</span>`;
+      const status = s.enabled ? 'enabled' : 'disabled';
+      const statusColor = s.enabled ? 'rgb(100,200,100)' : 'rgb(200,100,100)';
+      header.innerHTML = `${dot} <span style="color:${CC.text};font-size:12px;">${this._esc(s.name)}</span> <span style="color:${statusColor};font-size:10px;margin-left:auto;">${status}</span>`;
+      row.appendChild(header);
+
+      if (expanded) {
+        const showFull = this._fullBodyIdx === i;
+        const detail = document.createElement('div');
+        detail.style.cssText = `margin:6px 0 4px 22px;font-size:11px;color:rgb(180,180,180);line-height:1.5;`;
+        if (showFull) {
+          // Level 3: full SKILL.md body
+          detail.innerHTML = `<div style="color:${CC.text};background:rgba(255,255,255,0.04);padding:8px;border-radius:3px;max-height:350px;overflow-y:auto;white-space:pre-wrap;font-size:11px;line-height:1.4;">${this._esc(s.body || '')}</div>`;
+        } else {
+          // Level 2: info view (description + truncated body)
+          detail.innerHTML = `<div style="margin-bottom:4px;">${this._esc(s.description)}</div>`;
+          if (s.body) {
+            const bodyText = s.body.slice(0, 1000);
+            detail.innerHTML += `<div style="color:${CC.text};background:rgba(255,255,255,0.03);padding:6px;border-radius:3px;max-height:150px;overflow-y:auto;white-space:pre-wrap;font-size:11px;">${this._esc(bodyText)}${s.body.length > 1000 ? '...' : ''}</div>`;
+          }
+        }
+        row.appendChild(detail);
+      }
+      listEl.appendChild(row);
+      this._skillRows.push(row);
     });
-    // Scroll selected into view
-    const sel = this._skillRows[this._skillSelectedIdx];
-    if (sel && this._skillListWrapper) {
-      sel.scrollIntoView({ block: 'nearest' });
+
+    const hintEl = this._skillListWrapper?.querySelector('.skillbot-skill-hint');
+    if (hintEl) {
+      if (this._installMode) {
+        hintEl.textContent = 'Enter install path to skill.zip  Esc cancel';
+      } else if (this._fullBodyIdx !== -1) {
+        hintEl.textContent = 'Esc back to info';
+      } else if (this._expandedIdx !== -1) {
+        hintEl.textContent = 'Enter full body  Esc back to list';
+      } else {
+        hintEl.textContent = '↑↓ select  Enter details  Space toggle  d uninstall  i install  Esc close';
+      }
     }
   }
 
@@ -849,9 +1063,13 @@ class AgentPanel extends Widget {
       <span style="color:rgb(140,140,140);">Path:</span> ${this._esc(skill.path)}
     `;
 
+    const bodyText = (skill.body || '').slice(0, 1500);
     const bodyWrap = document.createElement('div');
     bodyWrap.style.cssText = `font-size:12px;color:${CC.text};background:rgba(255,255,255,0.04);padding:8px;border-radius:4px;max-height:200px;overflow-y:auto;white-space:pre-wrap;line-height:1.4;`;
-    bodyWrap.textContent = skill.body || '';
+    bodyWrap.textContent = bodyText;
+    if ((skill.body || '').length > 1500) {
+      bodyWrap.textContent += '\n\n... (truncated)';
+    }
 
     wrapper.appendChild(header);
     wrapper.appendChild(meta);
@@ -1136,7 +1354,15 @@ class AgentPanel extends Widget {
       this._comm.onMsg = (m: any) => {
         const d = m.content?.data || {};
         switch (d.action) {
-          case 'text':        this._appendTextChunk(this._stripAnsi(d.content || '')); break;
+          case 'text':
+            if (this._skillsMode) {
+              // Capture errors for inline display
+              const txt = this._stripAnsi(d.content || '');
+              if (txt.includes('✗')) this._installError = txt.trim();
+            } else {
+              this._appendTextChunk(this._stripAnsi(d.content || ''));
+            }
+            break;
           case 'tool':        this._renderTool(d.name || ''); break;
           case 'thinking':    this._renderThinking(d.content || ''); break;
           case 'code_block':  this._renderCodeBlock(d.language || '', d.code || ''); break;
@@ -1155,12 +1381,11 @@ class AgentPanel extends Widget {
             this._saveState();
             break;
           case 'skill_list':
-            // Remove existing skill list before re-rendering
-            const oldList = this._outputEl.querySelector('.skillbot-skill-list');
-            if (oldList) oldList.remove();
+            if (!this._skillsMode) this._enterSkillsMode();
+            this._installMode = false;
+            this._installError = '';
             this._renderSkillList(d.skills || []);
             break;
-          case 'skill_info':  this._renderSkillInfo(d.skill || {}); break;
           case 'ready':       this._busy = false; this._dequeueNext(); break;
           case 'clear':       this._clear(); break;
         }

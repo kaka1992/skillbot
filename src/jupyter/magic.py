@@ -343,23 +343,21 @@ class AgentMagic(Magics):
         """Handle /skills commands from panel."""
         parts = text.split()
         if len(parts) < 2:
-            send_to_panel(self.ns, "text",
-                          content="Usage: /skills list|info|enable|disable|install|uninstall\n")
-            return
-
-        cmd = parts[1]
+            cmd = "list"  # /skills alone defaults to list
+        else:
+            cmd = parts[1]
         session = getattr(self, '_session', None)
         mgr = None
         if session and session.client:
             mgr = session.client.skills
         else:
             # Session not yet initialized — use SkillManager directly
-            from chat.skill import SkillManager
-            from chat import _resolve_skill_dir
             try:
+                from chat.skill import SkillManager
+                from chat import _resolve_skill_dir
                 mgr = SkillManager(_resolve_skill_dir("claude-code"))
-            except Exception:
-                pass
+            except Exception as e:
+                _log.warning("_handle_panel_skills: fallback SkillManager failed: %s", e)
 
         if cmd == "list":
             if not mgr:
@@ -371,7 +369,7 @@ class AgentMagic(Magics):
                 return
             from .panel import send_skill_list
             send_skill_list([
-                {"name": s.name, "description": s.description, "enabled": s.enabled}
+                {"name": s.name, "description": s.description, "enabled": s.enabled, "body": s.body[:1000]}
                 for s in skills
             ])
 
@@ -443,16 +441,13 @@ class AgentMagic(Magics):
                     mgr.disable(name)
                 else:
                     mgr.enable(name)
-                # Send updated skill list
+                # Send updated skill list (text toggle confirmation is redundant with list UI)
                 from .panel import send_skill_list
                 updated = mgr.list_skills()
                 send_skill_list([
-                    {"name": si.name, "description": si.description, "enabled": si.enabled}
+                    {"name": si.name, "description": si.description, "enabled": si.enabled, "body": si.body[:1000]}
                     for si in updated
                 ])
-                new_state = "enabled" if not s.enabled else "disabled"
-                send_to_panel(self.ns, "text",
-                              content=f"  {name} → {new_state} (restart server to apply)\n")
             except FileNotFoundError:
                 send_to_panel(self.ns, "text", content=f"✗ skill not found: {name}\n")
 
@@ -472,7 +467,14 @@ class AgentMagic(Magics):
             try:
                 info = mgr.install(str(zpath))
                 send_to_panel(self.ns, "text",
-                              content=f"✓ {info.name} installed (enabled) — restart agent server to apply\n")
+                              content=f"✓ {info.name} installed (enabled)\n")
+                # Refresh skill list
+                from .panel import send_skill_list
+                updated = mgr.list_skills()
+                send_skill_list([
+                    {"name": s.name, "description": s.description, "enabled": s.enabled, "body": s.body[:1000]}
+                    for s in updated
+                ])
             except FileNotFoundError:
                 send_to_panel(self.ns, "text", content=f"✗ file not found: {path}\n")
             except ValueError as e:
@@ -489,6 +491,13 @@ class AgentMagic(Magics):
             try:
                 mgr.uninstall(name)
                 send_to_panel(self.ns, "text", content=f"✓ {name} uninstalled\n")
+                # Refresh skill list
+                from .panel import send_skill_list
+                updated = mgr.list_skills()
+                send_skill_list([
+                    {"name": s.name, "description": s.description, "enabled": s.enabled, "body": s.body[:1000]}
+                    for s in updated
+                ])
             except FileNotFoundError:
                 send_to_panel(self.ns, "text", content=f"✗ skill not found: {name}\n")
 
