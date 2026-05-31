@@ -112,12 +112,12 @@ skillbot/
 
 ```
 %agent_config --agent claude-code --timeout 600
-%agent_config --config conf/jupyter_agent.yaml
-%agent_config --claude-md conf/claude-md.example
+%agent_config --config /absolute/path/to/conf/jupyter_agent.yaml
+%agent_config --claude-md /absolute/path/to/conf/claude-md.example
 %agent_config --debug
 ```
 
-不调用 `%agent_config` 时默认使用 `claude-code`，切换 agent 自动重建 session。
+`--config` 和 `--claude-md` 需要绝对路径。不调用 `%agent_config` 时默认使用 `claude-code`，切换 agent 自动重建 session。
 
 **Agent 输出（JSON 格式）：**
 

@@ -208,16 +208,16 @@ bash scripts/jupyter.sh --rebuild
 
 ```
 %agent_config --agent claude-code --timeout 600 --debug
-%agent_config --config conf/jupyter_agent.yaml
-%agent_config --claude-md conf/claude-md.example
+%agent_config --config /absolute/path/to/jupyter_agent.yaml
+%agent_config --claude-md /absolute/path/to/claude-md.example
 ```
 
 | Flag | 说明 |
 |------|------|
-| `--config PATH` | YAML 配置路径 |
+| `--config PATH` | YAML 配置路径（需绝对路径） |
 | `--agent NAME` | agent 名称（claude-code / nanobot / hermes-agent） |
 | `--timeout N` | 超时秒数（默认 600） |
-| `--claude-md PATH` | CLAUDE.md 项目约束 |
+| `--claude-md PATH` | CLAUDE.md 项目约束（需绝对路径） |
 | `--debug` | 开启 debug 日志 |
 | `--KEY=VALUE` | 注入环境变量 |
 
