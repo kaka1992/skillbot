@@ -58,6 +58,7 @@ def _ensure_claude_home(claude_home: Path) -> None:
 def _build_options(
     allowed_tools: str | None = None,
     cwd: str | None = None,
+    skills: list[str] | None = None,
 ) -> ClaudeAgentOptions:
     claude_home = _resolve_claude_home()
     _ensure_claude_home(claude_home)
@@ -66,8 +67,18 @@ def _build_options(
     if allowed_tools:
         tools = [t.strip() for t in allowed_tools.split(",") if t.strip()]
 
+    # Resolve active skills from persisted enable/disable state
+    if skills is None:
+        from chat.skill import SkillManager
+        skill_dir = str(claude_home / ".claude" / "skills")
+        mgr = SkillManager(skill_dir)
+        installed = mgr.list_skills()
+        if installed:
+            skills = mgr.active_skills
+
     return ClaudeAgentOptions(
         allowed_tools=tools or [],
+        skills=skills if skills is not None else "all",
         permission_mode="bypassPermissions",
         cwd=cwd or os.getcwd(),
         env={"HOME": str(claude_home)},

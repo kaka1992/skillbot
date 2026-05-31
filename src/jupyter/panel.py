@@ -54,6 +54,16 @@ def send_thinking(content: str) -> bool:
     return send_to_panel(None, "thinking", content=content)
 
 
+def send_skill_list(skills: list[dict]) -> bool:
+    """Render an interactive skill list."""
+    return send_to_panel(None, "skill_list", skills=skills)
+
+
+def send_skill_info(skill: dict) -> bool:
+    """Render a skill detail view."""
+    return send_to_panel(None, "skill_info", skill=skill)
+
+
 def send_code_block(language: str, code: str) -> bool:
     """Render a fenced code block."""
     return send_to_panel(None, "code_block", language=language, code=code)

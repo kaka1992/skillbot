@@ -527,12 +527,24 @@ class AgentPanel extends Widget {
 
   private _tabComplete(): void {
     const val = this._inputEl.value;
-    for (const c of ['/confirm ', '/clear']) {
+    for (const c of ['/confirm ', '/clear', '/mode ', '/skills ']) {
       if (c.startsWith(val) && c !== val) {
         this._inputEl.value = c;
         this._inputEl.selectionStart = this._inputEl.selectionEnd = c.length;
         this._resizeInput();
         return;
+      }
+    }
+    // /skills subcommands
+    if (val.startsWith('/skills ')) {
+      const sub = val.slice(8);
+      for (const c of ['list', 'info ', 'enable ', 'disable ', 'install ', 'uninstall ']) {
+        if (c.startsWith(sub) && c !== sub) {
+          this._inputEl.value = '/skills ' + c;
+          this._inputEl.selectionStart = this._inputEl.selectionEnd = ('/skills ' + c).length;
+          this._resizeInput();
+          return;
+        }
       }
     }
   }
@@ -607,6 +619,12 @@ class AgentPanel extends Widget {
 
   // ---- prompt -------------------------------------------------------------
 
+  private static DISPLAY_COMMANDS = ['/clear', '/mode', '/skills'];
+
+  private _isDisplayCommand(text: string): boolean {
+    return AgentPanel.DISPLAY_COMMANDS.some(c => text.startsWith(c));
+  }
+
   private _sendPrompt(): void {
     if (this._planConfirmActive) return;
     const text = this._inputEl.value.trim();
@@ -628,13 +646,19 @@ class AgentPanel extends Widget {
     }
     this._historyIdx = -1;
 
+    const isDisplay = this._isDisplayCommand(text);
     if (!isSlash) {
       this._busy = true;
     }
-    this._startBlock();
-    this._renderPrompt(text);
-    this._startSpinner();
-    this._setStatus('…', 'thinking');
+    if (isDisplay) {
+      // Display-only command — no block, no spinner, just execute
+      this._renderPrompt(text);
+    } else {
+      this._startBlock();
+      this._renderPrompt(text);
+      this._startSpinner();
+      this._setStatus('…', 'thinking');
+    }
 
     if (this._kernel) {
       // send unexecuted cell content to namespace before the prompt
@@ -703,6 +727,137 @@ class AgentPanel extends Widget {
   private _renderCodeBlock(l: string, c: string): void { R.renderCodeBlock(this, l, c); }
   private _renderPlanBlock(text: string): void { R.renderPlanBlock(this, text); }
   private _renderResult(summary: string): void { R.renderResult(this, summary); }
+
+  // ---- skill rendering ----
+
+  private _skillRows: HTMLElement[] = [];
+  private _skillSelectedIdx: number = 0;
+  private _skillListWrapper: HTMLElement | null = null;
+
+  private _renderSkillList(skills: Array<{name: string, description: string, enabled: boolean}>): void {
+    this._skillRows = [];
+    this._skillSelectedIdx = 0;
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'skillbot-skill-list';
+    wrapper.tabIndex = 0;
+    wrapper.style.outline = 'none';
+    wrapper.innerHTML = `<div style="font-size:13px;font-weight:600;color:${CC.text};margin-bottom:4px;padding:0 4px;">Skills</div>`;
+
+    const listEl = document.createElement('div');
+    skills.forEach((s, i) => {
+      const row = this._makeSkillRow(s, i === 0);
+      listEl.appendChild(row);
+      this._skillRows.push(row);
+    });
+    wrapper.appendChild(listEl);
+
+    const hint = document.createElement('div');
+    hint.style.cssText = `font-size:10px;color:rgb(120,120,120);margin-top:4px;padding:0 4px;`;
+    hint.textContent = '↑↓ select  Enter info  Space toggle  Esc close';
+    wrapper.appendChild(hint);
+
+    // Keyboard navigation
+    wrapper.addEventListener('keydown', (e) => {
+      switch (e.key) {
+        case 'ArrowDown':
+          e.preventDefault();
+          this._skillSelectedIdx = Math.min(this._skillRows.length - 1, this._skillSelectedIdx + 1);
+          this._updateSkillSelection(skills);
+          break;
+        case 'ArrowUp':
+          e.preventDefault();
+          this._skillSelectedIdx = Math.max(0, this._skillSelectedIdx - 1);
+          this._updateSkillSelection(skills);
+          break;
+        case 'Enter':
+          e.preventDefault();
+          if (skills[this._skillSelectedIdx]) {
+            const s = skills[this._skillSelectedIdx];
+            this._inputEl.value = `/skills info ${s.name}`;
+            this._sendPrompt();
+          }
+          break;
+        case ' ':
+          e.preventDefault();
+          if (skills[this._skillSelectedIdx]) {
+            const s = skills[this._skillSelectedIdx];
+            this._inputEl.value = `/skills toggle ${s.name}`;
+            this._sendPrompt();
+          }
+          break;
+        case 'Escape':
+          e.preventDefault();
+          this._skillRows = [];
+          this._skillSelectedIdx = 0;
+          break;
+      }
+    });
+
+    // Focus after render
+    setTimeout(() => wrapper.focus(), 0);
+    this._skillListWrapper = wrapper;
+    this._appendToBlock(wrapper);
+  }
+
+  private _makeSkillRow(s: {name: string, enabled: boolean, description: string}, selected: boolean): HTMLElement {
+    const dot = s.enabled
+      ? `<span style="color:rgb(100,200,100);font-size:14px;">●</span>`
+      : `<span style="color:rgb(200,100,100);font-size:14px;">●</span>`;
+    const status = s.enabled ? 'enabled' : 'disabled';
+    const statusColor = s.enabled ? 'rgb(100,200,100)' : 'rgb(200,100,100)';
+    const bg = selected ? 'rgba(255,255,255,0.08)' : '';
+
+    const row = document.createElement('div');
+    row.style.cssText = `display:flex;align-items:center;gap:8px;padding:3px 4px;cursor:pointer;border-radius:3px;background:${bg};`;
+    row.innerHTML = `
+      ${dot}
+      <span style="color:${CC.text};font-size:12px;">${this._esc(s.name)}</span>
+      <span style="color:${statusColor};font-size:10px;margin-left:auto;">${status}</span>
+    `;
+    return row;
+  }
+
+  private _updateSkillSelection(skills: Array<{name: string, enabled: boolean, description: string}>): void {
+    this._skillRows.forEach((row, i) => {
+      row.style.background = i === this._skillSelectedIdx ? 'rgba(255,255,255,0.08)' : '';
+    });
+    // Scroll selected into view
+    const sel = this._skillRows[this._skillSelectedIdx];
+    if (sel && this._skillListWrapper) {
+      sel.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  private _renderSkillInfo(skill: {name: string, description: string, enabled: boolean, body: string, path: string}): void {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'skillbot-skill-info';
+
+    const dot = skill.enabled
+      ? `<span style="color:rgb(100,200,100);font-size:16px;">●</span>`
+      : `<span style="color:rgb(200,100,100);font-size:16px;">●</span>`;
+
+    const header = document.createElement('div');
+    header.style.cssText = `font-size:14px;font-weight:600;color:${CC.text};margin-bottom:4px;`;
+    header.innerHTML = `${dot} ${this._esc(skill.name)}`;
+
+    const meta = document.createElement('div');
+    meta.style.cssText = `font-size:12px;color:rgb(180,180,180);margin-bottom:8px;line-height:1.5;`;
+    meta.innerHTML = `
+      ${this._esc(skill.description)}<br>
+      <span style="color:rgb(140,140,140);">Status:</span> ${skill.enabled ? 'enabled' : 'disabled'}<br>
+      <span style="color:rgb(140,140,140);">Path:</span> ${this._esc(skill.path)}
+    `;
+
+    const bodyWrap = document.createElement('div');
+    bodyWrap.style.cssText = `font-size:12px;color:${CC.text};background:rgba(255,255,255,0.04);padding:8px;border-radius:4px;max-height:200px;overflow-y:auto;white-space:pre-wrap;line-height:1.4;`;
+    bodyWrap.textContent = skill.body || '';
+
+    wrapper.appendChild(header);
+    wrapper.appendChild(meta);
+    wrapper.appendChild(bodyWrap);
+    this._appendToBlock(wrapper);
+  }
 
   // ---- thinking collapse (Ctrl+T) ----
 
@@ -999,6 +1154,13 @@ class AgentPanel extends Widget {
             this._renderPlanConfirm(d.summary || '');
             this._saveState();
             break;
+          case 'skill_list':
+            // Remove existing skill list before re-rendering
+            const oldList = this._outputEl.querySelector('.skillbot-skill-list');
+            if (oldList) oldList.remove();
+            this._renderSkillList(d.skills || []);
+            break;
+          case 'skill_info':  this._renderSkillInfo(d.skill || {}); break;
           case 'ready':       this._busy = false; this._dequeueNext(); break;
           case 'clear':       this._clear(); break;
         }

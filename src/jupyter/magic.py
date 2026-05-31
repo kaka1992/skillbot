@@ -235,6 +235,8 @@ class AgentMagic(Magics):
             send_to_panel(self.ns, "clear")
         elif text.startswith("/mode "):
             self._handle_panel_mode(text[6:].strip())
+        elif text.startswith("/skills"):
+            self._handle_panel_skills(text)
         else:
             self._handle_panel_prompt(text, mode)
 
@@ -336,6 +338,164 @@ class AgentMagic(Magics):
     def _handle_panel_mode(self, mode: str) -> None:
         """Handle /mode from panel: cycle between default, plan, auto."""
         self._plan = (mode == "plan")
+
+    def _handle_panel_skills(self, text: str) -> None:
+        """Handle /skills commands from panel."""
+        parts = text.split()
+        if len(parts) < 2:
+            send_to_panel(self.ns, "text",
+                          content="Usage: /skills list|info|enable|disable|install|uninstall\n")
+            return
+
+        cmd = parts[1]
+        session = getattr(self, '_session', None)
+        mgr = None
+        if session and session.client:
+            mgr = session.client.skills
+        else:
+            # Session not yet initialized — use SkillManager directly
+            from chat.skill import SkillManager
+            from chat import _resolve_skill_dir
+            try:
+                mgr = SkillManager(_resolve_skill_dir("claude-code"))
+            except Exception:
+                pass
+
+        if cmd == "list":
+            if not mgr:
+                send_to_panel(self.ns, "text", content="✗ session not initialized\n")
+                return
+            skills = mgr.list_skills()
+            if not skills:
+                send_to_panel(self.ns, "text", content="(no skills installed)\n")
+                return
+            from .panel import send_skill_list
+            send_skill_list([
+                {"name": s.name, "description": s.description, "enabled": s.enabled}
+                for s in skills
+            ])
+
+        elif cmd == "info":
+            name = parts[2] if len(parts) > 2 else ""
+            if not name:
+                send_to_panel(self.ns, "text", content="Usage: /skills info <name>\n")
+                return
+            if not mgr:
+                send_to_panel(self.ns, "text", content="✗ session not initialized\n")
+                return
+            s = mgr.get_skill(name)
+            if not s:
+                send_to_panel(self.ns, "text", content=f"✗ skill not found: {name}\n")
+                return
+            from .panel import send_skill_info
+            send_skill_info({
+                "name": s.name,
+                "description": s.description,
+                "enabled": s.enabled,
+                "body": s.body[:2000],
+                "path": s.path,
+            })
+
+        elif cmd == "enable":
+            name = parts[2] if len(parts) > 2 else ""
+            if not name:
+                send_to_panel(self.ns, "text", content="Usage: /skills enable <name>\n")
+                return
+            if not mgr:
+                send_to_panel(self.ns, "text", content="✗ session not initialized\n")
+                return
+            try:
+                mgr.enable(name)
+                send_to_panel(self.ns, "text",
+                              content=f"✓ {name} enabled — restart agent server to apply\n")
+            except FileNotFoundError:
+                send_to_panel(self.ns, "text", content=f"✗ skill not found: {name}\n")
+
+        elif cmd == "disable":
+            name = parts[2] if len(parts) > 2 else ""
+            if not name:
+                send_to_panel(self.ns, "text", content="Usage: /skills disable <name>\n")
+                return
+            if not mgr:
+                send_to_panel(self.ns, "text", content="✗ session not initialized\n")
+                return
+            try:
+                mgr.disable(name)
+                send_to_panel(self.ns, "text",
+                              content=f"✓ {name} disabled — restart agent server to apply\n")
+            except FileNotFoundError:
+                send_to_panel(self.ns, "text", content=f"✗ skill not found: {name}\n")
+
+        elif cmd == "toggle":
+            name = parts[2] if len(parts) > 2 else ""
+            if not name:
+                send_to_panel(self.ns, "text", content="Usage: /skills toggle <name>\n")
+                return
+            if not mgr:
+                send_to_panel(self.ns, "text", content="✗ session not initialized\n")
+                return
+            try:
+                s = mgr.get_skill(name)
+                if not s:
+                    send_to_panel(self.ns, "text", content=f"✗ skill not found: {name}\n")
+                    return
+                if s.enabled:
+                    mgr.disable(name)
+                else:
+                    mgr.enable(name)
+                # Send updated skill list
+                from .panel import send_skill_list
+                updated = mgr.list_skills()
+                send_skill_list([
+                    {"name": si.name, "description": si.description, "enabled": si.enabled}
+                    for si in updated
+                ])
+                new_state = "enabled" if not s.enabled else "disabled"
+                send_to_panel(self.ns, "text",
+                              content=f"  {name} → {new_state} (restart server to apply)\n")
+            except FileNotFoundError:
+                send_to_panel(self.ns, "text", content=f"✗ skill not found: {name}\n")
+
+        elif cmd == "install":
+            path = parts[2] if len(parts) > 2 else ""
+            if not path:
+                send_to_panel(self.ns, "text", content="Usage: /skills install <path/to/skill.zip>\n")
+                return
+            if not mgr:
+                send_to_panel(self.ns, "text", content="✗ session not initialized\n")
+                return
+            from pathlib import Path
+            zpath = Path(path)
+            if not zpath.is_absolute():
+                import os
+                zpath = Path(os.getcwd()) / zpath
+            try:
+                info = mgr.install(str(zpath))
+                send_to_panel(self.ns, "text",
+                              content=f"✓ {info.name} installed (enabled) — restart agent server to apply\n")
+            except FileNotFoundError:
+                send_to_panel(self.ns, "text", content=f"✗ file not found: {path}\n")
+            except ValueError as e:
+                send_to_panel(self.ns, "text", content=f"✗ {e}\n")
+
+        elif cmd == "uninstall":
+            name = parts[2] if len(parts) > 2 else ""
+            if not name:
+                send_to_panel(self.ns, "text", content="Usage: /skills uninstall <name>\n")
+                return
+            if not mgr:
+                send_to_panel(self.ns, "text", content="✗ session not initialized\n")
+                return
+            try:
+                mgr.uninstall(name)
+                send_to_panel(self.ns, "text", content=f"✓ {name} uninstalled\n")
+            except FileNotFoundError:
+                send_to_panel(self.ns, "text", content=f"✗ skill not found: {name}\n")
+
+        else:
+            send_to_panel(self.ns, "text",
+                          content=f"Unknown command: /skills {cmd}\n"
+                                  "Usage: /skills list|info|enable|disable|install|uninstall\n")
 
     def _handle_panel_confirm(self, arg: str) -> None:
         """Handle /confirm from panel."""
