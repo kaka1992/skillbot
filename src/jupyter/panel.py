@@ -20,6 +20,14 @@ def init_panel_comm(shell) -> None:
         def _on_comm(comm, _open_msg):
             global _panel_comm
             _panel_comm = comm
+            # Flush startup config message now that comm is ready
+            from jupyter.magic import _get_magic
+            inst = _get_magic()
+            if inst:
+                msg = getattr(inst, '_startup_config_msg', '')
+                if msg:
+                    comm.send(data={"action": "text", "content": msg})
+                    inst._startup_config_msg = ""
 
         kernel.comm_manager.register_target(TARGET, _on_comm)
     except Exception:

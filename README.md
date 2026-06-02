@@ -124,6 +124,16 @@ skillbot/
 - 启用/禁用即时生效（claude-code 下一条 query 注入变更通知）
 - 安装/卸载需重启 server 才能完全生效
 
+**配置管理（`/config` 命令）：**
+
+| 命令 | 说明 |
+|------|------|
+| `/config` | 显示当前配置（path、agent、timeout、claude-md） |
+| `/config <path>` | 加载新配置：首次直接生效，已有配置时显示新旧对比 |
+| `y` / `n` | 对比确认（键盘直接按，不需 Enter） |
+
+`conf/.env` 中设置 `JUPYTER_CONFIG_PATH` 可在 kernel 启动时自动加载配置。
+
 **配置 agent：**
 
 ```

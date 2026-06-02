@@ -4,6 +4,7 @@ import hashlib
 import logging
 import os as _os
 import shlex
+import sys
 
 from IPython.core.magic import Magics, cell_magic, line_magic, magics_class
 
@@ -144,12 +145,83 @@ class AgentMagic(Magics):
         self._busy = False          # block input while agent is working
         self._session_ready = False  # lazy-init session on first query
         self._session_dirty = False  # set on interrupt, prepend note on next query
+        self._jupyter_config_path = ""  # path from JUPYTER_CONFIG_PATH env var
+        self._config_pending = None    # pending (resolved, new_path, old_path)
+
+        self._load_dotenv()
+
+        # Load default config for hooks baseline, then auto-load from env var
         cfg = load_yaml_config("conf/jupyter_agent.yaml")
         self._hook_cfg = cfg.get("hooks", {})
+        self._startup_config_msg = self._load_jupyter_config()
         self.ns.delta()
         shell.events.register("post_run_cell", self._on_cell_run)
         from .panel import init_panel_comm
         init_panel_comm(shell)
+
+    @staticmethod
+    def _load_dotenv() -> None:
+        """Load conf/.env into os.environ (only vars not already set)."""
+        from pathlib import Path
+        # Use absolute path — kernel cwd may not be project root
+        env_file = Path(__file__).resolve().parents[2] / "conf" / ".env"
+        if not env_file.is_file():
+            return
+        try:
+            with open(env_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, _, val = line.partition("=")
+                    key = key.strip()
+                    val = val.strip().strip('"').strip("'")
+                    if key and key not in _os.environ:
+                        _os.environ[key] = val
+        except Exception:
+            print(f"[agent_config] failed to read {env_file}", file=sys.stderr)
+
+    def _load_jupyter_config(self) -> str:
+        """Load config from JUPYTER_CONFIG_PATH env var and apply it.
+        Returns status message (includes tool discovery output)."""
+        from io import StringIO
+        from pathlib import Path
+        config_path = _os.environ.get("JUPYTER_CONFIG_PATH", "")
+        if not config_path:
+            return "[agent_config] JUPYTER_CONFIG_PATH not set, no config loaded\n"
+        if not Path(config_path).is_file():
+            return f"[agent_config] config file not found: {config_path}\n"
+        self._jupyter_config_path = config_path
+
+        # Capture stdout during configure_agent (tool discovery prints here)
+        capture = StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = capture
+        try:
+            resolved = configure_agent(
+                config_path=config_path,
+                cli_agent=None, cli_timeout=None,
+                cli_claude_md=None, cli_debug=None,
+                cli_env={},
+                enable_hooks=[], disable_hooks=[],
+                defaults={},
+                current_agent=self._agent,
+                current_timeout=self._timeout,
+                current_claude_md=self._claude_md_path,
+                current_hook_cfg=self._hook_cfg,
+            )
+        finally:
+            sys.stdout = old_stdout
+
+        tool_output = capture.getvalue().strip()
+        if resolved:
+            self._apply_config(resolved)
+            lines = [f"[agent_config] loaded: {config_path}  agent={self._agent} timeout={self._timeout}s"]
+            if tool_output:
+                lines.append(tool_output)
+            return "\n".join(lines) + "\n"
+        else:
+            return f"[agent_config] failed to load: {config_path}\n"
 
     def _ensure_session(self) -> None:
         """Lazy-init agent session on first query (keeps kernel startup fast)."""
@@ -228,6 +300,10 @@ class AgentMagic(Magics):
 
     def _on_panel_input(self, text: str, mode: str = "default") -> None:
         """Handle input from right-side panel."""
+        # Flush startup config message on first interaction
+        msg = getattr(self, '_startup_config_msg', '')
+        if msg and send_to_panel(self.ns, "text", content=msg):
+            self._startup_config_msg = ""
         text = text.strip()
         if text.startswith("/confirm "):
             self._handle_panel_confirm(text[9:])
@@ -237,6 +313,8 @@ class AgentMagic(Magics):
             self._handle_panel_mode(text[6:].strip())
         elif text.startswith("/skills"):
             self._handle_panel_skills(text)
+        elif text.startswith("/config"):
+            self._handle_panel_config(text)
         else:
             self._handle_panel_prompt(text, mode)
 
@@ -364,10 +442,10 @@ class AgentMagic(Magics):
                 send_to_panel(self.ns, "text", content="✗ session not initialized\n")
                 return
             skills = mgr.list_skills()
-            if not skills:
-                send_to_panel(self.ns, "text", content="(no skills installed)\n")
-                return
             from .panel import send_skill_list
+            if not skills:
+                send_skill_list([])  # show empty state in panel
+                return
             send_skill_list([
                 {"name": s.name, "description": s.description, "enabled": s.enabled, "body": s.body[:1000]}
                 for s in skills
@@ -505,6 +583,120 @@ class AgentMagic(Magics):
             send_to_panel(self.ns, "text",
                           content=f"Unknown command: /skills {cmd}\n"
                                   "Usage: /skills list|info|enable|disable|install|uninstall\n")
+
+    def _handle_panel_config(self, text: str) -> None:
+        """Handle /config commands from panel."""
+        parts = text.split(maxsplit=1)
+        path = parts[1].strip() if len(parts) > 1 else ""
+
+        # Confirmation: /config --yes or /config --no
+        if path == "--yes":
+            pending = getattr(self, '_config_pending', None)
+            if pending:
+                resolved, new_path, _old_path = pending
+                _os.environ["JUPYTER_CONFIG_PATH"] = new_path
+                self._jupyter_config_path = new_path
+                summary = self._apply_config(resolved)
+                send_to_panel(self.ns, "text", content=(
+                    f"\n{'─'*50}\n✓ Config applied\n"
+                    f"  path    : {new_path}\n"
+                    f"  agent   : {self._agent}\n"
+                    f"  timeout : {self._timeout}s\n"
+                    f"  changes : {summary}\n"
+                    f"{'─'*50}\n"))
+                self._config_pending = None
+            else:
+                send_to_panel(self.ns, "text", content="No pending config change.\n")
+            return
+        if path == "--no":
+            pending = getattr(self, '_config_pending', None)
+            if pending:
+                _resolved, _new_path, old_path = pending
+                self._jupyter_config_path = old_path
+                send_to_panel(self.ns, "text", content="✗ Config change cancelled.\n")
+                self._config_pending = None
+            else:
+                send_to_panel(self.ns, "text", content="No pending config change.\n")
+            return
+
+        if path:
+            from pathlib import Path
+            if not Path(path).is_file():
+                send_to_panel(self.ns, "text", content=f"✗ File not found: {path}\n")
+                return
+
+            resolved = configure_agent(
+                config_path=path,
+                cli_agent=None, cli_timeout=None,
+                cli_claude_md=None, cli_debug=None,
+                cli_env={},
+                enable_hooks=[], disable_hooks=[],
+                defaults={},
+                current_agent=self._agent,
+                current_timeout=self._timeout,
+                current_claude_md=self._claude_md_path,
+                current_hook_cfg=self._hook_cfg,
+            )
+
+            # First load: apply directly. Subsequent: confirm.
+            old_path = self._jupyter_config_path
+            if not old_path:
+                _os.environ["JUPYTER_CONFIG_PATH"] = path
+                self._jupyter_config_path = path
+                summary = self._apply_config(resolved)
+                send_to_panel(self.ns, "text", content=(
+                    f"\n{'─'*50}\n✓ Config loaded\n"
+                    f"  path    : {path}\n"
+                    f"  agent   : {self._agent}\n"
+                    f"  timeout : {self._timeout}s\n"
+                    f"  changes : {summary}\n"
+                    f"{'─'*50}\n"))
+            else:
+                self._config_pending = (resolved, path, old_path)
+                new_agent = resolved.get('agent', self._agent)
+                new_timeout = resolved.get('timeout', self._timeout)
+                send_to_panel(self.ns, "text", content=(
+                    f"\n{'─'*50}\n"
+                    f"  Current\n"
+                    f"    path    : {old_path}\n"
+                    f"    agent   : {self._agent}\n"
+                    f"    timeout : {self._timeout}s\n"
+                    f"  ──────────────────────────────\n"
+                    f"  New\n"
+                    f"    path    : {path}\n"
+                    f"    agent   : {new_agent}\n"
+                    f"    timeout : {new_timeout}s\n"
+                    f"{'─'*50}\n"
+                    f"Press y to apply  n to cancel  Esc to dismiss\n"))
+        else:
+            pending = getattr(self, '_config_pending', None)
+            if pending:
+                _res, new_p, old_p = pending
+                send_to_panel(self.ns, "text", content=(
+                    f"\n{'─'*40}\n"
+                    f"  Config Status\n"
+                    f"  {'─'*40}\n"
+                    f"  path    : {old_p}\n"
+                    f"  agent   : {self._agent}\n"
+                    f"  timeout : {self._timeout}s\n"
+                    f"  claude-md: {self._claude_md_path or '(none)'}\n"
+                    f"  {'─'*40}\n"
+                    f"  Pending : {new_p}\n"
+                    f"  Press y to apply  n to cancel\n"
+                    f"{'─'*40}\n"))
+            elif self._jupyter_config_path:
+                send_to_panel(self.ns, "text", content=(
+                    f"\n{'─'*40}\n"
+                    f"  Config Status\n"
+                    f"  {'─'*40}\n"
+                    f"  path    : {self._jupyter_config_path}\n"
+                    f"  agent   : {self._agent}\n"
+                    f"  timeout : {self._timeout}s\n"
+                    f"  claude-md: {self._claude_md_path or '(none)'}\n"
+                    f"  {'─'*40}\n"))
+            else:
+                send_to_panel(self.ns, "text",
+                              content="No config loaded. Usage: /config <path/to/config.yaml>\n")
 
     def _handle_panel_confirm(self, arg: str) -> None:
         """Handle /confirm from panel."""
@@ -727,6 +919,43 @@ class AgentMagic(Magics):
 
     # ---- agent_config ----
 
+    def _apply_config(self, resolved: dict) -> str:
+        """Apply resolved config and rebuild session if needed. Shared by
+        %agent_config and /config. Returns a summary string."""
+        self._config_pending = None
+        changes: list[str] = []
+        agent = resolved["agent"]
+        timeout = resolved["timeout"]
+        claude_md_path = resolved["claude_md"]
+        self._hook_cfg = resolved["hook_cfg"]
+        self._tools_cfg = resolved["tools_cfg"]
+
+        if agent not in _AGENTS:
+            render_error(f"[agent_config] unknown agent '{agent}', valid: {', '.join(sorted(_AGENTS))}")
+            agent = self._agent
+
+        if agent != self._agent:
+            changes.append(f"agent: {self._agent} → {agent}")
+        if timeout != self._timeout:
+            changes.append(f"timeout: {self._timeout}s → {timeout}s")
+        if claude_md_path != self._claude_md_path:
+            changes.append(f"claude_md: {claude_md_path}")
+
+        if resolved["session_rebuild"]:
+            if self._session_ready:
+                self._session.cleanup()
+                self._session_ready = False  # lazy re-init on next query
+            changes.append("session will rebuild on next query")
+        elif timeout != self._timeout:
+            if self._session_ready and self._session.client is not None:
+                self._session.client._backend._timeout = timeout
+            changes.append("timeout updated (hot)")
+
+        self._agent = agent
+        self._timeout = timeout
+        self._claude_md_path = claude_md_path
+        return ", ".join(changes) if changes else "no changes"
+
     @line_magic("agent_config")
     def agent_config_func(self, line: str) -> None:
         """%agent_config [--config PATH] [--agent NAME] [--timeout N] [--claude-md PATH] [--debug] [--KEY=VALUE ...]"""
@@ -748,7 +977,6 @@ class AgentMagic(Magics):
             self._plan = False; args.remove("--no-plan")
         env_vars = parse_kv(args)
 
-        # hook enable/disable (repeatable flags)
         enable_hooks: list[str] = []
         disable_hooks: list[str] = []
         while "--enable-hook" in args:
@@ -762,7 +990,6 @@ class AgentMagic(Magics):
                 disable_hooks.append(args.pop(idx + 1))
             args.pop(idx)
 
-        cfg = load_yaml_config(config_path)
         resolved = configure_agent(
             config_path=config_path,
             cli_agent=cli_agent, cli_timeout=cli_timeout,
@@ -775,30 +1002,10 @@ class AgentMagic(Magics):
             current_claude_md=self._claude_md_path,
             current_hook_cfg=self._hook_cfg,
         )
-
-        agent = resolved["agent"]
-        timeout = resolved["timeout"]
-        claude_md_path = resolved["claude_md"]
-        self._hook_cfg = resolved["hook_cfg"]
-        self._tools_cfg = resolved["tools_cfg"]
-
-        if agent not in _AGENTS:
-            render_error(f"[agent_config] unknown agent '{agent}', valid: {', '.join(sorted(_AGENTS))}")
-            agent = self._agent
-
-        if resolved["session_rebuild"]:
-            if self._session_ready:
-                self._session.cleanup()
-            self._init_session(agent, timeout, claude_md_path)
-            self._session_ready = True
-        elif timeout != self._timeout:
-            if self._session_ready and self._session.client is not None:
-                self._session.client._backend._timeout = timeout
-
-        self._agent = agent
-        self._timeout = timeout
-        self._claude_md_path = claude_md_path
-        render_info(f"agent: {self._agent}, timeout: {self._timeout}s")
+        if config_path:
+            self._jupyter_config_path = config_path
+        summary = self._apply_config(resolved)
+        render_info(f"agent: {self._agent}, timeout: {self._timeout}s [{summary}]")
 
     # ---- %sql / %%sql (line + cell magic) ----
 

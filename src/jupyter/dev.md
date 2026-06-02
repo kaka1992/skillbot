@@ -230,17 +230,41 @@ bash scripts/jupyter.sh --rebuild
 
 ```
 %agent_config --agent claude-code --timeout 600 --debug
-%agent_config --config conf/jupyter_agent.yaml
-%agent_config --claude-md conf/claude-md.example
+%agent_config --config /path/conf/jupyter_agent.yaml
+%agent_config --claude-md /path/conf/claude-md.example
 ```
 
 | Flag | 说明 |
 |------|------|
-| `--config PATH` | YAML 配置路径 |
+| `--config PATH` | YAML 配置路径（需绝对路径） |
 | `--agent NAME` | agent 名称（claude-code / nanobot / hermes-agent） |
 | `--timeout N` | 超时秒数（默认 600） |
-| `--claude-md PATH` | CLAUDE.md 项目约束 |
+| `--claude-md PATH` | CLAUDE.md 项目约束（需绝对路径） |
 | `--debug` | 开启 debug 日志 |
+
+### `/config` 命令（Panel 交互）
+
+Panel 中输入 `/config` 管理 agent 配置：
+
+| 命令 | 说明 |
+|------|------|
+| `/config` | 显示当前配置详情（path、agent、timeout、claude-md） |
+| `/config <path>` | 加载新配置：首次直接生效，已有配置时显示新旧对比 |
+| `y` / `n` | 配置对比后键盘确认/取消（不需 Enter，IME 自动兼容） |
+| `Esc` | 取消 pending 变更 |
+
+```
+──────────────────────────────────────────────────
+  Config Status
+  ──────────────────────────────────────
+  path    : /path/to/config.yaml
+  agent   : hermes-agent
+  timeout : 600s
+  claude-md: (none)
+  ──────────────────────────────────────
+```
+
+**配置自动加载**：kernel 启动时从 `JUPYTER_CONFIG_PATH` 环境变量（`conf/.env` 中配置）自动加载。
 | `--KEY=VALUE` | 注入环境变量 |
 
 ### SQL / Spark

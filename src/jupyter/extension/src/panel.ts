@@ -88,7 +88,7 @@ class AgentPanel extends Widget {
     welcome.className = 'skillbot-welcome';
     welcome.innerHTML = `
       <div style="font-size:14px;font-weight:600;color:${CC.text};margin-bottom:4px;">Agent Panel</div>
-      <div style="font-size:12px;font-weight:500;color:rgb(180,180,180);">Shift+Tab mode · Ctrl+A/E/B/F/H/K/U/W/Y · Ctrl+P/N history · Ctrl+T thinking · Ctrl+C interrupt · Shift+↵ newline</div>
+      <div style="font-size:12px;font-weight:500;color:rgb(180,180,180);">Enter send · Shift+↵ newline · ↑↓ history · Shift+Tab mode · Ctrl+T thinking · Ctrl+C interrupt · /skills manage</div>
     `;
     this._root.appendChild(welcome);
 
@@ -108,6 +108,18 @@ class AgentPanel extends Widget {
       if (e.key === 'Escape' && this._skillsMode && this._expandedIdx === -1) {
         e.preventDefault();
         this._exitSkillsMode();
+      }
+      // Esc cancels config pending when output is focused
+      if (e.key === 'Escape' && this._configPending) {
+        e.preventDefault();
+        if (this._kernel) {
+          this._kernel.requestExecute({
+            code: `get_ipython().user_ns['_panel_input']('/config --no')`,
+            store_history: false,
+          });
+        }
+        this._configPending = false;
+        this._infoEl.innerHTML = '';
       }
       // Trap Tab within panel when in skills mode
       if (e.key === 'Tab' && this._skillsMode) {
@@ -420,6 +432,14 @@ class AgentPanel extends Widget {
 
     // ---- Escape ----
     if (e.key === 'Escape') {
+      if (this._configPending && this._kernel) {
+        this._kernel.requestExecute({
+          code: `get_ipython().user_ns['_panel_input']('/config --no')`,
+          store_history: false,
+        });
+      }
+      this._configPending = false;
+      this._infoEl.innerHTML = '';
       el.value = '';
       this._historyIdx = -1;
       this._historyDraft = '';
@@ -440,9 +460,36 @@ class AgentPanel extends Widget {
       return;
     }
 
+    // Config confirmation: y/n without Ctrl (skip if IME is composing)
+    if (this._configPending && !ctrl && !e.altKey && (e.key === 'y' || e.key === 'n')) {
+      e.preventDefault();
+      e.stopPropagation();
+      const cmd = e.key === 'y' ? '/config --yes' : '/config --no';
+      this._configPending = false;
+      this._infoEl.innerHTML = '';
+      if (this._kernel) {
+        const future = this._kernel.requestExecute({
+          code: `get_ipython().user_ns['_panel_input']('${cmd}')`,
+          store_history: false,
+        });
+      }
+      return;
+    }
+
     // Reset kill ring on printable character input
     if (e.key.length === 1 && !ctrl && !e.altKey) {
       this._killRing = ''; this._lastKill = '';
+      // Any other key cancels config pending (send --no to backend)
+      if (!e.isComposing && this._configPending && e.key !== 'y' && e.key !== 'n') {
+        this._configPending = false;
+        this._infoEl.innerHTML = '';
+        if (this._kernel) {
+          this._kernel.requestExecute({
+            code: `get_ipython().user_ns['_panel_input']('/config --no')`,
+            store_history: false,
+          });
+        }
+      }
     }
   }
 
@@ -538,7 +585,7 @@ class AgentPanel extends Widget {
 
   private _tabComplete(): void {
     const val = this._inputEl.value;
-    for (const c of ['/confirm ', '/clear', '/mode ', '/skills ']) {
+    for (const c of ['/confirm ', '/clear', '/mode ', '/skills ', '/config ']) {
       if (c.startsWith(val) && c !== val) {
         this._inputEl.value = c;
         this._inputEl.selectionStart = this._inputEl.selectionEnd = c.length;
@@ -630,16 +677,23 @@ class AgentPanel extends Widget {
 
   // ---- prompt -------------------------------------------------------------
 
-  private static DISPLAY_COMMANDS = ['/clear', '/mode', '/skills'];
+  private static DISPLAY_COMMANDS = ['/clear', '/mode', '/skills', '/config'];
 
   private _isDisplayCommand(text: string): boolean {
-    return AgentPanel.DISPLAY_COMMANDS.some(c => text.startsWith(c));
+    return AgentPanel.DISPLAY_COMMANDS.some(c => text === c || text.startsWith(c + ' '));
   }
 
   private _sendPrompt(): void {
     if (this._planConfirmActive) return;
     const text = this._inputEl.value.trim();
     if (!text) return;
+    // Defensive: if config was pending and user somehow sent 'y'/'n' as query, ignore
+    if ((text === 'y' || text === 'n') && !this._configPending) {
+      this._inputEl.value = '';
+      this._historyDraft = '';
+      this._resizeInput();
+      return;
+    }
 
     // Slash commands bypass queue
     const isSlash = text.startsWith('/');
@@ -662,9 +716,13 @@ class AgentPanel extends Widget {
       this._busy = true;
     }
     if (isDisplay) {
-      // Skills commands enter dedicated view (no prompt echo needed)
+      // Skills commands enter dedicated view
       if (text === '/skills' || text.startsWith('/skills ')) {
         this._enterSkillsMode();
+      }
+      // Config outside skills mode — exit if needed
+      if ((text === '/config' || text.startsWith('/config ')) && this._skillsMode) {
+        this._exitSkillsMode();
       }
     } else {
       this._startBlock();
@@ -751,12 +809,12 @@ class AgentPanel extends Widget {
   private _fullBodyIdx: number = -1;   // -1=not in full body, >=0=full body view
   private _installMode = false;        // showing install path input
   private _installError = '';          // error message from last install
+  private _configPending = false;      // waiting for config confirm (y/n)
 
   private _enterSkillsMode(): void {
     this._skillsMode = true;
     this._inputWrapper.style.display = 'none';
     this._outputEl.querySelectorAll('.skillbot-skill-list').forEach(el => el.remove());
-    this._inputEl.focus(); // keep focus so Esc works
   }
 
   private _exitSkillsMode(): void {
@@ -767,6 +825,8 @@ class AgentPanel extends Widget {
     this._expandedIdx = -1;
     this._outputEl.querySelectorAll('.skillbot-skill-list').forEach(el => el.remove());
     this._inputEl.focus();
+    // Reset textarea height (lost during display:none)
+    setTimeout(() => this._resizeInput(), 0);
   }
 
   private _renderSkillList(skills: Array<{name: string, description: string, enabled: boolean, body?: string}>): void {
@@ -794,7 +854,9 @@ class AgentPanel extends Widget {
     const hint = document.createElement('div');
     hint.className = 'skillbot-skill-hint';
     hint.style.cssText = `font-size:10px;color:rgb(120,120,120);margin-top:4px;padding:0 4px;`;
-    hint.textContent = '↑↓ select  Enter details  Space toggle  Esc close';
+    hint.textContent = skills.length === 0
+      ? 'Press i to install from .zip  Esc close'
+      : '↑↓ select  Enter details  Space toggle  d uninstall  i install  Esc close';
     wrapper.appendChild(hint);
 
     wrapper.addEventListener('keydown', (e) => this._onSkillKeydown(e));
@@ -802,6 +864,8 @@ class AgentPanel extends Widget {
     this._outputEl.appendChild(wrapper);
     this._scrollBottom();
     this._refreshSkillRows();
+    // Focus wrapper so keyboard nav works (input is hidden in skills mode)
+    setTimeout(() => wrapper.focus(), 50);
     // Focus the list so keyboard nav works (input is hidden in skills mode)
     setTimeout(() => wrapper.focus(), 50);
   }
@@ -849,7 +913,20 @@ class AgentPanel extends Widget {
     }
 
     const skills = this._skillData;
-    if (!skills.length) return;
+
+    // Allow install + exit even when list is empty
+    if (!skills.length) {
+      if (e.key === 'i') {
+        e.preventDefault(); e.stopPropagation();
+        this._installMode = true;
+        this._installError = '';
+        this._refreshSkillRows();
+      } else if (e.key === 'Escape') {
+        e.preventDefault(); e.stopPropagation();
+        this._exitSkillsMode();
+      }
+      return;
+    }
 
     switch (e.key) {
       case 'i':
@@ -947,6 +1024,14 @@ class AgentPanel extends Widget {
     listEl.innerHTML = '';
     this._skillRows = [];
 
+    // Empty state in list area
+    if (!this._installMode && this._skillData.length === 0) {
+      const empty = document.createElement('div');
+      empty.style.cssText = `padding:12px 4px;font-size:12px;color:rgb(120,120,120);text-align:center;`;
+      empty.textContent = 'No skills installed';
+      listEl.appendChild(empty);
+    }
+
     // Install mode: show input row
     if (this._installMode) {
       const row = document.createElement('div');
@@ -1033,6 +1118,8 @@ class AgentPanel extends Widget {
     if (hintEl) {
       if (this._installMode) {
         hintEl.textContent = 'Enter install path to skill.zip  Esc cancel';
+      } else if (this._skillData.length === 0) {
+        hintEl.textContent = 'Press i to install from .zip  Esc close';
       } else if (this._fullBodyIdx !== -1) {
         hintEl.textContent = 'Esc back to info';
       } else if (this._expandedIdx !== -1) {
@@ -1122,6 +1209,16 @@ class AgentPanel extends Widget {
     this._streaming = false;
     this._busy = false;
     this._promptQueue = [];
+    if (this._configPending) {
+      this._configPending = false;
+      this._infoEl.innerHTML = '';
+      if (this._kernel) {
+        this._kernel.requestExecute({
+          code: `get_ipython().user_ns['_panel_input']('/config --no')`,
+          store_history: false,
+        });
+      }
+    }
     this._stopSpinner();
     this._setStatus('○', 'idle');
     this._closeConfirm();  // ensure confirm UI is dismissed
@@ -1350,17 +1447,22 @@ class AgentPanel extends Widget {
 
     try {
       this._comm = kernel.createComm(TARGET);
-      this._comm.open();
       this._comm.onMsg = (m: any) => {
         const d = m.content?.data || {};
         switch (d.action) {
           case 'text':
             if (this._skillsMode) {
-              // Capture errors for inline display
               const txt = this._stripAnsi(d.content || '');
               if (txt.includes('✗')) this._installError = txt.trim();
             } else {
-              this._appendTextChunk(this._stripAnsi(d.content || ''));
+              const txt = this._stripAnsi(d.content || '');
+              this._appendTextChunk(txt);
+              // Backend sent config confirmation → enable y/n
+              if (txt.includes('Press y to apply')) {
+                this._configPending = true;
+                this._infoEl.innerHTML = '<span style=\"color:rgb(0,180,180)\">Press y to apply  n to cancel</span>';
+                if (this._infoTimer) clearTimeout(this._infoTimer);
+              }
             }
             break;
           case 'tool':        this._renderTool(d.name || ''); break;
@@ -1390,6 +1492,7 @@ class AgentPanel extends Widget {
           case 'clear':       this._clear(); break;
         }
       };
+      this._comm.open();
     } catch (e) {
       console.error('[panel] createComm failed:', e);
     }
