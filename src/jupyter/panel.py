@@ -20,6 +20,14 @@ def init_panel_comm(shell) -> None:
         def _on_comm(comm, _open_msg):
             global _panel_comm
             _panel_comm = comm
+            # Flush startup config message now that comm is ready
+            from jupyter.magic import _get_magic
+            inst = _get_magic()
+            if inst:
+                msg = getattr(inst, '_startup_config_msg', '')
+                if msg:
+                    comm.send(data={"action": "text", "content": msg})
+                    inst._startup_config_msg = ""
 
         kernel.comm_manager.register_target(TARGET, _on_comm)
     except Exception:
@@ -52,6 +60,16 @@ def send_tool(name: str) -> bool:
 def send_thinking(content: str) -> bool:
     """Render a thinking/tool-thought line."""
     return send_to_panel(None, "thinking", content=content)
+
+
+def send_skill_list(skills: list[dict]) -> bool:
+    """Render an interactive skill list."""
+    return send_to_panel(None, "skill_list", skills=skills)
+
+
+def send_skill_info(skill: dict) -> bool:
+    """Render a skill detail view."""
+    return send_to_panel(None, "skill_info", skill=skill)
 
 
 def send_code_block(language: str, code: str) -> bool:

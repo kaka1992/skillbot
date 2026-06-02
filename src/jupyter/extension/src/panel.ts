@@ -61,6 +61,7 @@ class AgentPanel extends Widget {
   private _thinkingCollapsed = true;            // Ctrl+T: default collapsed (150 chars)
   private _busy = false;                        // agent is working → queue new prompts
   private _promptQueue: Array<{text: string, mode: 'default' | 'plan' | 'auto'}> = [];
+  private _skillsMode = false;                   // skills view active → input hidden
 
   constructor() {
     super();
@@ -87,7 +88,7 @@ class AgentPanel extends Widget {
     welcome.className = 'skillbot-welcome';
     welcome.innerHTML = `
       <div style="font-size:14px;font-weight:600;color:${CC.text};margin-bottom:4px;">Agent Panel</div>
-      <div style="font-size:12px;font-weight:500;color:rgb(180,180,180);">Shift+Tab mode · Ctrl+A/E/B/F/H/K/U/W/Y · Ctrl+P/N history · Ctrl+T thinking · Ctrl+C interrupt · Shift+↵ newline</div>
+      <div style="font-size:12px;font-weight:500;color:rgb(180,180,180);">Enter send · Shift+↵ newline · ↑↓ history · Shift+Tab mode · Ctrl+T thinking · Ctrl+C interrupt · /skills manage</div>
     `;
     this._root.appendChild(welcome);
 
@@ -102,6 +103,28 @@ class AgentPanel extends Widget {
           case 't': e.preventDefault(); this._toggleThinkingCollapse(); break;
           case 'c': e.preventDefault(); this._kernel?.interrupt(); this._setStatus('⏏', 'interrupted'); break;
         }
+      }
+      // Esc exits skills mode even when list is not focused
+      if (e.key === 'Escape' && this._skillsMode && this._expandedIdx === -1) {
+        e.preventDefault();
+        this._exitSkillsMode();
+      }
+      // Esc cancels config pending when output is focused
+      if (e.key === 'Escape' && this._configPending) {
+        e.preventDefault();
+        if (this._kernel) {
+          this._kernel.requestExecute({
+            code: `get_ipython().user_ns['_panel_input']('/config --no')`,
+            store_history: false,
+          });
+        }
+        this._configPending = false;
+        this._infoEl.innerHTML = '';
+      }
+      // Trap Tab within panel when in skills mode
+      if (e.key === 'Tab' && this._skillsMode) {
+        e.preventDefault();
+        this._skillListWrapper?.focus();
       }
     });
     this._outputEl.addEventListener('click', () => {
@@ -409,6 +432,14 @@ class AgentPanel extends Widget {
 
     // ---- Escape ----
     if (e.key === 'Escape') {
+      if (this._configPending && this._kernel) {
+        this._kernel.requestExecute({
+          code: `get_ipython().user_ns['_panel_input']('/config --no')`,
+          store_history: false,
+        });
+      }
+      this._configPending = false;
+      this._infoEl.innerHTML = '';
       el.value = '';
       this._historyIdx = -1;
       this._historyDraft = '';
@@ -429,9 +460,36 @@ class AgentPanel extends Widget {
       return;
     }
 
+    // Config confirmation: y/n without Ctrl (skip if IME is composing)
+    if (this._configPending && !ctrl && !e.altKey && (e.key === 'y' || e.key === 'n')) {
+      e.preventDefault();
+      e.stopPropagation();
+      const cmd = e.key === 'y' ? '/config --yes' : '/config --no';
+      this._configPending = false;
+      this._infoEl.innerHTML = '';
+      if (this._kernel) {
+        const future = this._kernel.requestExecute({
+          code: `get_ipython().user_ns['_panel_input']('${cmd}')`,
+          store_history: false,
+        });
+      }
+      return;
+    }
+
     // Reset kill ring on printable character input
     if (e.key.length === 1 && !ctrl && !e.altKey) {
       this._killRing = ''; this._lastKill = '';
+      // Any other key cancels config pending (send --no to backend)
+      if (!e.isComposing && this._configPending && e.key !== 'y' && e.key !== 'n') {
+        this._configPending = false;
+        this._infoEl.innerHTML = '';
+        if (this._kernel) {
+          this._kernel.requestExecute({
+            code: `get_ipython().user_ns['_panel_input']('/config --no')`,
+            store_history: false,
+          });
+        }
+      }
     }
   }
 
@@ -527,12 +585,24 @@ class AgentPanel extends Widget {
 
   private _tabComplete(): void {
     const val = this._inputEl.value;
-    for (const c of ['/confirm ', '/clear']) {
+    for (const c of ['/confirm ', '/clear', '/mode ', '/skills ', '/config ']) {
       if (c.startsWith(val) && c !== val) {
         this._inputEl.value = c;
         this._inputEl.selectionStart = this._inputEl.selectionEnd = c.length;
         this._resizeInput();
         return;
+      }
+    }
+    // /skills subcommands
+    if (val.startsWith('/skills ')) {
+      const sub = val.slice(8);
+      for (const c of ['list', 'info ', 'enable ', 'disable ', 'install ', 'uninstall ']) {
+        if (c.startsWith(sub) && c !== sub) {
+          this._inputEl.value = '/skills ' + c;
+          this._inputEl.selectionStart = this._inputEl.selectionEnd = ('/skills ' + c).length;
+          this._resizeInput();
+          return;
+        }
       }
     }
   }
@@ -607,10 +677,23 @@ class AgentPanel extends Widget {
 
   // ---- prompt -------------------------------------------------------------
 
+  private static DISPLAY_COMMANDS = ['/clear', '/mode', '/skills', '/config'];
+
+  private _isDisplayCommand(text: string): boolean {
+    return AgentPanel.DISPLAY_COMMANDS.some(c => text === c || text.startsWith(c + ' '));
+  }
+
   private _sendPrompt(): void {
     if (this._planConfirmActive) return;
     const text = this._inputEl.value.trim();
     if (!text) return;
+    // Defensive: if config was pending and user somehow sent 'y'/'n' as query, ignore
+    if ((text === 'y' || text === 'n') && !this._configPending) {
+      this._inputEl.value = '';
+      this._historyDraft = '';
+      this._resizeInput();
+      return;
+    }
 
     // Slash commands bypass queue
     const isSlash = text.startsWith('/');
@@ -628,13 +711,25 @@ class AgentPanel extends Widget {
     }
     this._historyIdx = -1;
 
+    const isDisplay = this._isDisplayCommand(text);
     if (!isSlash) {
       this._busy = true;
     }
-    this._startBlock();
-    this._renderPrompt(text);
-    this._startSpinner();
-    this._setStatus('…', 'thinking');
+    if (isDisplay) {
+      // Skills commands enter dedicated view
+      if (text === '/skills' || text.startsWith('/skills ')) {
+        this._enterSkillsMode();
+      }
+      // Config outside skills mode — exit if needed
+      if ((text === '/config' || text.startsWith('/config ')) && this._skillsMode) {
+        this._exitSkillsMode();
+      }
+    } else {
+      this._startBlock();
+      this._renderPrompt(text);
+      this._startSpinner();
+      this._setStatus('…', 'thinking');
+    }
 
     if (this._kernel) {
       // send unexecuted cell content to namespace before the prompt
@@ -704,6 +799,371 @@ class AgentPanel extends Widget {
   private _renderPlanBlock(text: string): void { R.renderPlanBlock(this, text); }
   private _renderResult(summary: string): void { R.renderResult(this, summary); }
 
+  // ---- skill rendering ----
+
+  private _skillRows: HTMLElement[] = [];
+  private _skillSelectedIdx: number = 0;
+  private _skillListWrapper: HTMLElement | null = null;
+  private _skillData: Array<{name: string, description: string, enabled: boolean, body: string}> = [];
+  private _expandedIdx: number = -1;   // -1=list, >=0=info view
+  private _fullBodyIdx: number = -1;   // -1=not in full body, >=0=full body view
+  private _installMode = false;        // showing install path input
+  private _installError = '';          // error message from last install
+  private _configPending = false;      // waiting for config confirm (y/n)
+
+  private _enterSkillsMode(): void {
+    this._skillsMode = true;
+    this._inputWrapper.style.display = 'none';
+    this._outputEl.querySelectorAll('.skillbot-skill-list').forEach(el => el.remove());
+  }
+
+  private _exitSkillsMode(): void {
+    this._skillsMode = false;
+    this._inputWrapper.style.display = '';
+    this._skillRows = [];
+    this._skillSelectedIdx = 0;
+    this._expandedIdx = -1;
+    this._outputEl.querySelectorAll('.skillbot-skill-list').forEach(el => el.remove());
+    this._inputEl.focus();
+    // Reset textarea height (lost during display:none)
+    setTimeout(() => this._resizeInput(), 0);
+  }
+
+  private _renderSkillList(skills: Array<{name: string, description: string, enabled: boolean, body?: string}>): void {
+    this._skillData = skills.map(s => ({...s, body: s.body || ''}));
+    this._skillRows = [];
+    this._skillSelectedIdx = 0;
+    this._expandedIdx = -1;
+    this._fullBodyIdx = -1;
+    this._installMode = false;
+    this._installError = '';
+
+    // Remove old list, rebuild
+    this._outputEl.querySelectorAll('.skillbot-skill-list').forEach(el => el.remove());
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'skillbot-skill-list';
+    wrapper.tabIndex = 0;
+    wrapper.style.outline = 'none';
+    wrapper.innerHTML = `<div style="font-size:13px;font-weight:600;color:${CC.text};margin-bottom:4px;padding:0 4px;">Skills</div>`;
+
+    const listEl = document.createElement('div');
+    listEl.className = 'skillbot-skill-items';
+    wrapper.appendChild(listEl);
+
+    const hint = document.createElement('div');
+    hint.className = 'skillbot-skill-hint';
+    hint.style.cssText = `font-size:10px;color:rgb(120,120,120);margin-top:4px;padding:0 4px;`;
+    hint.textContent = skills.length === 0
+      ? 'Press i to install from .zip  Esc close'
+      : '↑↓ select  Enter details  Space toggle  d uninstall  i install  Esc close';
+    wrapper.appendChild(hint);
+
+    wrapper.addEventListener('keydown', (e) => this._onSkillKeydown(e));
+    this._skillListWrapper = wrapper;
+    this._outputEl.appendChild(wrapper);
+    this._scrollBottom();
+    this._refreshSkillRows();
+    // Focus wrapper so keyboard nav works (input is hidden in skills mode)
+    setTimeout(() => wrapper.focus(), 50);
+    // Focus the list so keyboard nav works (input is hidden in skills mode)
+    setTimeout(() => wrapper.focus(), 50);
+  }
+
+  private _onSkillKeydown(e: KeyboardEvent): void {
+    // Install mode handled separately
+    if (this._installMode) {
+      if (e.key === 'Escape') {
+        e.preventDefault(); e.stopPropagation();
+        this._installMode = false;
+        this._refreshSkillRows();
+        setTimeout(() => this._skillListWrapper?.focus(), 0);
+      }
+      return;
+    }
+
+    // Level 3: full body view — only Esc → back to info
+    if (this._fullBodyIdx !== -1) {
+      if (e.key === 'Escape') {
+        e.preventDefault(); e.stopPropagation();
+        this._fullBodyIdx = -1;
+        this._refreshSkillRows();
+        setTimeout(() => this._skillListWrapper?.focus(), 0);
+      }
+      return;
+    }
+
+    // Level 2: info view — Enter → full body, Esc → list
+    if (this._expandedIdx !== -1) {
+      if (e.key === 'Enter') {
+        e.preventDefault(); e.stopPropagation();
+        this._fullBodyIdx = this._expandedIdx;
+        this._refreshSkillRows();
+        setTimeout(() => this._skillListWrapper?.focus(), 0);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault(); e.stopPropagation();
+        this._expandedIdx = -1;
+        this._fullBodyIdx = -1;
+        this._refreshSkillRows();
+        setTimeout(() => this._skillListWrapper?.focus(), 0);
+      }
+      return;
+    }
+
+    const skills = this._skillData;
+
+    // Allow install + exit even when list is empty
+    if (!skills.length) {
+      if (e.key === 'i') {
+        e.preventDefault(); e.stopPropagation();
+        this._installMode = true;
+        this._installError = '';
+        this._refreshSkillRows();
+      } else if (e.key === 'Escape') {
+        e.preventDefault(); e.stopPropagation();
+        this._exitSkillsMode();
+      }
+      return;
+    }
+
+    switch (e.key) {
+      case 'i':
+        // Install — show inline path input
+        e.preventDefault(); e.stopPropagation();
+        this._installMode = true;
+        this._installError = '';
+        this._refreshSkillRows();
+        // Focus the input after render
+        setTimeout(() => {
+          const inp = this._skillListWrapper?.querySelector('.skillbot-install-input') as HTMLInputElement;
+          inp?.focus();
+        }, 50);
+        break;
+      case 'd':
+        // Uninstall — requires double-tap for safety
+        e.preventDefault(); e.stopPropagation();
+        const toRemove = skills[this._skillSelectedIdx];
+        if (!toRemove) break;
+        // Show confirmation hint
+        const hintEl = this._skillListWrapper?.querySelector('.skillbot-skill-hint') as HTMLElement | null;
+        if (hintEl) {
+          hintEl.textContent = `Press d again to confirm uninstall of "${toRemove.name}" (any other key to cancel)`;
+          hintEl.style.color = 'rgb(220,120,100)';
+        }
+        // Wait for second keypress (auto-cancel after 3s)
+        let cancelled = false;
+        const cancelTimer = setTimeout(() => {
+          cancelled = true;
+          this._skillListWrapper?.removeEventListener('keydown', onConfirm);
+          if (hintEl) { hintEl.style.color = ''; }
+          this._refreshSkillRows();
+        }, 3000);
+        const onConfirm = (e2: KeyboardEvent) => {
+          if (cancelled) return;
+          clearTimeout(cancelTimer);
+          this._skillListWrapper?.removeEventListener('keydown', onConfirm);
+          if (hintEl) { hintEl.style.color = ''; }
+          if (e2.key === 'd') {
+            if (this._kernel) {
+              this._kernel.requestExecute({
+                code: `get_ipython().user_ns['_panel_input']('/skills uninstall ${toRemove.name}')`,
+                store_history: false,
+              });
+            }
+            this._skillData.splice(this._skillSelectedIdx, 1);
+            this._skillSelectedIdx = Math.min(this._skillSelectedIdx, this._skillData.length - 1);
+            this._refreshSkillRows();
+          } else {
+            this._refreshSkillRows(); // reset hint
+          }
+        };
+        setTimeout(() => {
+          this._skillListWrapper?.addEventListener('keydown', onConfirm, { once: false });
+        }, 0);
+        break;
+      case 'Tab':
+      case 'ArrowDown':
+        e.preventDefault(); e.stopPropagation();
+        this._skillSelectedIdx = Math.min(skills.length - 1, this._skillSelectedIdx + 1);
+        this._refreshSkillRows();
+        break;
+      case 'ArrowUp':
+        e.preventDefault(); e.stopPropagation();
+        this._skillSelectedIdx = Math.max(0, this._skillSelectedIdx - 1);
+        this._refreshSkillRows();
+        break;
+      case 'Enter':
+        e.preventDefault(); e.stopPropagation();
+        this._expandedIdx = this._skillSelectedIdx;
+        this._refreshSkillRows();
+        break;
+      case ' ':
+        e.preventDefault(); e.stopPropagation();
+        const s = skills[this._skillSelectedIdx];
+        if (s && this._kernel) {
+          s.enabled = !s.enabled;
+          this._refreshSkillRows();
+          this._kernel.requestExecute({
+            code: `get_ipython().user_ns['_panel_input']('/skills toggle ${s.name}')`,
+            store_history: false,
+          });
+        }
+        break;
+      case 'Escape':
+        e.preventDefault(); e.stopPropagation();
+        this._exitSkillsMode();
+        break;
+    }
+  }
+
+  private _refreshSkillRows(): void {
+    const listEl = this._skillListWrapper?.querySelector('.skillbot-skill-items') as HTMLElement;
+    if (!listEl) return;
+    listEl.innerHTML = '';
+    this._skillRows = [];
+
+    // Empty state in list area
+    if (!this._installMode && this._skillData.length === 0) {
+      const empty = document.createElement('div');
+      empty.style.cssText = `padding:12px 4px;font-size:12px;color:rgb(120,120,120);text-align:center;`;
+      empty.textContent = 'No skills installed';
+      listEl.appendChild(empty);
+    }
+
+    // Install mode: show input row
+    if (this._installMode) {
+      const row = document.createElement('div');
+      row.style.cssText = `padding:4px;display:flex;gap:6px;align-items:center;`;
+      const input = document.createElement('input');
+      input.className = 'skillbot-install-input';
+      input.type = 'text';
+      input.placeholder = 'path/to/skill.zip';
+      input.style.cssText = `flex:1;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:${CC.text};padding:4px 8px;border-radius:3px;font-size:12px;outline:none;`;
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault(); e.stopPropagation();
+          const path = input.value.trim();
+          if (path && this._kernel) {
+            this._kernel.requestExecute({
+              code: `get_ipython().user_ns['_panel_input']('/skills install ${path.replace(/'/g, "\\'")}')`,
+              store_history: false,
+            });
+          }
+          // Close input, wait for skill_list refresh
+          this._installMode = false;
+          this._refreshSkillRows();
+          setTimeout(() => this._skillListWrapper?.focus(), 0);
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault(); e.stopPropagation();
+          this._installMode = false;
+          this._refreshSkillRows();
+          setTimeout(() => this._skillListWrapper?.focus(), 0);
+        }
+      });
+      row.appendChild(input);
+      const label = document.createElement('span');
+      label.style.cssText = `font-size:10px;color:rgb(140,140,140);white-space:nowrap;`;
+      label.textContent = 'Enter to install';
+      row.appendChild(label);
+      listEl.appendChild(row);
+      // Show last error
+      if (this._installError) {
+        const errRow = document.createElement('div');
+        errRow.style.cssText = `padding:4px;font-size:11px;color:rgb(220,120,100);`;
+        errRow.textContent = this._installError;
+        listEl.appendChild(errRow);
+      }
+    }
+    this._skillData.forEach((s, i) => {
+      const selected = i === this._skillSelectedIdx;
+      const expanded = i === this._expandedIdx;
+      const row = document.createElement('div');
+      row.style.cssText = `padding:2px 4px;border-radius:3px;background:${selected ? 'rgba(255,255,255,0.08)' : ''};`;
+
+      const header = document.createElement('div');
+      header.style.cssText = `display:flex;align-items:center;gap:8px;cursor:pointer;`;
+      const dot = s.enabled
+        ? `<span style="color:rgb(100,200,100);font-size:14px;">●</span>`
+        : `<span style="color:rgb(200,100,100);font-size:14px;">●</span>`;
+      const status = s.enabled ? 'enabled' : 'disabled';
+      const statusColor = s.enabled ? 'rgb(100,200,100)' : 'rgb(200,100,100)';
+      header.innerHTML = `${dot} <span style="color:${CC.text};font-size:12px;">${this._esc(s.name)}</span> <span style="color:${statusColor};font-size:10px;margin-left:auto;">${status}</span>`;
+      row.appendChild(header);
+
+      if (expanded) {
+        const showFull = this._fullBodyIdx === i;
+        const detail = document.createElement('div');
+        detail.style.cssText = `margin:6px 0 4px 22px;font-size:11px;color:rgb(180,180,180);line-height:1.5;`;
+        if (showFull) {
+          // Level 3: full SKILL.md body
+          detail.innerHTML = `<div style="color:${CC.text};background:rgba(255,255,255,0.04);padding:8px;border-radius:3px;max-height:350px;overflow-y:auto;white-space:pre-wrap;font-size:11px;line-height:1.4;">${this._esc(s.body || '')}</div>`;
+        } else {
+          // Level 2: info view (description + truncated body)
+          detail.innerHTML = `<div style="margin-bottom:4px;">${this._esc(s.description)}</div>`;
+          if (s.body) {
+            const bodyText = s.body.slice(0, 1000);
+            detail.innerHTML += `<div style="color:${CC.text};background:rgba(255,255,255,0.03);padding:6px;border-radius:3px;max-height:150px;overflow-y:auto;white-space:pre-wrap;font-size:11px;">${this._esc(bodyText)}${s.body.length > 1000 ? '...' : ''}</div>`;
+          }
+        }
+        row.appendChild(detail);
+      }
+      listEl.appendChild(row);
+      this._skillRows.push(row);
+    });
+
+    const hintEl = this._skillListWrapper?.querySelector('.skillbot-skill-hint');
+    if (hintEl) {
+      if (this._installMode) {
+        hintEl.textContent = 'Enter install path to skill.zip  Esc cancel';
+      } else if (this._skillData.length === 0) {
+        hintEl.textContent = 'Press i to install from .zip  Esc close';
+      } else if (this._fullBodyIdx !== -1) {
+        hintEl.textContent = 'Esc back to info';
+      } else if (this._expandedIdx !== -1) {
+        hintEl.textContent = 'Enter full body  Esc back to list';
+      } else {
+        hintEl.textContent = '↑↓ select  Enter details  Space toggle  d uninstall  i install  Esc close';
+      }
+    }
+  }
+
+  private _renderSkillInfo(skill: {name: string, description: string, enabled: boolean, body: string, path: string}): void {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'skillbot-skill-info';
+
+    const dot = skill.enabled
+      ? `<span style="color:rgb(100,200,100);font-size:16px;">●</span>`
+      : `<span style="color:rgb(200,100,100);font-size:16px;">●</span>`;
+
+    const header = document.createElement('div');
+    header.style.cssText = `font-size:14px;font-weight:600;color:${CC.text};margin-bottom:4px;`;
+    header.innerHTML = `${dot} ${this._esc(skill.name)}`;
+
+    const meta = document.createElement('div');
+    meta.style.cssText = `font-size:12px;color:rgb(180,180,180);margin-bottom:8px;line-height:1.5;`;
+    meta.innerHTML = `
+      ${this._esc(skill.description)}<br>
+      <span style="color:rgb(140,140,140);">Status:</span> ${skill.enabled ? 'enabled' : 'disabled'}<br>
+      <span style="color:rgb(140,140,140);">Path:</span> ${this._esc(skill.path)}
+    `;
+
+    const bodyText = (skill.body || '').slice(0, 1500);
+    const bodyWrap = document.createElement('div');
+    bodyWrap.style.cssText = `font-size:12px;color:${CC.text};background:rgba(255,255,255,0.04);padding:8px;border-radius:4px;max-height:200px;overflow-y:auto;white-space:pre-wrap;line-height:1.4;`;
+    bodyWrap.textContent = bodyText;
+    if ((skill.body || '').length > 1500) {
+      bodyWrap.textContent += '\n\n... (truncated)';
+    }
+
+    wrapper.appendChild(header);
+    wrapper.appendChild(meta);
+    wrapper.appendChild(bodyWrap);
+    this._appendToBlock(wrapper);
+  }
+
   // ---- thinking collapse (Ctrl+T) ----
 
   private _toggleThinkingCollapse(): void {
@@ -749,6 +1209,16 @@ class AgentPanel extends Widget {
     this._streaming = false;
     this._busy = false;
     this._promptQueue = [];
+    if (this._configPending) {
+      this._configPending = false;
+      this._infoEl.innerHTML = '';
+      if (this._kernel) {
+        this._kernel.requestExecute({
+          code: `get_ipython().user_ns['_panel_input']('/config --no')`,
+          store_history: false,
+        });
+      }
+    }
     this._stopSpinner();
     this._setStatus('○', 'idle');
     this._closeConfirm();  // ensure confirm UI is dismissed
@@ -977,11 +1447,24 @@ class AgentPanel extends Widget {
 
     try {
       this._comm = kernel.createComm(TARGET);
-      this._comm.open();
       this._comm.onMsg = (m: any) => {
         const d = m.content?.data || {};
         switch (d.action) {
-          case 'text':        this._appendTextChunk(this._stripAnsi(d.content || '')); break;
+          case 'text':
+            if (this._skillsMode) {
+              const txt = this._stripAnsi(d.content || '');
+              if (txt.includes('✗')) this._installError = txt.trim();
+            } else {
+              const txt = this._stripAnsi(d.content || '');
+              this._appendTextChunk(txt);
+              // Backend sent config confirmation → enable y/n
+              if (txt.includes('Press y to apply')) {
+                this._configPending = true;
+                this._infoEl.innerHTML = '<span style=\"color:rgb(0,180,180)\">Press y to apply  n to cancel</span>';
+                if (this._infoTimer) clearTimeout(this._infoTimer);
+              }
+            }
+            break;
           case 'tool':        this._renderTool(d.name || ''); break;
           case 'thinking':    this._renderThinking(d.content || ''); break;
           case 'code_block':  this._renderCodeBlock(d.language || '', d.code || ''); break;
@@ -999,10 +1482,17 @@ class AgentPanel extends Widget {
             this._renderPlanConfirm(d.summary || '');
             this._saveState();
             break;
+          case 'skill_list':
+            if (!this._skillsMode) this._enterSkillsMode();
+            this._installMode = false;
+            this._installError = '';
+            this._renderSkillList(d.skills || []);
+            break;
           case 'ready':       this._busy = false; this._dequeueNext(); break;
           case 'clear':       this._clear(); break;
         }
       };
+      this._comm.open();
     } catch (e) {
       console.error('[panel] createComm failed:', e);
     }

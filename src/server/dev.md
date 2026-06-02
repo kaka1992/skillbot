@@ -115,10 +115,33 @@ POST /sessions/{sid}/interrupt      # 中断当前查询，保留上下文
 GET  /sessions/{sid}/history
 GET  /skills
 GET  /skills/{name}
+POST /skills/install              # multipart .zip upload
+DELETE /skills/{name}             # uninstall
 ```
 
-- `/skills` 从 `_resolve_claude_home()/.claude/skills/` 读取
+- `/skills` 返回 `[{name, description, path, enabled}]`
+- `/skills/{name}` 返回 `{name, description, path, enabled, body}`
+- `POST /skills/install` 接收 `.zip`，校验 SKILL.md + frontmatter 后安装
+- `DELETE /skills/{name}` 删除 skill 目录
 - WORK_DIR 默认为 `_resolve_claude_home()/run/`，自动创建
+- `SKILL_DIR` 默认 `_resolve_claude_home()/.claude/skills/`
+
+## Skill 管理
+
+Skill 通过 `SkillManager`（`src/chat/skill.py`）管理，服务端和 chat 层共享同一抽象。
+
+### 安装 / 卸载
+
+- `POST /skills/install` — 上传 `.zip`，解压后目录名 = skill 名，必须含 `SKILL.md` 且 YAML frontmatter 有效
+- `DELETE /skills/{name}` — 删除 skill 目录
+- 安装后需重启 server 生效
+
+### 启用 / 禁用
+
+- 状态持久化在 `{SKILL_DIR}/.skill_state.json`：`{"disabled": ["skill-name", ...]}`
+- 所有已安装 skill 默认启用
+- `_build_options(skills=...)` 读取 `SkillManager.active_skills`，传入 `ClaudeAgentOptions.skills`
+- 仅启用的 skill 对 agent 可见
 
 ## 中断机制
 

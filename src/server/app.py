@@ -3,14 +3,13 @@
 import json
 import logging
 import os
-import re
 import sys
 import time
 from pathlib import Path
 from typing import Optional
 
-import yaml
-from fastapi import FastAPI, HTTPException
+import tempfile
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -223,48 +222,73 @@ async def get_history(sid: str):
 # ---- skills -------------------------------------------------------------
 
 
-def _parse_frontmatter(text: str) -> tuple[dict, str]:
-    """Parse YAML frontmatter from ``---`` blocks, return (meta, body)."""
-    m = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
-    if not m:
-        return {}, text
-    try:
-        meta = yaml.safe_load(m.group(1)) or {}
-    except Exception:
-        meta = {}
-    return meta, text[m.end():]
-
-
-def _list_skills() -> list[dict]:
-    skills = []
-    skill_root = Path(SKILL_DIR)
-    if not skill_root.is_dir():
-        return skills
-    for md_file in sorted(skill_root.glob("*/SKILL.md")):
-        name = md_file.parent.name
-        text = md_file.read_text(encoding="utf-8")
-        meta, _ = _parse_frontmatter(text)
-        skills.append({
-            "name": meta.get("name", name),
-            "description": meta.get("description", ""),
-            "path": str(md_file.parent),
-        })
-    return skills
-
-
 @app.get("/skills")
 async def list_skills():
-    return _list_skills()
+    from chat.skill import SkillManager
+    mgr = SkillManager(SKILL_DIR)
+    return [
+        {
+            "name": s.name,
+            "description": s.description,
+            "path": s.path,
+            "enabled": s.enabled,
+        }
+        for s in mgr.list_skills()
+    ]
 
 
 @app.get("/skills/{name}")
 async def get_skill(name: str):
-    md = Path(SKILL_DIR) / name / "SKILL.md"
-    if not md.is_file():
+    from chat.skill import SkillManager
+    mgr = SkillManager(SKILL_DIR)
+    s = mgr.get_skill(name)
+    if s is None:
         raise HTTPException(404, f"Skill '{name}' not found")
-    text = md.read_text(encoding="utf-8")
-    meta, body = _parse_frontmatter(text)
-    return {"name": meta.get("name", name), "description": meta.get("description", ""), "body": body}
+    return {
+        "name": s.name,
+        "description": s.description,
+        "path": s.path,
+        "enabled": s.enabled,
+        "body": s.body,
+    }
+
+
+@app.post("/skills/install")
+async def install_skill(file: UploadFile = File(...)):
+    """Install a skill from a .zip upload."""
+    if not file.filename or not file.filename.endswith(".zip"):
+        raise HTTPException(400, "Only .zip files are accepted")
+
+    # Use only the basename to prevent path traversal
+    safe_name = Path(file.filename).name
+
+    with tempfile.TemporaryDirectory(prefix="skillbot-install-") as tmp:
+        tmp_path = Path(tmp)
+        zip_path = tmp_path / safe_name
+        zip_path.write_bytes(await file.read())
+
+        from chat.skill import SkillManager
+        mgr = SkillManager(SKILL_DIR)
+        try:
+            info = mgr.install(str(zip_path))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except FileNotFoundError as e:
+            raise HTTPException(400, str(e))
+
+    return {"status": "ok", "skill": info.name, "description": info.description}
+
+
+@app.delete("/skills/{name}")
+async def delete_skill(name: str):
+    """Uninstall a skill by name."""
+    from chat.skill import SkillManager
+    mgr = SkillManager(SKILL_DIR)
+    try:
+        mgr.uninstall(name)
+    except FileNotFoundError:
+        raise HTTPException(404, f"Skill '{name}' not found")
+    return {"status": "ok"}
 
 
 # ---- main -------------------------------------------------------------

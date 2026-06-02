@@ -108,6 +108,32 @@ skillbot/
 
 **输入框快捷键（对齐 cc-haha TUI）：** Ctrl+A/E/B/F/H/K/U/W/Y, ↑↓ 历史, Tab 补全, Shift+Enter 换行, Ctrl+T 折叠 thinking, Ctrl+C 中断（清空输入 → 中断 agent）。
 
+**Skill 管理（`/skills` 命令）：**
+
+输入 `/skills` 进入交互式 skill 管理面板：
+
+| 快捷键 | 功能 |
+|--------|------|
+| ↑↓ | 选择 skill |
+| Enter | 查看详情（再按 Enter 查看完整 SKILL.md） |
+| Space | 启用 / 禁用 |
+| d | 卸载（需二次确认） |
+| i | 安装（输入 .zip 路径，Enter 确认） |
+| Esc | 返回（详情→列表→退出） |
+
+- 启用/禁用即时生效（claude-code 下一条 query 注入变更通知）
+- 安装/卸载需重启 server 才能完全生效
+
+**配置管理（`/config` 命令）：**
+
+| 命令 | 说明 |
+|------|------|
+| `/config` | 显示当前配置（path、agent、timeout、claude-md） |
+| `/config <path>` | 加载新配置：首次直接生效，已有配置时显示新旧对比 |
+| `y` / `n` | 对比确认（键盘直接按，不需 Enter） |
+
+`conf/.env` 中设置 `JUPYTER_CONFIG_PATH` 可在 kernel 启动时自动加载配置。
+
 **配置 agent：**
 
 ```

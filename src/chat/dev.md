@@ -9,6 +9,7 @@
 - 会话隔离（多轮对话上下文）
 - 动态模型选择（可缺省）
 - agent 自动启动（nanobot / hermes）
+- 跨 agent 统一 skill 管理（安装 / 卸载 / 启用 / 禁用 / prompt 注入）
 
 ## Python API
 
@@ -66,6 +67,7 @@ src/chat/
 ├── nanobot.py           # NanobotBackend（OpenAI REST，stream_chunks 默认 wrap）
 ├── hermes.py            # HermesBackend（OpenAI SSE + hermes.tool.progress events）
 ├── claude.py            # ClaudeBackend（HTTP :9000 + trace SSE + interrupt 端点）
+├── skill.py             # SkillManager — 跨 agent skill 管理
 └── dev.md               # 设计文档
 ```
 
@@ -105,6 +107,62 @@ class AbstractBackend(ABC):
     @abstractmethod
     def clear_session(self, session: str) -> None: ...
 ```
+
+### SkillManager（`chat/skill.py`）
+
+跨 agent 统一的 skill 管理抽象，操作文件系统，与 agent 类型无关。
+
+```python
+from chat.skill import SkillManager, SkillInfo
+
+mgr = SkillManager(skill_dir)
+
+# 发现
+skills = mgr.list_skills()          # → list[SkillInfo] (含 enabled 状态)
+skill  = mgr.get_skill("name")      # → SkillInfo | None
+
+# 安装 / 卸载
+info = mgr.install("skill.zip")     # 校验 SKILL.md + frontmatter
+mgr.uninstall("name")               # 删除 skill 目录
+
+# 启用 / 禁用（持久化到 .skill_state.json）
+mgr.enable("name")                  # 启用
+mgr.disable("name")                 # 禁用
+mgr.active_skills                   # → list[str] 启用的 skill 名
+mgr.disabled_skills                 # → list[str] 禁用的 skill 名
+
+# prompt 注入（非 claude-code agent 用）
+prompt = mgr.inject_prompt()        # 启用的 skill body 拼接
+prompt = mgr.inject_prompt(["a"])   # 指定 skill
+```
+
+**SkillInfo:**
+```python
+@dataclass
+class SkillInfo:
+    name: str           # YAML frontmatter name 或目录名
+    description: str    # YAML frontmatter description
+    path: str           # skill 目录路径
+    enabled: bool       # 是否启用
+    body: str           # SKILL.md body（去除 frontmatter）
+```
+
+**跨 agent 路径：**
+
+| Agent | Skill 加载方式 |
+|-------|---------------|
+| claude-code | `ClaudeAgentOptions(skills=mgr.active_skills)` → SDK 原生 |
+| deer-flow | `ChatClient._maybe_inject_skills()` → 注入到 message 前 |
+| nanobot | 同上 |
+| hermes-agent | 同上 |
+
+`_maybe_inject_skills()` 用版本比对（active_skills + disabled_skills 的 tuple hash），只在 skill 配置变化时注入一次。
+
+**安装校验规则：**
+- `.zip` 解压后第一级目录名 = skill 名称
+- 第一级目录下必须存在 `SKILL.md`
+- `SKILL.md` 必须有 YAML frontmatter（`name` + `description`）
+- 无效名称（`.` 开头、`__pycache__`）拒绝
 
 ## 会话隔离机制
 
