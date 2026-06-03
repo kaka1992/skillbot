@@ -159,8 +159,18 @@ class AgentPanel extends Widget {
     this._inputEl.placeholder = 'ask the agent...';
     this._inputEl.rows = 1;
     this._inputEl.addEventListener('keydown', (e) => this._onKeydown(e));
-    this._inputEl.addEventListener('input', () => this._resizeInput());
+    this._inputEl.addEventListener('input', () => { this._resizeInput(); this._updateCommandDropdown(); });
+    this._inputEl.addEventListener('blur', () => { setTimeout(() => { this._commandDropdown.style.display = 'none'; }, 200); });
     this._inputWrapper.appendChild(this._inputEl);
+
+    // Command dropdown
+    this._commandDropdown = document.createElement('div');
+    this._commandDropdown.className = 'skillbot-command-dropdown';
+    this._commandDropdown.style.cssText = `display:none;position:absolute;bottom:100%;left:0;right:0;background:${CC.bg};border:1px solid rgba(255,255,255,0.15);border-radius:4px;max-height:180px;overflow-y:auto;z-index:10;margin-bottom:2px;`;
+    this._inputWrapper.style.position = 'relative';
+    this._inputWrapper.appendChild(this._commandDropdown);
+    this._commands = ['/confirm ', '/clear', '/mode ', '/skills ', '/config '];  // /clear has no trailing space (immediate action)
+    this._commandIdx = -1;
 
     this._root.appendChild(this._inputWrapper);
 
@@ -410,9 +420,18 @@ class AgentPanel extends Widget {
         this._resizeInput();
       } else {
         e.preventDefault();
+        this._commandDropdown.style.display = 'none';
         this._sendPrompt();
       }
       return;
+    }
+
+    // ---- Command dropdown: arrows to select, Tab/Enter to commit, Esc to close ----
+    if (this._commandDropdown.style.display !== 'none') {
+      if (e.key === 'ArrowDown') { e.preventDefault(); this._selectCommand(1); return; }
+      if (e.key === 'ArrowUp')   { e.preventDefault(); this._selectCommand(-1); return; }
+      if (e.key === 'Enter')     { e.preventDefault(); this._commitCommand(); return; }
+      if (e.key === 'Escape')    { e.preventDefault(); this._commandDropdown.style.display = 'none'; this._commandIdx = -1; return; }
     }
 
     // ---- Arrow keys: history at visual boundaries, line nav otherwise ----
@@ -583,17 +602,63 @@ class AgentPanel extends Widget {
     return false;
   }
 
-  private _tabComplete(): void {
+  private _updateCommandDropdown(): void {
     const val = this._inputEl.value;
-    for (const c of ['/confirm ', '/clear', '/mode ', '/skills ', '/config ']) {
-      if (c.startsWith(val) && c !== val) {
-        this._inputEl.value = c;
-        this._inputEl.selectionStart = this._inputEl.selectionEnd = c.length;
-        this._resizeInput();
-        return;
-      }
+    if (!val.startsWith('/') || val.includes(' ')) {
+      this._commandDropdown.style.display = 'none';
+      this._commandIdx = -1;
+      return;
     }
-    // /skills subcommands
+    const matches = this._commands.filter(c => c.startsWith(val) && c !== val);
+    if (matches.length === 0) {
+      this._commandDropdown.style.display = 'none';
+      this._commandIdx = -1;
+      return;
+    }
+    if (this._commandIdx < 0 || this._commandIdx >= matches.length) this._commandIdx = 0;
+    this._commandDropdown.innerHTML = '';
+    matches.forEach((cmd, i) => {
+      const item = document.createElement('div');
+      item.style.cssText = `padding:3px 8px;font-size:12px;cursor:pointer;color:${CC.text};${i === this._commandIdx ? 'background:rgba(255,255,255,0.1);' : ''}`;
+      item.textContent = cmd;
+      item.addEventListener('click', () => { this._inputEl.value = cmd; this._inputEl.focus(); this._commandDropdown.style.display = 'none'; });
+      this._commandDropdown.appendChild(item);
+    });
+    this._commandDropdown.style.display = 'block';
+  }
+
+  private _selectCommand(delta: number): void {
+    if (this._commandDropdown.style.display === 'none') return;
+    const val = this._inputEl.value;
+    const matches = this._commands.filter(c => c.startsWith(val) && c !== val);
+    if (matches.length === 0) return;
+    this._commandIdx = (this._commandIdx + delta + matches.length) % matches.length;
+    this._updateCommandDropdown();
+  }
+
+  private _commitCommand(): void {
+    if (this._commandDropdown.style.display === 'none') return;
+    const val = this._inputEl.value;
+    const matches = this._commands.filter(c => c.startsWith(val) && c !== val);
+    if (matches.length === 0) return;
+    const idx = this._commandIdx >= 0 ? this._commandIdx : 0;
+    if (idx < matches.length) {
+      this._inputEl.value = matches[idx];
+      this._inputEl.selectionStart = this._inputEl.selectionEnd = matches[idx].length;
+      this._commandDropdown.style.display = 'none';
+      this._commandIdx = -1;
+      this._resizeInput();
+    }
+  }
+
+  private _tabComplete(): void {
+    // Dropdown visible: commit current selection (or first match if no selection)
+    if (this._commandDropdown.style.display !== 'none') {
+      this._commitCommand();
+      return;
+    }
+    // Fallback to old behavior for /skills subcommands
+    const val = this._inputEl.value;
     if (val.startsWith('/skills ')) {
       const sub = val.slice(8);
       for (const c of ['list', 'info ', 'enable ', 'disable ', 'install ', 'uninstall ']) {
@@ -810,6 +875,9 @@ class AgentPanel extends Widget {
   private _installMode = false;        // showing install path input
   private _installError = '';          // error message from last install
   private _configPending = false;      // waiting for config confirm (y/n)
+  private _commandDropdown: HTMLElement;  // slash command autocomplete
+  private _commands: string[];
+  private _commandIdx: number = -1;
 
   private _enterSkillsMode(): void {
     this._skillsMode = true;
