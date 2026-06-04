@@ -35,7 +35,9 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.panelPlugin = void 0;
 const widgets_1 = require("@lumino/widgets");
+const apputils_1 = require("@jupyterlab/apputils");
 const notebook_1 = require("@jupyterlab/notebook");
+const widgets_2 = require("@lumino/widgets");
 const panelStyles_1 = require("./panelStyles");
 const R = __importStar(require("./panelRenderer"));
 const PC = __importStar(require("./panelPlanConfirm"));
@@ -55,7 +57,7 @@ class AgentPanel extends widgets_1.Widget {
         this._statusIcon = '○';
         this._statusLabel = 'idle';
         this._tracker = null;
-        this._kernel = null;
+        this._kernel = null; // public — accessed by plugin commands
         this._comm = null;
         this._history = [];
         this._historyIdx = -1;
@@ -196,7 +198,7 @@ class AgentPanel extends widgets_1.Widget {
         this._commandDropdown.style.cssText = `display:none;position:absolute;bottom:100%;left:0;right:0;background:${panelStyles_1.CC.bg};border:1px solid rgba(255,255,255,0.15);border-radius:4px;max-height:180px;overflow-y:auto;z-index:10;margin-bottom:2px;`;
         this._inputWrapper.style.position = 'relative';
         this._inputWrapper.appendChild(this._commandDropdown);
-        this._commands = ['/confirm ', '/clear', '/mode ', '/skills ', '/config ']; // /clear has no trailing space (immediate action)
+        this._commands = ['/confirm ', '/clear', '/mode ', '/skills ', '/config ', '/snapshot'];
         this._commandIdx = -1;
         this._root.appendChild(this._inputWrapper);
         // plan confirm overlay (hidden, replaces input area when active)
@@ -1558,7 +1560,19 @@ class AgentPanel extends widgets_1.Widget {
         this._stopStatusTimer();
     }
     connectKernel(kernel) {
+        var _a, _b;
         this._kernel = kernel;
+        // Notify kernel of active notebook path for snapshot file isolation.
+        // Must happen BEFORE `if (this._comm) return` so it fires on every
+        // notebook switch and lazy kernel start (via onKernelChanged).
+        const nb = (_a = this._tracker) === null || _a === void 0 ? void 0 : _a.currentWidget;
+        const nbPath = ((_b = nb === null || nb === void 0 ? void 0 : nb.context) === null || _b === void 0 ? void 0 : _b.path) || '';
+        if (nbPath) {
+            kernel.requestExecute({
+                code: `from jupyter.magic import _set_active_notebook_path; _set_active_notebook_path(${JSON.stringify(nbPath)})`,
+                store_history: false,
+            });
+        }
         // Re-register cell-execution target (needed on kernel restart)
         try {
             kernel.registerCommTarget('skillbot:execute-cell', (comm, msg) => {
@@ -1667,6 +1681,207 @@ AgentPanel.MODE_INFO = {
 // ---- prompt -------------------------------------------------------------
 AgentPanel.DISPLAY_COMMANDS = ['/clear', '/mode', '/skills', '/config'];
 // ===========================================================================
+// Notebook Snapshot Dialog
+// ===========================================================================
+function _jpBtn(text, kind) {
+    const b = document.createElement('button');
+    b.textContent = text;
+    b.className = kind ? `jp-mod-styled jp-mod-${kind}` : 'jp-mod-styled';
+    b.style.cssText = 'padding:4px 12px;font-size:12px;';
+    return b;
+}
+function _showSnapshotDialog(snapshots, panel, nb, cellRestored, nbPath) {
+    const container = document.createElement('div');
+    container.style.cssText = 'min-width:520px;max-height:550px;overflow-y:auto;font-size:13px;color:#ddd;background:#1a1a2e;padding:12px;';
+    const title = document.createElement('div');
+    title.style.cssText = 'font-weight:600;margin-bottom:10px;font-size:14px;';
+    const label = nbPath || '(unsaved notebook)';
+    title.textContent = `Notebook Snapshots — ${label} (${snapshots.length})`;
+    container.appendChild(title);
+    if (cellRestored) {
+        const warning = document.createElement('div');
+        warning.style.cssText = 'padding:6px 8px;margin-bottom:10px;background:rgba(220,120,100,0.15);border-left:2px solid rgb(220,120,100);font-size:12px;color:rgb(220,160,140);';
+        warning.textContent = '⚠ Cells have been individually restored in this session. Notebook restore will overwrite those changes.';
+        container.appendChild(warning);
+    }
+    let selectedId = '';
+    const previewPanel = document.createElement('div');
+    previewPanel.style.cssText = 'background:#111;padding:10px;border-radius:4px;margin-top:10px;max-height:280px;overflow-y:auto;white-space:pre-wrap;font-family:monospace;font-size:12px;color:#ccc;line-height:1.5;';
+    previewPanel.textContent = 'Select a snapshot to preview';
+    container.appendChild(previewPanel);
+    const updateSelection = (s, row) => {
+        selectedId = s.id;
+        container.querySelectorAll('.snapshot-row').forEach((el) => el.style.background = '');
+        row.style.background = 'rgba(255,255,255,0.1)';
+        // Show preview
+        const previews = s.preview || [];
+        if (previews.length > 0) {
+            previewPanel.textContent = previews.map((p, i) => `[${i + 1}] ${p}`).join('\n');
+        }
+        else {
+            previewPanel.textContent = '(no code preview)';
+        }
+    };
+    snapshots.forEach((s, i) => {
+        const row = document.createElement('div');
+        row.className = 'snapshot-row';
+        row.style.cssText = `padding:5px 10px;cursor:pointer;border-radius:3px;display:flex;justify-content:space-between;${i === 0 ? 'background:rgba(255,255,255,0.08);' : ''}`;
+        const ts = new Date((s.timestamp || 0) * 1000).toLocaleString();
+        row.innerHTML = `<span style="font-size:13px;"><b>${ts}</b></span><span style="color:#999;font-size:12px;">${s.cells_count} cells</span>`;
+        row.addEventListener('click', () => updateSelection(s, row));
+        container.appendChild(row);
+        if (i === 0) {
+            selectedId = s.id;
+            previewPanel.textContent = (s.preview || []).map((p, j) => `[${j + 1}] ${p}`).join('\n') || '(no code preview)';
+        }
+    });
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'margin-top:10px;display:flex;gap:8px;';
+    const restoreBtn = _jpBtn('Restore Notebook', 'accept');
+    restoreBtn.addEventListener('click', () => {
+        if (!selectedId || !panel._kernel)
+            return;
+        // Fetch snapshot cells, then restore directly via notebook model
+        const future = panel._kernel.requestExecute({
+            code: `from jupyter.notebook_snapshot import get_snapshot; import json; sid=${JSON.stringify(selectedId)}; np=${JSON.stringify(nbPath)}; print(json.dumps(get_snapshot(sid, nb_path=np).get("cells",[]) if get_snapshot(sid, nb_path=np) else []))`,
+            store_history: false,
+        });
+        let stdout = '';
+        future.onIOPub = (msg) => {
+            var _a;
+            if (msg.header.msg_type === 'stream' && ((_a = msg.content) === null || _a === void 0 ? void 0 : _a.name) === 'stdout')
+                stdout += msg.content.text;
+        };
+        future.done.then(() => {
+            try {
+                const cells = JSON.parse(stdout.trim());
+                if (!cells || !cells.length) {
+                    restoreBtn.textContent = 'No cells';
+                    return;
+                }
+                const model = nb.model;
+                if (!model) {
+                    restoreBtn.textContent = 'No model';
+                    return;
+                }
+                // Clear and repopulate
+                const sharedModel = model.sharedModel;
+                while (sharedModel.cells.length > 0) {
+                    sharedModel.deleteCell(0);
+                }
+                for (const c of cells) {
+                    sharedModel.insertCell(sharedModel.cells.length, {
+                        cell_type: 'code',
+                        source: c.code || '',
+                        metadata: {},
+                    });
+                }
+                restoreBtn.textContent = 'Restored';
+                restoreBtn.className = 'jp-mod-styled';
+                restoreBtn.style.cssText = 'padding:4px 12px;font-size:12px;background:var(--jp-success-color1, #1a7f37);color:var(--jp-ui-inverse-font-color1, #fff);border:1px solid var(--jp-success-color2, #1a7f37);';
+            }
+            catch (e) {
+                console.error(e);
+                restoreBtn.textContent = 'Failed';
+                restoreBtn.className = 'jp-mod-styled jp-mod-warn';
+            }
+        });
+    });
+    btnRow.appendChild(restoreBtn);
+    container.appendChild(btnRow);
+    const bodyWidget = new widgets_1.Widget();
+    bodyWidget.node.appendChild(container);
+    (0, apputils_1.showDialog)({
+        title: 'Notebook Snapshots',
+        body: bodyWidget,
+        buttons: [apputils_1.Dialog.okButton({ label: 'Close' })],
+    });
+}
+// ===========================================================================
+// Cell Snapshots Dialog
+// ===========================================================================
+function _stripHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+}
+function _showCellSnapshotsDialog(cell, versions, panel) {
+    if (!versions || versions.length === 0) {
+        alert('No version history for this cell.');
+        return;
+    }
+    const container = document.createElement('div');
+    container.style.cssText = 'min-width:520px;max-height:550px;overflow-y:auto;font-size:13px;color:#ddd;background:#1a1a2e;padding:12px;';
+    const title = document.createElement('div');
+    title.style.cssText = 'font-weight:600;margin-bottom:10px;font-size:14px;';
+    title.textContent = `Cell Snapshots (${versions.length})`;
+    container.appendChild(title);
+    let selectedIdx = 0;
+    const preview = document.createElement('div');
+    preview.style.cssText = 'background:#111;padding:10px;border-radius:4px;margin-top:10px;max-height:300px;overflow-y:auto;white-space:pre-wrap;font-family:monospace;font-size:12px;color:#ccc;line-height:1.5;';
+    container.appendChild(preview);
+    const updatePreview = (idx) => {
+        const v = versions[idx];
+        if (!v)
+            return;
+        preview.textContent = `[${v.version}] ${new Date((v.timestamp || 0) * 1000).toLocaleString()}\n\nCode:\n${v.code || ''}\n\nOutput:\n${v.output || '(none)'}`;
+    };
+    updatePreview(0);
+    versions.forEach((v, i) => {
+        const row = document.createElement('div');
+        row.style.cssText = `padding:5px 10px;cursor:pointer;border-radius:3px;display:flex;justify-content:space-between;${i === 0 ? 'background:rgba(255,255,255,0.1);' : ''}`;
+        const ts = new Date((v.timestamp || 0) * 1000).toLocaleString();
+        const code = (v.code || '').replace(/\n/g, ' ').substring(0, 80);
+        row.innerHTML = `<span style="font-size:13px;"><b>${v.version}</b> ${ts}</span><span style="color:#999;font-size:12px;">${_stripHtml(code)}</span>`;
+        row.addEventListener('click', () => {
+            selectedIdx = i;
+            container.querySelectorAll('div[style]').forEach((el) => el.style.background = '');
+            row.style.background = 'rgba(255,255,255,0.1)';
+            updatePreview(i);
+        });
+        container.appendChild(row);
+    });
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'margin-top:10px;display:flex;gap:8px;';
+    const restoreBtn = _jpBtn('Restore Selected', 'accept');
+    restoreBtn.addEventListener('click', () => {
+        const v = versions[selectedIdx];
+        if (!v || !panel._kernel)
+            return;
+        const future = panel._kernel.requestExecute({
+            code: `get_ipython().user_ns['_panel_input']('/cell-snapshot-restore ${cell.model.id} ${v.version}')`,
+            store_history: false,
+        });
+        future.done.then((reply) => {
+            if (reply.content.status === 'ok') {
+                restoreBtn.textContent = 'Restored';
+                restoreBtn.className = 'jp-mod-styled';
+                restoreBtn.style.cssText = 'padding:4px 12px;font-size:12px;background:var(--jp-success-color1, #1a7f37);color:var(--jp-ui-inverse-font-color1, #fff);border:1px solid var(--jp-success-color2, #1a7f37);';
+                setTimeout(() => {
+                    var _a, _b;
+                    // Close dialog
+                    const dlg = document.querySelector('.jp-Dialog');
+                    if (dlg)
+                        (_b = (_a = dlg).remove) === null || _b === void 0 ? void 0 : _b.call(_a);
+                }, 500);
+            }
+            else {
+                restoreBtn.textContent = 'Failed';
+                restoreBtn.className = 'jp-mod-styled jp-mod-warn';
+            }
+        });
+    });
+    btnRow.appendChild(restoreBtn);
+    container.appendChild(btnRow);
+    const bodyWidget = new widgets_1.Widget();
+    bodyWidget.node.appendChild(container);
+    (0, apputils_1.showDialog)({
+        title: 'Cell History',
+        body: bodyWidget,
+        buttons: [apputils_1.Dialog.okButton({ label: 'Close' })],
+    });
+}
+// ===========================================================================
 // Plugin
 // ===========================================================================
 exports.panelPlugin = {
@@ -1742,6 +1957,96 @@ exports.panelPlugin = {
                 setTimeout(() => _app.shell.activateById(panel.id), 300);
             }
         };
+        // Unified "History" submenu on cell right-click
+        _app.commands.addCommand('skillbot:cell-history', {
+            label: 'Cell Snapshots',
+            execute: async () => {
+                const nb = tracker.currentWidget;
+                if (!nb)
+                    return;
+                const cell = nb.content.activeCell;
+                if (!cell)
+                    return;
+                const cellId = cell.model.id;
+                if (!panel._kernel)
+                    return;
+                const nbPath = nb.context.path || nb.context.localPath || '';
+                const future = panel._kernel.requestExecute({
+                    code: `from jupyter.cell_snapshot import list_versions; import json; d={"versions":list_versions(${JSON.stringify(cellId)}, nb_path=${JSON.stringify(nbPath)}),"cell_id":${JSON.stringify(cellId)}}; print(json.dumps(d))`,
+                    store_history: false,
+                });
+                let stdout = '';
+                future.onIOPub = (msg) => {
+                    var _a;
+                    if (msg.header.msg_type === 'stream' && ((_a = msg.content) === null || _a === void 0 ? void 0 : _a.name) === 'stdout')
+                        stdout += msg.content.text;
+                };
+                future.done.then(() => {
+                    try {
+                        const text = stdout.trim();
+                        const data = JSON.parse(text);
+                        const versions = data.versions || [];
+                        if (!versions.length) {
+                            alert('No cell snapshots yet. Execute cells first.');
+                            return;
+                        }
+                        _showCellSnapshotsDialog(cell, versions, panel);
+                    }
+                    catch (e) {
+                        console.error(e);
+                        alert('Failed to load cell snapshots.');
+                    }
+                });
+            },
+        });
+        _app.commands.addCommand('skillbot:notebook-snapshots', {
+            label: 'Notebook Snapshots',
+            execute: async () => {
+                const nb = tracker.currentWidget;
+                if (!nb)
+                    return;
+                if (!panel._kernel)
+                    return;
+                const nbPath = nb.context.path || nb.context.localPath || '';
+                const future = panel._kernel.requestExecute({
+                    code: `from jupyter.notebook_snapshot import list_snapshots_for; from jupyter.magic import _get_magic; import json; inst=_get_magic(); d={"snapshots":list_snapshots_for(${JSON.stringify(nbPath)}),"cell_restored":inst._cell_restored if inst else False}; print(json.dumps(d))`,
+                    store_history: false,
+                });
+                let stdout = '';
+                future.onIOPub = (msg) => {
+                    var _a;
+                    if (msg.header.msg_type === 'stream' && ((_a = msg.content) === null || _a === void 0 ? void 0 : _a.name) === 'stdout')
+                        stdout += msg.content.text;
+                };
+                future.done.then(() => {
+                    try {
+                        const text = stdout.trim();
+                        const data = JSON.parse(text);
+                        const snapshots = data.snapshots || [];
+                        if (!snapshots.length) {
+                            alert('No notebook snapshots yet. Execute cells first.');
+                            return;
+                        }
+                        _showSnapshotDialog(snapshots, panel, nb, data.cell_restored || false, nbPath);
+                    }
+                    catch (e) {
+                        console.error(e);
+                        alert('Failed to load snapshots.');
+                    }
+                });
+            },
+        });
+        // Submenu on both .jp-Cell and .jp-Notebook
+        const historyMenu = new widgets_2.Menu({ commands: _app.commands });
+        historyMenu.title.label = 'Snapshots';
+        historyMenu.addItem({ command: 'skillbot:cell-history' });
+        historyMenu.addItem({ command: 'skillbot:notebook-snapshots' });
+        _app.contextMenu.addItem({
+            selector: '.jp-Notebook',
+            type: 'submenu',
+            submenu: historyMenu,
+            rank: 50,
+        });
         tracker.currentChanged.connect(() => register());
         setTimeout(register, 500);
     },

@@ -8,6 +8,12 @@ src/agent/
 ├── prompt.py                # 通用 SYSTEM_PROMPT（JSON 输出 + code 字段 + 不自行执行）
 └── session.py               # AgentSession + SubAgentSession + _stream()
 
+src/chat/
+├── __init__.py              # ChatClient + _AGENTS 注册表
+└── skill.py                 # SkillManager: install/uninstall/enable/disable/inject_prompt
+                             #   持久化到 .skill_state.json，大小写不敏感 SKILL.md 查找
+                             #   自动过滤 macOS zip __MACOSX / ._* 垃圾文件
+
 src/task/
 ├── __init__.py              # Task, TaskManager
 ├── manager.py               # TaskManager: CRUD + 依赖解析
@@ -15,13 +21,16 @@ src/task/
 
 src/jupyter/
 ├── __init__.py              # extension 加载 + logging 初始化 + magics 注册 + panel bridge
+├── cell_snapshot.py         # Cell 级别版本快照（auto-save，50 版本 ring buffer）
 ├── comm.py                  # Comm 通知前端扩展（fire-and-forget，无阻塞）
 ├── config.py                # agent_config: CLI/YAML 解析、tools 加载、debug
-├── magic.py                 # 调度层: AgentMagic + panel 交互（prompt/confirm/mode/auto-fix）
+├── magic.py                 # 调度层: AgentMagic + panel 交互（prompt/confirm/mode/auto-fix/snapshot）
 ├── namespace.py             # Namespace: vars / context / delta / cell tracking
-├── panel.py                 # 前端 panel comm bridge（send_to_panel + init_panel_comm）
+├── notebook_snapshot.py     # Notebook 级别完整快照（take/list/restore，50 版本 ring buffer）
+├── panel.py                 # 前端 panel comm bridge（send_to_panel + init_panel_comm + skill_list/info）
 ├── parser.py                # Parser: JSON→code fence→raw + parse_review_result + md 检测
 ├── render.py                # 统一输出层 + SQL 自动检测（sqlparse）
+├── snapshot_utils.py        # 共享 notebook 识别（notebook_id + dir_for + 前端路径注入）
 ├── telemetry.py             # TelemetryRecorder: JSONL session 事件采集
 ├── dsl/
 │   └── sql/
@@ -149,6 +158,58 @@ Shift+Tab 循环切换模式。模式切换时 info bar 显示随机提示（4s 
 - 前端 `panel.ts` 中 `_enterSkillsMode()` / `_exitSkillsMode()` 控制视图切换
 - Comm 协议：`skill_list`（列表数据）、`skill_info`（详情）
 - macOS zip 的 `__MACOSX` / `._*` 垃圾文件自动过滤
+
+### Cell / Notebook 快照系统
+
+每次 cell 执行时自动保存版本快照，支持回滚到任意历史版本。存储目录：
+
+```
+.run/
+├── cell_snapshots/<notebook_hash>/<cell_id>/v0001.json ... v0050.json
+└── notebook_snapshots/<notebook_hash>/<timestamp>.json
+```
+
+**Cell 快照** (`cell_snapshot.py`)：
+- `save(cell_id, code, output, error, nb_path)` — auto-save 每次 cell 执行后，最多保留 50 版本
+- `list_versions(cell_id, nb_path)` — 列出某 cell 的所有版本，最新在前
+- `restore(cell_id, version, nb_path)` — 返回指定版本的 code
+
+**Notebook 快照** (`notebook_snapshot.py`)：
+- `take(cells, nb_path)` — 保存所有 cell 的完整快照，最多 50 个
+- `list_snapshots_for(nb_path)` — 列出快照列表（含 preview）
+- `restore(snapshot_id, nb_path)` — 回滚整个 notebook
+- 自动触发：cell 执行后 → `_on_cell_run` → `take_snapshot()`
+- 手动触发：panel `/snapshot` 命令
+
+**文件隔离** (`snapshot_utils.py`)：
+- 前端通过 `_set_active_notebook_path(path)` 注入当前 notebook 路径（最可靠）
+- 后端通过 `dir_for(path)` → `md5(path)[:12]` 生成目录名
+- 保存和查询使用同一路径源，确保 hash 一致
+- `notebook_id()` 提供多级 fallback（前端路径→parent_header→ip._notebook_path→CWD）
+
+**快照恢复**：
+- Cell 恢复：`send_cell_via_comm(code, replace_cell_id=cell_id)` → 前端替换并执行
+  - `_restoring_cells` set 追踪恢复中的 cell_id，跳过 snapshot 防止循环
+- Notebook 恢复：前端直接操作 `sharedModel`，清空所有 cell 后重新插入（不触发执行）
+- `store_history: false` 过滤：前端查询代码不触发 `_on_cell_run`，避免污染快照
+
+**右键菜单** (panel.ts)：
+- `.jp-Notebook` 添加 "Snapshots" 子菜单
+- **Cell Snapshots** — 查看当前 cell 的版本历史，预览 code + output，一键恢复
+- **Notebook Snapshots** — 查看整个 notebook 的快照时间线，预览 cell 摘要，一键回滚
+
+### 斜杠命令自动补全
+
+输入 `/` 时自动显示命令下拉列表，Tab/Enter 提交，Esc 关闭：
+
+| 命令 | 功能 |
+|------|------|
+| `/confirm` | 计划确认（内部使用） |
+| `/clear` | 清空 panel 输出 |
+| `/mode <name>` | 切换模式 |
+| `/skills ...` | Skill 管理面板 |
+| `/config ...` | Agent 配置管理 |
+| `/snapshot` | 手动创建 notebook 快照 |
 
 ### Ctrl+C 中断机制
 

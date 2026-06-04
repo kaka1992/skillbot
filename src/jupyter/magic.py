@@ -49,15 +49,33 @@ SUB_AGENT_DEFAULTS = {
 # ---------------------------------------------------------------------------
 
 
+# Set by frontend when notebook is activated — authoritative path for snapshot isolation
+_active_notebook_path = ""
+
+
+def _set_active_notebook_path(path: str) -> None:
+    """Called by frontend to set the active notebook path for snapshot isolation."""
+    global _active_notebook_path
+    _active_notebook_path = path
+
+
 def _notebook_path() -> str:
+    """Return the notebook file path.
+
+    Uses the frontend-provided path (most reliable), falls back to
+    parent_header metadata, ip._notebook_path, then CWD.
+    """
+    global _active_notebook_path
+    if _active_notebook_path:
+        return _active_notebook_path
     try:
         ip = get_ipython()  # noqa: F821
-        nb = getattr(ip, "_notebook_path", None)
-        if nb:
-            return nb
         kernel = getattr(ip, "kernel", None)
         parent = getattr(kernel, "_parent_header", None) or {}
         nb = (parent.get("metadata") or {}).get("notebook_path")
+        if nb:
+            return nb
+        nb = getattr(ip, "_notebook_path", None)
         if nb:
             return nb
     except Exception:
@@ -147,6 +165,8 @@ class AgentMagic(Magics):
         self._session_dirty = False  # set on interrupt, prepend note on next query
         self._jupyter_config_path = ""  # path from JUPYTER_CONFIG_PATH env var
         self._config_pending = None    # pending (resolved, new_path, old_path)
+        self._cell_restored = False    # track if any cell was individually restored
+        self._restoring_cells: set = set()  # cell_ids being restored, skip snapshot for these
 
         self._load_dotenv()
 
@@ -254,6 +274,9 @@ class AgentMagic(Magics):
         info = getattr(result, "info", None)
         if info is None:
             return
+        # Skip executions that aren't real notebook cells (frontend queries, etc.)
+        if not getattr(info, "store_history", True):
+            return
         code = getattr(info, "raw_cell", "")
         if not code:
             return
@@ -275,7 +298,26 @@ class AgentMagic(Magics):
             return
 
         output = str(info.result) if getattr(info, "result", None) else ""
-        self.ns.track_cell(code.strip(), output.strip())
+        cell_id = getattr(info, "cell_id", "")
+        self.ns.track_cell(code.strip(), output.strip(), cell_id=cell_id)
+
+        # Auto-save cell version (skip during restore)
+        restoring = cell_id in getattr(self, '_restoring_cells', set())
+        if cell_id and code.strip() and not restoring:
+            error_str = ""
+            if not result.success:
+                e = result.error_in_exec or result.error_before_exec
+                if e:
+                    error_str = str(e)[:2000]
+            from .cell_snapshot import save as save_cell_snapshot
+            save_cell_snapshot(cell_id, code.strip(), output.strip(), error_str, nb_path=_notebook_path())
+        # Auto-snapshot notebook on every cell execution (skip restore ops)
+        if code.strip():
+            if restoring:
+                self._restoring_cells.discard(cell_id)
+            else:
+                from .notebook_snapshot import take as take_snapshot
+                take_snapshot(self.ns._cells, nb_path=_notebook_path())
 
         rec = get_recorder()
         if rec:
@@ -315,6 +357,15 @@ class AgentMagic(Magics):
             self._handle_panel_skills(text)
         elif text.startswith("/config"):
             self._handle_panel_config(text)
+        elif text == "/snapshot":
+            from .notebook_snapshot import take as take_snapshot
+            path = take_snapshot(self.ns._cells, nb_path=_notebook_path())
+            if path:
+                send_to_panel(self.ns, "text", content=f"✓ Snapshot saved: {path.stem}\n")
+            else:
+                send_to_panel(self.ns, "text", content="✗ No cells to snapshot.\n")
+        elif text.startswith("/cell-snapshot-restore"):
+            self._handle_cell_restore(text)
         else:
             self._handle_panel_prompt(text, mode)
 
@@ -697,6 +748,25 @@ class AgentMagic(Magics):
             else:
                 send_to_panel(self.ns, "text",
                               content="No config loaded. Usage: /config <path/to/config.yaml>\n")
+
+    def _handle_cell_restore(self, text: str) -> None:
+        """Handle /cell-snapshot-restore <cell_id> <version> — restore a cell snapshot."""
+        from .cell_snapshot import restore
+        parts = text.split()
+        if len(parts) < 3:
+            send_to_panel(self.ns, "text", content="Usage: /cell-snapshot-restore <cell_id> <version>\n")
+            return
+        cell_id = parts[1]
+        version = parts[2]
+        code = restore(cell_id, version)
+        if code is None:
+            send_to_panel(self.ns, "text", content=f"Version {version} not found.\n")
+            return
+        self._restoring_cells.add(cell_id)
+        from .comm import send_cell_via_comm
+        send_cell_via_comm(self.ns, code, auto=False, cell_type="code", replace_cell_id=cell_id)
+        self._cell_restored = True
+        print("Cell restored to " + version, flush=True)
 
     def _handle_panel_confirm(self, arg: str) -> None:
         """Handle /confirm from panel."""

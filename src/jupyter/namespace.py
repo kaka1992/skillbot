@@ -125,12 +125,14 @@ class Namespace:
 
     # -- cell tracking --
 
-    def track_cell(self, code: str, output: str = "", error: str = "") -> None:
+    def track_cell(self, code: str, output: str = "", error: str = "",
+                   cell_id: str = "") -> None:
         """Record a cell execution.
 
         *code* truncated to 1500, *output* and *error* to 500.
         """
         self._cells.append({
+            "cell_id": cell_id,
             "code": code.strip()[:1500],
             "output": output.strip()[:500],
             "error": error.strip()[:500],

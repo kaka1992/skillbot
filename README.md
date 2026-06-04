@@ -124,6 +124,17 @@ skillbot/
 - 启用/禁用即时生效（claude-code 下一条 query 注入变更通知）
 - 安装/卸载需重启 server 才能完全生效
 
+**快照与版本历史（右键菜单）：**
+
+右键 Notebook 区域 → "Snapshots" 子菜单：
+
+| 菜单项 | 功能 |
+|--------|------|
+| Cell Snapshots | 查看当前 cell 的版本历史（自动保存，最多 50 版本），预览 code + output，一键恢复 |
+| Notebook Snapshots | 查看整个 notebook 的快照时间线，预览 cell 摘要，一键回滚全部 cell |
+
+每次 cell 执行后自动保存版本快照。可通过 panel `/snapshot` 手动创建 notebook 快照。不同 notebook 之间完全隔离。恢复操作不会触发新的快照。
+
 **配置管理（`/config` 命令）：**
 
 | 命令 | 说明 |
