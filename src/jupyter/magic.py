@@ -14,7 +14,7 @@ from agent import AgentSession, SubAgentConfig
 from agent.prompt import PromptBuilder
 from chat import _AGENTS
 from hook import HookGroup, HookRegistry, HookEvent
-from jupyter.telemetry import get_recorder, TelemetryRecorder, set_recorder
+from jupyter.telemetry import get_recorder, SessionEventRecorder, set_recorder
 from .config import pop_flag, parse_kv, configure_agent, load_yaml_config
 from .namespace import Namespace
 from .panel import send_to_panel, send_thinking
@@ -421,7 +421,7 @@ class AgentMagic(Magics):
         self._init_session(self._agent, self._timeout, self._claude_md_path)
         if self._session.client is None:
             raise RuntimeError("session init failed — is Claude server (port 9000) running?")
-        rec = TelemetryRecorder(
+        rec = SessionEventRecorder(
             session_id=self._session.session_id,
             path=_os.path.join(".run", "sessions", f"{self._session.session_id}.jsonl"),
         )
