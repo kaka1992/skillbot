@@ -5,6 +5,7 @@ import logging
 import os as _os
 import shlex
 import sys
+import time
 from enum import Enum, auto
 
 from IPython.core.magic import Magics, cell_magic, line_magic, magics_class
@@ -204,21 +205,50 @@ class AgentMagic(Magics):
         send_to_panel(self.ns, "ready")
 
     def _stream_with_interrupt(self, prompt: str) -> tuple[str, bool]:
-        """Stream agent response. Returns (raw_text, was_interrupted).
-
-        Always returns a valid string (never UnboundLocalError).
-        Callers check ``interrupted`` before processing results.
-        """
+        """Stream agent response. Returns (raw_text, was_interrupted)."""
         if self._session_dirty:
             self._session_dirty = False
             prompt = _INTERRUPT_NOTE + "\n\n" + prompt
+        rec = get_recorder()
+        t0 = time.time()
+        thinking_chars = 0
+        tool_names: set[str] = set()
+
+        def _on_chunk(t):
+            send_to_panel(self.ns, "text", content=t)
+
+        def _on_thinking(t):
+            nonlocal thinking_chars
+            thinking_chars += len(t)
+            send_thinking(t)
+
         try:
             raw = self._session.stream(prompt, show_text=False,
-                on_chunk=lambda t: send_to_panel(self.ns, "text", content=t),
-                on_thinking=lambda t: send_thinking(t))
+                on_chunk=_on_chunk,
+                on_thinking=_on_thinking)
             send_to_panel(self.ns, "text", content="\n")
+            elapsed_ms = int((time.time() - t0) * 1000)
+            if rec:
+                result = parse(raw)
+                rec.record("agent_response",
+                    mode=getattr(self, '_last_mode', 'default'),
+                    raw_text=raw.strip(),
+                    code_blocks=len(result.code_list),
+                    tool_names=sorted(tool_names),
+                    thinking_chars=thinking_chars,
+                    elapsed_ms=elapsed_ms,
+                    interrupted=False,
+                )
             return raw, False
         except KeyboardInterrupt:
+            elapsed_ms = int((time.time() - t0) * 1000)
+            if rec:
+                rec.record("agent_response",
+                    elapsed_ms=elapsed_ms,
+                    thinking_chars=thinking_chars,
+                    tool_names=sorted(tool_names),
+                    interrupted=True,
+                )
             self._interrupt_cleanup()
             return "", True
 
@@ -535,6 +565,13 @@ class AgentMagic(Magics):
         # Stream
         self._state = AgentState.STREAMING
         self._busy = True
+        rec = get_recorder()
+        if rec:
+            rec.record("agent_prompt",
+                mode=mode,
+                prompt=prompt,
+                context_preview=ctx[:500] if ctx else "",
+            )
         raw, interrupted = self._stream_with_interrupt(full)
         if interrupted:
             return
