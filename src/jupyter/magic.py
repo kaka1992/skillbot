@@ -426,6 +426,12 @@ class AgentMagic(Magics):
             path=_os.path.join(".run", "sessions", f"{self._session.session_id}.jsonl"),
         )
         set_recorder(rec)
+        # Register atexit flush so session data is written on kernel shutdown
+        rec_ref = rec
+        import atexit as _atexit
+        @_atexit.register
+        def _flush_telemetry():
+            rec_ref.flush()
         self._session_ready = True
 
     def _init_session(self, agent: str, timeout: int, claude_md: str | None = None) -> None:
