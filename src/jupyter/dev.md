@@ -24,14 +24,14 @@ src/jupyter/
 ├── cell_snapshot.py         # Cell 级别版本快照（auto-save，50 版本 ring buffer）
 ├── comm.py                  # Comm 通知前端扩展（fire-and-forget，无阻塞）
 ├── config.py                # agent_config: CLI/YAML 解析、tools 加载、debug
-├── magic.py                 # 调度层: AgentMagic + panel 交互（prompt/confirm/mode/auto-fix/snapshot）
-├── namespace.py             # Namespace: vars / context / delta / cell tracking
+├── magic.py                 # 调度层: AgentMagic + AgentState 状态机（prompt/confirm/continue/auto-fix/snapshot/optimize）
+├── namespace.py             # Namespace: vars / context / delta / cell tracking / remove_cell_by_id / track_context
 ├── notebook_snapshot.py     # Notebook 级别完整快照（take/list/restore，50 版本 ring buffer）
 ├── panel.py                 # 前端 panel comm bridge（send_to_panel + init_panel_comm + skill_list/info）
 ├── parser.py                # Parser: JSON→code fence→raw + parse_review_result + md 检测
 ├── render.py                # 统一输出层 + SQL 自动检测（sqlparse）
 ├── snapshot_utils.py        # 共享 notebook 识别（notebook_id + dir_for + 前端路径注入）
-├── telemetry.py             # TelemetryRecorder: JSONL session 事件采集
+├── telemetry.py             # SessionEventRecorder: buffer + session-end JSONL flush
 ├── dsl/
 │   └── sql/
 └── extension/
@@ -61,22 +61,31 @@ __init__ (extension 加载时)
   ├── AgentSession(agent, timeout) → configure_subs + init_session
   │   └── SYSTEM_PROMPT + project prompt 合并 → seed prompt
   │   └── _register_hooks → CODE_REVIEW + AGENT_CELL_REVIEW
-  ├── TelemetryRecorder + ns.delta() baseline
+  ├── SessionEventRecorder + ns.delta() baseline
   └── init_panel_comm(shell) → 注册 comm target（前端主动创建）
 
 Panel 交互流
   ↓ 用户在右侧 panel 输入 prompt
   ├── panel.ts _sendPrompt() → kernel.requestExecute → magic.py _panel_input()
-  ├── _handle_panel_prompt(prompt, mode) → session.stream() → 流式输出到 panel
-  │   ├── mode="default" → render_output(auto=False) → cell 注入，手动执行
-  │   ├── mode="plan" → 注入 plan 指令前缀 → 仅显示 plan，不注入 cell
+  ├── _handle_panel_prompt(prompt, mode) → _stream_with_interrupt() → 流式输出到 panel
+  │   ├── mode="default" → _ask_confirm(pending=result) → 前端 Yes/No 确认
+  │   │   ├── Yes → 注入 cell + 自动执行 → _on_cell_run → _finish_agent_run
+  │   │   └── No → _finish_agent_run
+  │   ├── mode="plan" → 注入 plan 指令前缀 → 仅显示 plan → plan_confirm
   │   │   └── plan_confirm → 前端显示计划确认 UI（3 选项 + 反馈）
-  │   │       ├── Yes (accept_edits) → _implement_plan(auto=False) → cell 注入
   │   │       ├── Yes (auto-execute) → _implement_plan(auto=True) → cell 注入+执行
+  │   │       ├── Yes (accept_edits) → _implement_plan(auto=False) → _ask_confirm
   │   │       └── No, revise → 反馈文本域 → 修订 plan → 重新确认
-  │   └── mode="auto" → render_output(auto=True, on_cell_id=...) → 自动执行
+  │   └── mode="auto" → render_output(auto=True) → 自动执行
   │       └── cell 错误 → _on_cell_run → _auto_fix_cell → AI 修复 → 替换 cell
-  └── send_to_panel() → comm 消息 → panel.ts onMsg → 渲染
+  ├── /continue yes|no → _handle_continue → 下一轮 / 停止
+  └── /cell-optimize → _handle_cell_optimize → Agent 优化指定 cell → replace_cell_id
+
+AgentState 状态机（`magic.py:AgentState`）：
+  IDLE → STREAMING → WAITING_CONFIRM → /continue yes → STREAMING (loop)
+                   → PLAN_REVIEW → /confirm → STREAMING / WAITING_CONFIRM
+                   → AUTO_FIXING (auto mode error) → STREAMING
+  任意状态 + KeyboardInterrupt → _interrupt_cleanup() → IDLE
 
 %agent_config (行魔法)
   ↓ AgentMagic.agent_config_func()
@@ -198,6 +207,28 @@ Shift+Tab 循环切换模式。模式切换时 info bar 显示随机提示（4s 
 - **Cell Snapshots** — 查看当前 cell 的版本历史，预览 code + output，一键恢复
 - **Notebook Snapshots** — 查看整个 notebook 的快照时间线，预览 cell 摘要，一键回滚
 
+### Cell 优化（右键 → Agent → Optimize with Agent）
+
+右键 cell → "Agent" → "Optimize with Agent" → 弹出对话框：
+- 输入优化意图（e.g. optimize query, fix bug, improve readability）
+- Enter → Optimize（替换 cell，不自动执行）
+- Shift+Enter → Optimize & Run（替换 cell + 自动执行）
+
+- 前端收集 cell code + output + errors → `/cell-optimize` → `_handle_cell_optimize`
+- 自动检测 SQL（`%%sql`）vs Python，构建对应优化 prompt
+- Agent 返回优化后代码 → `render_code(replace_cell_id=cell_id)` 替换原 cell
+- Namespace 更新：`remove_cell_by_id` 移除旧 cell 记录，`track_context` 注入 `[system]` 优化记录
+
+### 任务循环（/continue + /stop）
+
+Default 模式下 Agent 生成 cell 后弹出 Yes/No 确认按钮：
+- **Yes** → cell 注入 + 自动执行 → `_finish_agent_run`
+- **No** → 结束
+- Text-only 响应 → "Continue?" → Yes 继续对话，No 结束
+
+Plan 模式 confirm 后同 default 流程。
+Auto 模式跳过确认，直接注入+执行+自动修复。
+
 ### 斜杠命令自动补全
 
 输入 `/` 时自动显示命令下拉列表，Tab/Enter 提交，Esc 关闭：
@@ -210,6 +241,9 @@ Shift+Tab 循环切换模式。模式切换时 info bar 显示随机提示（4s 
 | `/skills ...` | Skill 管理面板 |
 | `/config ...` | Agent 配置管理 |
 | `/snapshot` | 手动创建 notebook 快照 |
+| `/continue yes\|no` | 继续/停止当前任务循环 |
+| `/stop` | 立即退出当前任务 |
+| `/cell-optimize` | Agent 优化指定 cell（内部使用，右键菜单触发） |
 
 ### Ctrl+C 中断机制
 
@@ -385,11 +419,19 @@ SOLVED/NOT_SOLVED/SOLVING 三态。用 `ns.context()` 获取完整上下文。SO
 
 ## Telemetry
 
-| 事件 | 采集点 |
-|------|------|
-| `cell_executed` | `_on_cell_run` |
-| `agent_call` | agent 调用完成 |
-| `hook_event` | `HookRegistry.dispatch` |
+`SessionEventRecorder` — 内存缓冲 + session 结束时批量写入 JSONL。存储于 `.run/sessions/{session_id}.jsonl`。
+
+| 事件 | 采集点 | 触发时机 |
+|------|------|------|
+| `session_start` / `session_end` | `SessionEventRecorder.__init__` / `flush()` | Session 生命周期 |
+| `cell_executed` | `_on_cell_run` | 每个 cell 执行后（含 cell_id、exec_order、elapsed_ms） |
+| `agent_prompt` | `_handle_panel_prompt` / `_handle_continue` | Agent 调用前 |
+| `agent_response` | `_stream_with_interrupt` | Agent 返回后（含 tool_names、thinking_chars、elapsed_ms） |
+| `agent_continue` | `_handle_continue` | 用户 /continue yes|no |
+| `workflow_state` | 状态机各转换点 | confirm_shown / user_continue / user_stop / interrupt / agent_done / plan_confirm / auto_fix |
+| `hook_event` | `HookRegistry.dispatch` | Hook 执行后 |
+
+Flush 触发：kernel shutdown 时通过 `atexit` 注册自动写入。
 
 ## 前端扩展
 

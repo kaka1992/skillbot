@@ -135,6 +135,21 @@ skillbot/
 
 每次 cell 执行后自动保存版本快照。可通过 panel `/snapshot` 手动创建 notebook 快照。不同 notebook 之间完全隔离。恢复操作不会触发新的快照。
 
+**Cell 优化（右键菜单）：**
+
+右键 cell → "Agent" → "Optimize with Agent" → 输入优化意图：
+- Enter → 替换 cell，手动审查
+- Shift+Enter → 替换 cell + 自动执行
+- 自动检测 SQL/Python，构建对应的优化 prompt
+
+**任务循环（`/continue` + `/stop` 命令）：**
+
+| 命令 | 说明 |
+|------|------|
+| `/continue yes` | Default/plan 模式下确认执行，生成 cell + 自动执行 |
+| `/continue no` | 结束当前任务 |
+| `/stop` | 立即退出当前任务 |
+
 **配置管理（`/config` 命令）：**
 
 | 命令 | 说明 |
@@ -197,7 +212,15 @@ select * from table
 
 ### 数据采集
 
-Telemetry 自动采集 cell 执行、agent 调用、hook 事件到 `.run/sessions/{id}.jsonl`，用于改进 agent 准确性和 LLM 训练。反馈可通过 panel 的 plan 修订流程提交。
+`SessionEventRecorder` 自动采集完整工作内容到 `.run/sessions/{id}.jsonl`（单个 JSONL 文件，session 结束时批量写入）：
+
+| 事件类型 | 内容 |
+|---------|------|
+| `cell_executed` | 每个 cell 的代码、输出、错误、执行序号、耗时 |
+| `agent_prompt` / `agent_response` | 每次 agent 交互的 prompt、输出、tool 调用、thinking 字符数、耗时 |
+| `agent_continue` | /continue yes/no 选择 |
+| `workflow_state` | 状态机转换（confirm_shown、interrupt、agent_done 等） |
+| `hook_event` | Hook 执行结果 |
 
 ### Session + SubAgent
 
