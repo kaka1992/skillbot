@@ -68,11 +68,23 @@ class Namespace:
         src = source.strip()[:1500]
         if not src:
             return
-        # Remove last matching cell (newest first)
         for i in range(len(self._cells) - 1, -1, -1):
             if self._cells[i]["code"][:1500] == src:
                 del self._cells[i]
                 break
+
+    def remove_cell_by_id(self, cell_id: str) -> None:
+        """Remove a cell from tracking by its ID (used after cell optimization)."""
+        if not cell_id:
+            return
+        self._cells = [c for c in self._cells if c.get("cell_id") != cell_id]
+
+    def track_context(self, note: str) -> None:
+        """Inject a system context note visible to future agent interactions."""
+        self._cells.append({
+            "cell_id": "", "code": note, "output": "",
+            "error": "", "type": "context_note",
+        })
 
     def delta(self) -> str:
         """Incremental: new variables + new cells + pending edits + hook events."""
@@ -154,11 +166,14 @@ class Namespace:
                 parts.append("")
             parts.append("Recent cell history:")
             for c in cells[-5:]:
-                parts.append(f"  › {c['code'][:200]}")
-                if c.get("output"):
-                    parts.append(f"    → {c['output'][:150]}")
-                if c.get("error"):
-                    parts.append(f"    ✗ {c['error'][:150]}")
+                if c.get("type") == "context_note":
+                    parts.append(f"  [system] {c['code'][:300]}")
+                else:
+                    parts.append(f"  › {c['code'][:200]}")
+                    if c.get("output"):
+                        parts.append(f"    → {c['output'][:150]}")
+                    if c.get("error"):
+                        parts.append(f"    ✗ {c['error'][:150]}")
         if pending_edits:
             if parts:
                 parts.append("")

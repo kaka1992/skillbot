@@ -72,13 +72,17 @@ class AgentPanel extends widgets_1.Widget {
         this._planConfirmOptionIdx = 0;
         this._planConfirmFeedbackMode = false;
         this._planCurrentSummary = '';
+        // continue confirmation (plan/default mode loop)
+        this._continueConfirmActive = false;
+        this._continueOptionIdx = 0;
+        this._continueSummary = '';
         // message block
         this._currentBlock = null;
         this._streaming = false;
         this._responseStarted = false;
         this._textEl = null; // accumulated text element for streaming
         this._thinkingEl = null; // accumulated thinking element
-        this._thinkingCollapsed = true; // Ctrl+T: default collapsed (150 chars)
+        this._thinkingCollapsed = true; // Ctrl+T to toggle collapse
         this._busy = false; // agent is working → queue new prompts
         this._promptQueue = [];
         this._skillsMode = false; // skills view active → input hidden
@@ -112,7 +116,7 @@ class AgentPanel extends widgets_1.Widget {
         welcome.className = 'skillbot-welcome';
         welcome.innerHTML = `
       <div style="font-size:14px;font-weight:600;color:${panelStyles_1.CC.text};margin-bottom:4px;">Agent Panel</div>
-      <div style="font-size:12px;font-weight:500;color:rgb(180,180,180);">Enter send · Shift+↵ newline · ↑↓ history · Shift+Tab mode · Ctrl+T thinking · Ctrl+C interrupt · /skills manage</div>
+      <div style="font-size:12px;font-weight:500;color:rgb(180,180,180);">Enter send · Shift+↵ newline · ↑↓ history · Shift+Tab mode · Ctrl+T thinking · Ctrl+C interrupt · /skills manage · /continue loop · /stop task</div>
     `;
         this._root.appendChild(welcome);
         // output — click to focus input + keyboard for Ctrl+T
@@ -198,7 +202,7 @@ class AgentPanel extends widgets_1.Widget {
         this._commandDropdown.style.cssText = `display:none;position:absolute;bottom:100%;left:0;right:0;background:${panelStyles_1.CC.bg};border:1px solid rgba(255,255,255,0.15);border-radius:4px;max-height:180px;overflow-y:auto;z-index:10;margin-bottom:2px;`;
         this._inputWrapper.style.position = 'relative';
         this._inputWrapper.appendChild(this._commandDropdown);
-        this._commands = ['/confirm ', '/clear', '/mode ', '/skills ', '/config ', '/snapshot'];
+        this._commands = ['/confirm ', '/clear', '/continue ', '/mode ', '/skills ', '/config ', '/snapshot', '/stop'];
         this._commandIdx = -1;
         this._root.appendChild(this._inputWrapper);
         // plan confirm overlay (hidden, replaces input area when active)
@@ -217,6 +221,38 @@ class AgentPanel extends widgets_1.Widget {
     // ---- keyboard -----------------------------------------------------------
     _onKeydown(e) {
         var _a;
+        // continue confirm: Yes/No selection (plan-style overlay)
+        if (this._continueConfirmActive) {
+            if (e.key === 'ArrowUp' || (e.key === 'Tab' && e.shiftKey)) {
+                e.preventDefault();
+                e.stopPropagation();
+                this._continueOptionIdx = (this._continueOptionIdx === 0 ? 1 : 0);
+                this._renderContinueOptions();
+                return;
+            }
+            if (e.key === 'ArrowDown' || e.key === 'Tab') {
+                e.preventDefault();
+                e.stopPropagation();
+                this._continueOptionIdx = (this._continueOptionIdx === 0 ? 1 : 0);
+                this._renderContinueOptions();
+                return;
+            }
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                e.stopPropagation();
+                this._submitContinue();
+                return;
+            }
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                this._continueOptionIdx = 1;
+                this._submitContinue();
+                return;
+            }
+            e.preventDefault();
+            return;
+        }
         // plan confirm mode: intercept navigation and commit keys
         if (this._planConfirmActive) {
             // Feedback mode: let typing pass through to textarea, intercept Enter/Esc
@@ -1480,6 +1516,48 @@ class AgentPanel extends widgets_1.Widget {
     _sendConfirmToBackend(c) { PC.sendConfirmToBackend(this, c); }
     _submitPlanConfirm() { PC.submitPlanConfirm(this); }
     _cancelPlanConfirm() { PC.cancelPlanConfirm(this); }
+    // ---- continue confirmation (plan-style overlay) --------------------------
+    _renderContinueButtons(summary) {
+        this._continueConfirmActive = true;
+        this._continueOptionIdx = 0;
+        this._continueSummary = summary;
+        this._renderContinueOptions();
+        this._inputWrapper.style.display = 'none';
+        this._confirmWrapper.style.display = 'flex';
+        this._confirmWrapper.focus();
+    }
+    _renderContinueOptions() {
+        const summary = this._continueSummary;
+        const options = [
+            'Yes — generate and execute cells',
+            'No — finish here',
+        ];
+        const optionsHtml = options.map((label, i) => {
+            const cls = i === this._continueOptionIdx
+                ? 'skillbot-confirm-option skillbot-confirm-option-active'
+                : 'skillbot-confirm-option';
+            return `<div class="${cls}">${label}</div>`;
+        }).join('');
+        this._confirmWrapper.innerHTML = `
+      <div class="skillbot-confirm-label">${this._esc(summary)}</div>
+      ${optionsHtml}
+      <div class="skillbot-confirm-hint">↑↓ select · Enter confirm · Esc cancel</div>
+    `;
+    }
+    _submitContinue() {
+        const arg = this._continueOptionIdx === 0 ? 'yes' : 'no';
+        this._continueConfirmActive = false;
+        this._confirmWrapper.style.display = 'none';
+        this._confirmWrapper.innerHTML = '';
+        this._inputWrapper.style.display = '';
+        this._inputEl.focus();
+        if (this._kernel) {
+            this._kernel.requestExecute({
+                code: `get_ipython().user_ns['_panel_input']('/continue ${arg}')`,
+                store_history: false,
+            });
+        }
+    }
     // ---- helpers -------------------------------------------------------------
     _scrollBottom() {
         this._outputEl.scrollTop = this._outputEl.scrollHeight;
@@ -1618,6 +1696,7 @@ class AgentPanel extends widgets_1.Widget {
                         this._renderCodeBlock(d.language || '', d.code || '');
                         break;
                     case 'result':
+                        this._stopSpinner();
                         if (this._planConfirmActive)
                             this._closeConfirm();
                         this._renderResult(d.summary || '');
@@ -1640,7 +1719,14 @@ class AgentPanel extends widgets_1.Widget {
                         this._installError = '';
                         this._renderSkillList(d.skills || []);
                         break;
+                    case 'continue_confirm':
+                        this._stopSpinner();
+                        this._busy = false;
+                        this._dequeueNext();
+                        this._renderContinueButtons(d.summary || '');
+                        break;
                     case 'ready':
+                        this._stopSpinner();
                         this._busy = false;
                         this._dequeueNext();
                         break;
@@ -1679,7 +1765,7 @@ AgentPanel.MODE_INFO = {
         'Default mode — I decide whether to plan first or write code directly'],
 };
 // ---- prompt -------------------------------------------------------------
-AgentPanel.DISPLAY_COMMANDS = ['/clear', '/mode', '/skills', '/config'];
+AgentPanel.DISPLAY_COMMANDS = ['/clear', '/mode', '/skills', '/config', '/continue', '/stop'];
 // ===========================================================================
 // Notebook Snapshot Dialog
 // ===========================================================================
@@ -1957,6 +2043,99 @@ exports.panelPlugin = {
                 setTimeout(() => _app.shell.activateById(panel.id), 300);
             }
         };
+        // Cell optimization — right-click → agent improve
+        _app.commands.addCommand('skillbot:cell-optimize', {
+            label: 'Optimize with Agent',
+            execute: async () => {
+                var _a;
+                const nb = tracker.currentWidget;
+                if (!nb || !panel._kernel)
+                    return;
+                const cell = nb.content.activeCell;
+                if (!cell)
+                    return;
+                const cellId = cell.model.id;
+                const cellType = cell.model.type || 'code';
+                if (cellType === 'markdown') {
+                    alert('Cell optimization only works for code cells.');
+                    return;
+                }
+                const code = cell.model.sharedModel.getSource();
+                if (!code.trim()) {
+                    alert('Cell is empty.');
+                    return;
+                }
+                let output = '';
+                let cellError = '';
+                try {
+                    const outputs = cell.model.outputs;
+                    if ((outputs === null || outputs === void 0 ? void 0 : outputs.length) > 0) {
+                        const last = outputs.get(outputs.length - 1);
+                        if ((last === null || last === void 0 ? void 0 : last.output_type) === 'error') {
+                            cellError = `${last.ename || 'Error'}: ${last.evalue || ''}`;
+                        }
+                        else {
+                            output = ((_a = last === null || last === void 0 ? void 0 : last.data) === null || _a === void 0 ? void 0 : _a['text/plain']) || '';
+                        }
+                    }
+                }
+                catch (_) { }
+                const input = document.createElement('textarea');
+                input.placeholder = 'e.g. optimize query, fix bug, improve readability...';
+                input.style.cssText = 'width:100%;min-height:60px;background:#111;color:#ddd;border:1px solid #444;padding:8px;font-size:12px;resize:vertical;font-family:inherit;';
+                const hint = document.createElement('div');
+                hint.style.cssText = 'font-size:11px;color:rgb(140,140,140);margin-top:4px;';
+                hint.textContent = 'Enter → Optimize    Shift+Enter → Optimize & Run';
+                const body = new widgets_1.Widget();
+                body.node.appendChild(input);
+                body.node.appendChild(hint);
+                // Build dialog manually for keyboard control
+                let autoRun = false;
+                const dialog = new apputils_1.Dialog({
+                    title: 'Cell Optimization',
+                    body,
+                    buttons: [
+                        apputils_1.Dialog.cancelButton(),
+                        apputils_1.Dialog.okButton({ label: 'Optimize & Run' }),
+                        apputils_1.Dialog.okButton({ label: 'Optimize' }),
+                    ],
+                });
+                // After render, hijack the dialog's keyboard handling
+                dialog.node.addEventListener('keydown', (e) => {
+                    var _a;
+                    if (e.key !== 'Enter' || e.isComposing)
+                        return;
+                    if (((_a = document.activeElement) === null || _a === void 0 ? void 0 : _a.tagName) === 'TEXTAREA') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        autoRun = e.shiftKey;
+                        const btns = dialog.node.querySelectorAll('.jp-Dialog-button');
+                        const btn = e.shiftKey
+                            ? btns[btns.length - 2]
+                            : btns[btns.length - 1];
+                        btn === null || btn === void 0 ? void 0 : btn.click();
+                    }
+                }, true);
+                setTimeout(() => input.focus(), 10);
+                const dlgResult = await dialog.launch();
+                const clicked = dlgResult.button.label;
+                if (clicked === 'Cancel')
+                    return;
+                const userRequest = input.value.trim() || 'improve this code';
+                const autoExec = autoRun || clicked === 'Optimize & Run';
+                const payloadJson = JSON.stringify({
+                    cellId, code, output,
+                    error: cellError,
+                    cellType,
+                    request: userRequest,
+                    auto: autoExec,
+                });
+                panel._kernel.requestExecute({
+                    code: `get_ipython().user_ns['_panel_input']('/cell-optimize ' + ${JSON.stringify(payloadJson)})`,
+                    store_history: false,
+                });
+            },
+        });
         // Unified "History" submenu on cell right-click
         _app.commands.addCommand('skillbot:cell-history', {
             label: 'Cell Snapshots',
@@ -2038,7 +2217,9 @@ exports.panelPlugin = {
         });
         // Submenu on both .jp-Cell and .jp-Notebook
         const historyMenu = new widgets_2.Menu({ commands: _app.commands });
-        historyMenu.title.label = 'Snapshots';
+        historyMenu.title.label = 'Agent';
+        historyMenu.addItem({ command: 'skillbot:cell-optimize' });
+        historyMenu.addItem({ type: 'separator' });
         historyMenu.addItem({ command: 'skillbot:cell-history' });
         historyMenu.addItem({ command: 'skillbot:notebook-snapshots' });
         _app.contextMenu.addItem({
