@@ -421,9 +421,11 @@ class AgentMagic(Magics):
         self._init_session(self._agent, self._timeout, self._claude_md_path)
         if self._session.client is None:
             raise RuntimeError("session init failed — is Claude server (port 9000) running?")
+        from pathlib import Path as _Path
+        _project_root = _Path(__file__).resolve().parents[2]
         rec = SessionEventRecorder(
             session_id=self._session.session_id,
-            path=_os.path.join(".run", "sessions", f"{self._session.session_id}.jsonl"),
+            path=str(_project_root / ".run" / "sessions" / f"{self._session.session_id}.jsonl"),
         )
         set_recorder(rec)
         # Register atexit flush so session data is written on kernel shutdown
