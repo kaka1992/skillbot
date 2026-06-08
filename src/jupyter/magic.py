@@ -5,6 +5,7 @@ import logging
 import os as _os
 import shlex
 import sys
+from enum import Enum, auto
 
 from IPython.core.magic import Magics, cell_magic, line_magic, magics_class
 
@@ -140,6 +141,15 @@ def _register_hooks(timeout: int, hook_cfg: dict) -> None:
     HookRegistry.register_group(cell_review_group, HookEvent.AGENT_CELL_REVIEW)
 
 
+class AgentState(Enum):
+    """Explicit agent lifecycle state."""
+    IDLE = auto()
+    STREAMING = auto()           # agent is generating a response
+    PLAN_REVIEW = auto()         # plan displayed, waiting for confirm/revision
+    WAITING_CONFIRM = auto()     # response ready, waiting for user yes/no before acting
+    AUTO_FIXING = auto()         # deferred auto-fix in progress (auto mode)
+
+
 @magics_class
 class AgentMagic(Magics):
     _agent = "claude-code"
@@ -152,21 +162,21 @@ class AgentMagic(Magics):
         import sys as _sys
         _sys.modules[__name__]._agent_magic_instance = self
         self.ns = Namespace(shell)
-        self._plan = False
-        self._plan_mode_active = False
+        self._state = AgentState.IDLE
+        self._busy = False                         # legacy — will be removed after refactor
         self._last_plan_prompt = ""
         self._last_plan_output = ""
-        self._agent_cells: dict[str, str] = {}  # cell_id → code, for auto-fix on error
-        self._auto_fixing = False  # guard against recursive auto-fix
-        self._auto_fix_count = 0   # limit retries per batch
-        self._auto_pending = 0     # count of auto-exec cells still running
-        self._busy = False          # block input while agent is working
-        self._session_ready = False  # lazy-init session on first query
-        self._session_dirty = False  # set on interrupt, prepend note on next query
-        self._jupyter_config_path = ""  # path from JUPYTER_CONFIG_PATH env var
-        self._config_pending = None    # pending (resolved, new_path, old_path)
-        self._cell_restored = False    # track if any cell was individually restored
-        self._restoring_cells: set = set()  # cell_ids being restored, skip snapshot for these
+        self._pending_result = None                   # ParsedResult waiting for user confirmation
+        self._agent_cells: dict[str, str] = {}     # cell_id → code, for auto-fix lookup
+        self._round_results: list[dict] = []        # [{cell_id, code, output}] for auto-fix lookup
+        self._auto_pending = 0                      # count of auto-exec cells still running
+        self._auto_fix_count = 0                    # limit retries per batch
+        self._session_ready = False                 # lazy-init session on first query
+        self._session_dirty = False                 # set on interrupt, prepend note on next query
+        self._jupyter_config_path = ""              # path from JUPYTER_CONFIG_PATH env var
+        self._config_pending = None                 # pending (resolved, new_path, old_path)
+        self._cell_restored = False                 # track if any cell was individually restored
+        self._restoring_cells: set = set()          # cell_ids being restored, skip snapshot for these
 
         self._load_dotenv()
 
@@ -178,6 +188,113 @@ class AgentMagic(Magics):
         shell.events.register("post_run_cell", self._on_cell_run)
         from .panel import init_panel_comm
         init_panel_comm(shell)
+
+    # ---- state machine helpers -----------------------------------------------
+
+    def _interrupt_cleanup(self, msg: str = "\n⏏ interrupted\n") -> None:
+        """Unified KeyboardInterrupt handler — replaces 5 duplicated copies."""
+        self._session_dirty = True
+        self._state = AgentState.IDLE
+        self._busy = False
+        self._auto_pending = 0
+        self._pending_result = None
+        self._round_results.clear()
+        send_to_panel(self.ns, "text", content=msg)
+        send_to_panel(self.ns, "result", summary="")
+        send_to_panel(self.ns, "ready")
+
+    def _stream_with_interrupt(self, prompt: str) -> tuple[str, bool]:
+        """Stream agent response. Returns (raw_text, was_interrupted).
+
+        Always returns a valid string (never UnboundLocalError).
+        Callers check ``interrupted`` before processing results.
+        """
+        if self._session_dirty:
+            self._session_dirty = False
+            prompt = _INTERRUPT_NOTE + "\n\n" + prompt
+        try:
+            raw = self._session.stream(prompt, show_text=False,
+                on_chunk=lambda t: send_to_panel(self.ns, "text", content=t),
+                on_thinking=lambda t: send_thinking(t))
+            send_to_panel(self.ns, "text", content="\n")
+            return raw, False
+        except KeyboardInterrupt:
+            self._interrupt_cleanup()
+            return "", True
+
+    def _finish_agent_run(self, msg: str = "") -> None:
+        """Clean up after agent run completes. Sends result + ready to frontend."""
+        self._state = AgentState.IDLE
+        self._busy = False
+        self._auto_pending = 0
+        self._pending_result = None
+        self._round_results.clear()
+        self._agent_cells.clear()
+        if msg:
+            send_to_panel(self.ns, "text", content=f"{msg}\n")
+        send_to_panel(self.ns, "result", summary="")
+        send_to_panel(self.ns, "ready")
+
+    def _track_agent_cell(self, cid: str, code_str: str) -> None:
+        """Callback: track agent-generated cell IDs for batch completion detection."""
+        if cid:
+            self._agent_cells[cid] = "pending"
+
+    def _ask_confirm(self, msg: str, pending_result=None) -> None:
+        """Show Yes/No confirmation — text + buttons via comm."""
+        self._state = AgentState.WAITING_CONFIRM
+        self._busy = False
+        self._pending_result = pending_result
+        send_to_panel(self.ns, "result", summary="")
+        send_to_panel(self.ns, "ready")
+        send_to_panel(self.ns, "text",
+            content=f"\n{'─'*40}\n{msg}\nType /continue yes or /continue no\n{'─'*40}\n")
+        send_to_panel(self.ns, "continue_confirm", summary=msg)
+
+    def _handle_continue(self, arg: str) -> None:
+        """Handle /continue yes|no from panel."""
+        arg = arg.strip()
+        if arg != "yes":
+            self._finish_agent_run("Task stopped")
+            return
+
+        pending = self._pending_result
+        self._pending_result = None
+        if pending is not None and pending.code_list:
+            # Has code cells: inject + auto-execute
+            self._state = AgentState.STREAMING
+            self._busy = True
+            self._agent_cells.clear()
+            self._auto_fix_count = 0
+            self._auto_pending = len(pending.code_list)
+            render_output(self.ns, pending, auto=True, on_cell_id=self._track_agent_cell)
+            if self._auto_pending == 0:
+                self._finish_agent_run()
+            # else: _on_cell_run handles completion → finish
+            return
+
+        # No code cells: continue the conversation
+        prompt = "[System: Continue with the task. Generate the next steps.]"
+        self._state = AgentState.STREAMING
+        self._busy = True
+        raw, interrupted = self._stream_with_interrupt(prompt)
+        if interrupted:
+            return
+        if not raw.strip():
+            self._finish_agent_run()
+            return
+        result = parse(raw)
+        if result.code_list:
+            self._ask_confirm(f"Generate and execute {len(result.code_list)} cells?", pending_result=result)
+        else:
+            self._ask_confirm("Continue?", pending_result=result)
+
+    def _handle_panel_stop(self) -> None:
+        """Handle /stop — exit current task immediately."""
+        if self._state == AgentState.IDLE:
+            send_to_panel(self.ns, "text", content="No active task.\n")
+            return
+        self._finish_agent_run("Task stopped")
 
     @staticmethod
     def _load_dotenv() -> None:
@@ -281,37 +398,41 @@ class AgentMagic(Magics):
         if not code:
             return
 
-        # Track auto-exec cell completion (decrement only, signal after auto-fix check)
         is_agent_cell = "# %%agent generate code" in code
-        if is_agent_cell and self._auto_pending > 0:
-            self._auto_pending -= 1
-            _log.debug("auto pending: %d remaining", self._auto_pending)
-
-        # Auto-fix: agent-generated cell failed → send error to AI
-        if not result.success and is_agent_cell:
-            error = result.error_in_exec or result.error_before_exec
-            _log.info("auto-fix triggered: error=%s", type(error).__name__ if error else "None")
-            if error is not None:
-                import traceback as _tb
-                error_msg = "".join(_tb.format_exception_only(type(error), error))
-                self._auto_fix_cell(code.strip(), error_msg)
-            return
-
-        output = str(info.result) if getattr(info, "result", None) else ""
         cell_id = getattr(info, "cell_id", "")
+        output = str(info.result) if getattr(info, "result", None) else ""
+
+        # Track cell in namespace (do this before any early return — bug 10 fix)
+        error_str = ""
+        if not result.success:
+            e = result.error_in_exec or result.error_before_exec
+            if e:
+                error_str = str(e)[:2000]
         self.ns.track_cell(code.strip(), output.strip(), cell_id=cell_id)
 
-        # Auto-save cell version (skip during restore)
+        # ---- agent cell tracking ----
+        if is_agent_cell:
+            # Track cell for auto-fix lookup
+            self._agent_cells[cell_id] = code.strip()
+            self._round_results.append({
+                "cell_id": cell_id, "code": code.strip(), "output": output.strip()
+            })
+
+            # Auto mode: decrement pending count
+            if self._auto_pending > 0:
+                self._auto_pending -= 1
+                _log.debug("auto pending: %d remaining", self._auto_pending)
+
+            # Auto-fix: agent-generated cell failed → ask AI to fix
+            if not result.success and self._state in (AgentState.STREAMING, AgentState.AUTO_FIXING):
+                if error_str:
+                    self._auto_fix_cell(code.strip(), error_str)
+
+        # ---- snapshot logic ----
         restoring = cell_id in getattr(self, '_restoring_cells', set())
         if cell_id and code.strip() and not restoring:
-            error_str = ""
-            if not result.success:
-                e = result.error_in_exec or result.error_before_exec
-                if e:
-                    error_str = str(e)[:2000]
             from .cell_snapshot import save as save_cell_snapshot
             save_cell_snapshot(cell_id, code.strip(), output.strip(), error_str, nb_path=_notebook_path())
-        # Auto-snapshot notebook on every cell execution (skip restore ops)
         if code.strip():
             if restoring:
                 self._restoring_cells.discard(cell_id)
@@ -319,24 +440,28 @@ class AgentMagic(Magics):
                 from .notebook_snapshot import take as take_snapshot
                 take_snapshot(self.ns._cells, nb_path=_notebook_path())
 
+        # ---- telemetry ----
         rec = get_recorder()
         if rec:
             cell_type = "plain"
-            if code.startswith("%%sql"): cell_type = "%%sql"
+            if code.startswith("%%sql"):
+                cell_type = "%%sql"
             error = getattr(result, "error_in_exec", None) or getattr(result, "error_before_exec", None)
             rec.record("cell_executed",
-                cell_id="",
+                cell_id=cell_id,
                 type=cell_type,
-                code=code[:2000],
-                output=output[:2000],
-                error=str(error)[:2000] if error else None,
-                elapsed=0.0,
+                code=code.strip(),
+                output=output.strip(),
+                error=str(error) if error else None,
+                elapsed_ms=0.0,
+                is_agent_cell=is_agent_cell,
+                exec_order=rec.next_exec_order(),
             )
 
-        # Signal ready when all auto-exec cells complete (success path)
-        if is_agent_cell and self._auto_pending == 0 and self._busy:
-            self._busy = False
-            send_to_panel(self.ns, "ready")
+        # ---- state transitions ----
+        # Auto mode / confirmed execution: all cells complete → finish or continue
+        if is_agent_cell and self._auto_pending == 0 and self._state in (AgentState.STREAMING, AgentState.AUTO_FIXING):
+            self._finish_agent_run()
 
     # ---- panel handler ----
 
@@ -364,6 +489,12 @@ class AgentMagic(Magics):
                 send_to_panel(self.ns, "text", content=f"✓ Snapshot saved: {path.stem}\n")
             else:
                 send_to_panel(self.ns, "text", content="✗ No cells to snapshot.\n")
+        elif text.startswith("/continue"):
+            self._handle_continue(text[10:].strip())
+        elif text == "/stop":
+            self._handle_panel_stop()
+        elif text.startswith("/cell-optimize"):
+            self._handle_cell_optimize(text)
         elif text.startswith("/cell-snapshot-restore"):
             self._handle_cell_restore(text)
         else:
@@ -371,102 +502,73 @@ class AgentMagic(Magics):
 
     def _handle_panel_prompt(self, prompt: str, mode: str = "default") -> None:
         """Execute agent prompt from panel: stream to panel + inject cells to left."""
-        was_ready = self._session_ready  # snapshot before _ensure_session may change it
+        # Session init
         try:
             self._ensure_session()
         except KeyboardInterrupt:
-            self._session_dirty = True
-            send_to_panel(self.ns, "text", content="\n⏏ interrupted\n")
-            send_to_panel(self.ns, "result", summary="")
-            send_to_panel(self.ns, "ready")
-            # raise removed — let cell execution finish
-        except Exception as _ex:
+            self._interrupt_cleanup()
+            return
+        except Exception:
             _log.exception("_handle_panel_prompt: session init failed")
             send_to_panel(self.ns, "text", content="✗ session initialization failed, check server logs\n")
             send_to_panel(self.ns, "result", summary="")
             return
-        if self._busy:
+
+        if self._state != AgentState.IDLE:
             send_to_panel(self.ns, "text", content="⏳ agent is working, please wait...\n")
             send_to_panel(self.ns, "result", summary="")
             return
 
+        # Build prompt with context
         ctx = self.ns.delta()
         full = f"{ctx}\n\n{prompt}" if ctx else prompt
-        if self._session_dirty:
-            self._session_dirty = False
-            if was_ready:
-                full = _INTERRUPT_NOTE + "\n\n" + full
-        self._busy = True
 
         if mode == "plan":
-            self._plan = True
-            self._last_plan_prompt = full
-            self._plan_mode_active = True
+            self._last_plan_prompt = prompt
             plan_prefix = (
                 "[System: You are in plan mode. Explore the request, research the codebase, "
                 "and design an implementation approach. Present your plan as structured markdown. "
                 "Do NOT write or execute any code until the user confirms the plan.]\n\n"
             )
             full = plan_prefix + full
-        else:
-            self._plan = False
 
-        # Only wrap the blocking I/O — result processing must not be interrupted
-        try:
-            raw = self._session.stream(full, show_text=False,
-                                        on_chunk=lambda t: send_to_panel(self.ns, "text", content=t),
-                                        on_thinking=lambda t: send_thinking(t))
-        except KeyboardInterrupt:
-            self._session_dirty = True
-            send_to_panel(self.ns, "text", content="\n⏏ interrupted\n")
-            send_to_panel(self.ns, "result", summary="")
+        # Stream
+        self._state = AgentState.STREAMING
+        self._busy = True
+        raw, interrupted = self._stream_with_interrupt(full)
+        if interrupted:
+            return
+        if not raw.strip():
+            self._finish_agent_run()
+            return
+
+        # Process result
+        result = parse(raw)
+        if mode == "plan":
+            self._last_plan_output = raw.strip()
+            plan_text = result.plan or result.text or ""
+            send_to_panel(self.ns, "plan_confirm", summary=plan_text)
+            self._state = AgentState.PLAN_REVIEW
             self._busy = False
-            self._auto_pending = 0
             send_to_panel(self.ns, "ready")
-            # raise removed — let cell execution finish
-
-        send_to_panel(self.ns, "text", content="\n")
-
-        if raw.strip():
-            result = parse(raw)
-            if mode == "plan":
-                self._last_plan_output = raw.strip()
-                plan_text = result.plan or result.text or ""
-                send_to_panel(self.ns, "plan_confirm", summary=plan_text)
-                self._busy = False
-                send_to_panel(self.ns, "ready")
-            elif mode == "auto":
-                _log.info("auto mode: %d code blocks, tracking cells for auto-fix", len(result.code_list))
-                self._agent_cells.clear()
-                self._auto_fix_count = 0
-                self._auto_pending += len(result.code_list)
-                if self._auto_pending == 0:
-                    self._busy = False
-                    send_to_panel(self.ns, "ready")
-                def _on_cid(cid, code_str):
-                    if cid:
-                        self._agent_cells[cid] = code_str
-                        _log.debug("auto mode: tracked cell %s (%d chars)", cid, len(code_str))
-                render_output(self.ns, result, auto=True, on_cell_id=_on_cid)
-                _log.info("auto mode: tracked %d cells", len(self._agent_cells))
-                send_to_panel(self.ns, "result", summary="")
+        elif mode == "auto":
+            _log.info("auto mode: %d code blocks", len(result.code_list))
+            self._agent_cells.clear()
+            self._auto_fix_count = 0
+            self._auto_pending = len(result.code_list)
+            if self._auto_pending == 0:
+                self._finish_agent_run()
             else:
-                self._agent_cells.clear()
-                def _on_cid_default(cid, code_str):
-                    if cid:
-                        self._agent_cells[cid] = code_str
-                render_output(self.ns, result, auto=False, on_cell_id=_on_cid_default)
-                send_to_panel(self.ns, "result", summary="")
-                self._busy = False
-                send_to_panel(self.ns, "ready")
+                render_output(self.ns, result, auto=True, on_cell_id=self._track_agent_cell)
+                # _on_cell_run handles completion: sends ready when _auto_pending == 0
         else:
-            send_to_panel(self.ns, "result", summary="")
-            self._busy = False
-            send_to_panel(self.ns, "ready")
+            if result.code_list:
+                self._ask_confirm(f"Generate and execute {len(result.code_list)} cells?", pending_result=result)
+            else:
+                self._ask_confirm("Continue?", pending_result=result)
 
     def _handle_panel_mode(self, mode: str) -> None:
-        """Handle /mode from panel: cycle between default, plan, auto."""
-        self._plan = (mode == "plan")
+        """Handle /mode from panel — mode is tracked by frontend, nothing to persist."""
 
     def _handle_panel_skills(self, text: str) -> None:
         """Handle /skills commands from panel."""
@@ -768,93 +870,161 @@ class AgentMagic(Magics):
         self._cell_restored = True
         print("Cell restored to " + version, flush=True)
 
+    def _handle_cell_optimize(self, text: str) -> None:
+        """Handle /cell-optimize <json_payload> — agent improves a specific cell."""
+        if self._state != AgentState.IDLE:
+            send_to_panel(self.ns, "text", content="⏳ agent is working, please wait...\n")
+            return
+
+        import json
+        try:
+            payload = json.loads(text[15:].strip())
+        except json.JSONDecodeError:
+            send_to_panel(self.ns, "text", content="✗ invalid payload\n")
+            return
+
+        cell_id = payload.get("cellId", "")
+        code = (payload.get("code") or "").strip()
+        output = (payload.get("output") or "").strip()
+        error_msg = (payload.get("error") or "").strip()
+        request = (payload.get("request") or "improve this code").strip()
+        auto_exec = payload.get("auto", False)
+        if not code:
+            send_to_panel(self.ns, "text", content="✗ cell is empty\n")
+            return
+
+        # Truncate large cells to avoid blowing up the context window
+        code_for_prompt = code[:5000]
+        output_for_prompt = output[:2000]
+        if len(code) > 5000:
+            code_for_prompt += f"\n# ... ({len(code) - 5000} more chars)"
+
+        is_sql = code.startswith("%%sql")
+        lang = "SQL" if is_sql else "Python"
+        prompt = (
+            f"## Current {lang} Cell\n```{lang.lower()}\n{code_for_prompt}\n```\n\n"
+            f"## Output\n```\n{output_for_prompt or '(none)'}\n```"
+        )
+        if error_msg:
+            prompt += f"\n## Error\n```\n{error_msg[:2000]}\n```\n"
+        prompt += (
+            f"\n## Request\n{request}\n\n"
+            f"Return ONLY the improved {lang} code in a fenced code block. "
+            f"Do NOT add explanations."
+        )
+
+        try:
+            self._ensure_session()
+        except KeyboardInterrupt:
+            self._interrupt_cleanup()
+            return
+        except Exception:
+            _log.exception("_handle_cell_optimize: session init failed")
+            send_to_panel(self.ns, "text", content="✗ session init failed\n")
+            return
+
+        send_to_panel(self.ns, "text", content=f"↻ optimizing {lang} cell...\n")
+        self._state = AgentState.STREAMING
+        self._busy = True
+        raw, interrupted = self._stream_with_interrupt(prompt)
+        if interrupted:
+            return
+        if not raw.strip():
+            self._finish_agent_run("Optimization failed (no output)")
+            return
+
+        result = parse(raw)
+        if result.code_list:
+            # Take the last code block (agent might preface with explanation)
+            optimized = result.code_list[-1]
+            from .render import render_code
+            render_code(self.ns, optimized, auto=auto_exec, replace_cell_id=cell_id)
+            self.ns.remove_cell_by_id(cell_id)
+            self.ns.track_context(
+                f"[cell {cell_id[:8]}] optimized ({lang}): {request}\n"
+                f"  old: {code[:100]}{'...' if len(code) > 100 else ''}\n"
+                f"  new: {optimized[:100]}{'...' if len(optimized) > 100 else ''}")
+            action = "optimized & run" if auto_exec else "optimized"
+            send_to_panel(self.ns, "text", content=f"✓ {lang} cell {action}\n")
+        else:
+            send_to_panel(self.ns, "text", content="✗ no code in agent response\n")
+        self._finish_agent_run()
+
     def _handle_panel_confirm(self, arg: str) -> None:
         """Handle /confirm from panel."""
         arg = arg.strip()
         if not arg:
-            return  # empty /confirm — do nothing
+            return
 
         if arg == "yes":
-            self._plan = False
-            self._plan_mode_active = False
-            plan = getattr(self, '_last_plan_output', '') or ""
+            plan = self._last_plan_output or ""
             if plan:
                 self._implement_plan(plan, auto=True)
+            self._last_plan_output = ""
             send_to_panel(self.ns, "result", summary="")
         elif arg == "accept_edits":
-            self._plan = False
-            self._plan_mode_active = False
-            plan = getattr(self, '_last_plan_output', '') or ""
+            plan = self._last_plan_output or ""
             if plan:
                 self._implement_plan(plan, auto=False)
+            self._last_plan_output = ""
             send_to_panel(self.ns, "result", summary="")
         elif arg == "no":
-            self._plan = False
-            self._plan_mode_active = False
             self._last_plan_output = ""
-            send_to_panel(self.ns, "text", content="✗ plan cancelled\n")
-            send_to_panel(self.ns, "result", summary="")
+            self._finish_agent_run("Plan cancelled")
         else:
             # Revision feedback
             send_to_panel(self.ns, "text", content=f"↻ revising plan: {arg}\n")
-            plan = getattr(self, '_last_plan_output', '') or ""
-            prompt = getattr(self, '_last_plan_prompt', '') or ""
+            plan = self._last_plan_output or ""
+            prompt = self._last_plan_prompt or ""
             if plan and prompt:
                 full = f"User feedback on the plan: {arg}\n\nOriginal request:\n{prompt}\n\nPrevious plan:\n{plan}\n\nRevise the plan based on the feedback."
-                try:
-                    raw = self._session.stream(full, show_text=False,
-                        on_chunk=lambda t: send_to_panel(self.ns, "text", content=t),
-                        on_thinking=lambda t: send_thinking(t))
-                    send_to_panel(self.ns, "text", content="\n")
-                    if raw.strip():
-                        self._last_plan_output = raw.strip()
-                        result = parse(raw)
-                        plan_text = result.plan or result.text or ""
-                        send_to_panel(self.ns, "plan_confirm", summary=plan_text)
-                    else:
-                        self._last_plan_output = ""
-                        send_to_panel(self.ns, "text", content="✗ plan revision failed (no output)\n")
-                        send_to_panel(self.ns, "result", summary="")
-                except KeyboardInterrupt:
-                    self._session_dirty = True
-                    send_to_panel(self.ns, "text", content="\n⏏ interrupted\n")
-                    send_to_panel(self.ns, "result", summary="")
+                self._state = AgentState.STREAMING
+                self._busy = True
+                raw, interrupted = self._stream_with_interrupt(full)
+                if interrupted:
+                    return
+                if raw.strip():
+                    self._last_plan_output = raw.strip()
+                    result = parse(raw)
+                    plan_text = result.plan or result.text or ""
+                    self._state = AgentState.PLAN_REVIEW
                     self._busy = False
+                    send_to_panel(self.ns, "plan_confirm", summary=plan_text)
                     send_to_panel(self.ns, "ready")
-                    # raise removed — let cell execution finish
+                else:
+                    self._last_plan_output = ""
+                    send_to_panel(self.ns, "text", content="✗ plan revision failed (no output)\n")
+                    send_to_panel(self.ns, "result", summary="")
             else:
                 send_to_panel(self.ns, "text", content="✗ no plan to revise\n")
                 send_to_panel(self.ns, "result", summary="")
 
     def _auto_fix_cell(self, code: str, error_msg: str) -> None:
         """Auto mode: cell execution failed → ask AI to fix and replace in-place."""
-        if self._auto_fixing:
+        if self._state == AgentState.AUTO_FIXING:
             _log.warning("auto-fix: already fixing, skipping recursive call")
             return
-        self._auto_fixing = True
+        self._state = AgentState.AUTO_FIXING
         try:
             self._auto_fix_cell_impl(code, error_msg)
         finally:
-            self._auto_fixing = False
+            if self._state == AgentState.AUTO_FIXING:
+                self._state = AgentState.STREAMING
 
     def _auto_fix_cell_impl(self, code: str, error_msg: str) -> None:
-        self._busy = True  # re-set — failed cell's completion may have cleared it
-        # Retry limit: 2 attempts, then force-stop to unblock the queue
+        self._busy = True
         self._auto_fix_count += 1
         if self._auto_fix_count >= 3:
             _log.warning("auto-fix: retry limit reached (%d)", self._auto_fix_count)
-            send_to_panel(self.ns, "text", content="✗ auto-fix retry limit reached, stopping\n")
-            send_to_panel(self.ns, "result", summary="")
             self._auto_pending = 0
-            self._busy = False
-            send_to_panel(self.ns, "ready")
+            self._finish_agent_run("Auto-fix retry limit reached")
             return
 
         # Find the cell_id for this code to replace in-place
         cell_id = ""
-        for cid, ccode in self._agent_cells.items():
-            if ccode.strip() == code.strip():
-                cell_id = cid
+        for r in self._round_results:
+            if (r.get("code", "") or "").strip() == code.strip():
+                cell_id = r.get("cell_id", "")
                 break
 
         _log.info("auto-fix #%d: cell=%s error=%s", self._auto_fix_count, cell_id or "(new)", error_msg[:100])
@@ -876,116 +1046,88 @@ class AgentMagic(Magics):
             f"Do NOT include any Jupyter magic commands (like %confirm or %agent). "
             f"Do not add explanations."
         )
-        try:
-            raw = self._session.stream(prompt, show_text=False,
-                on_chunk=lambda t: send_to_panel(self.ns, "text", content=t),
-                on_thinking=lambda t: send_thinking(t))
-            send_to_panel(self.ns, "text", content="\n")
-
-            if raw.strip():
-                result = parse(raw)
-                if result.code_list:
-                    fixed_code = result.code_list[0]
-                    from .render import render_code
-                    self._auto_pending += 1
-                    render_code(self.ns, fixed_code, auto=True,
-                               replace_cell_id=cell_id)
-                    send_to_panel(self.ns, "text",
-                        content="✓ auto-fixed (replaced)\n" if cell_id else "✓ auto-fixed (new cell)\n")
-                    if self._auto_fix_count >= 2:
-                        self._busy = False
-                        send_to_panel(self.ns, "ready")
-                else:
-                    send_to_panel(self.ns, "text", content="✗ auto-fix: no code in response\n")
-                    self._auto_pending = 0
-                    self._busy = False
-                    send_to_panel(self.ns, "ready")
+        raw, interrupted = self._stream_with_interrupt(prompt)
+        if interrupted:
+            return
+        if raw.strip():
+            result = parse(raw)
+            if result.code_list:
+                fixed_code = result.code_list[0]
+                from .render import render_code
+                self._auto_pending += 1
+                render_code(self.ns, fixed_code, auto=True, replace_cell_id=cell_id)
+                send_to_panel(self.ns, "text",
+                    content="✓ auto-fixed (replaced)\n" if cell_id else "✓ auto-fixed (new cell)\n")
+                if self._auto_fix_count >= 2:
+                    self._finish_agent_run()
+                    return
             else:
-                send_to_panel(self.ns, "text", content="✗ auto-fix failed (no output)\n")
-                self._auto_pending = 0
-                self._busy = False
-                send_to_panel(self.ns, "ready")
-            send_to_panel(self.ns, "result", summary="")
-        except KeyboardInterrupt:
-            self._session_dirty = True
-            send_to_panel(self.ns, "text", content="\n⏏ interrupted\n")
-            send_to_panel(self.ns, "result", summary="")
-            self._auto_pending = 0
-            self._busy = False
-            send_to_panel(self.ns, "ready")
-            # raise removed — let cell execution finish
+                self._finish_agent_run("Auto-fix: no code in response")
+                return
+        else:
+            self._finish_agent_run("Auto-fix: no output")
+            return
+        send_to_panel(self.ns, "result", summary="")
 
     def _implement_plan(self, plan: str, auto: bool = False) -> None:
         """Execute a confirmed plan: inject code blocks if present, or send as implementation prompt."""
         result = parse(plan)
         _log.info("plan implement: %d code blocks, auto=%s", len(result.code_list), auto)
 
-        _log.info("implement_plan: auto=%s tracking cells", auto)
         self._agent_cells.clear()
         self._auto_fix_count = 0
-        if auto:
-            self._busy = True
-            self._auto_pending = len(result.code_list)
-            if self._auto_pending == 0:
-                self._busy = False
-                send_to_panel(self.ns, "ready")
-        def _on_cid(cid, code_str):
-            if cid:
-                self._agent_cells[cid] = code_str
-                _log.debug("implement_plan: tracked cell %s", cid)
 
         if result.code_list:
-            # Plan contains executable code blocks → inject directly
-            render_output(self.ns, result, auto=auto, on_cell_id=_on_cid)
+            if auto:
+                self._state = AgentState.STREAMING
+                self._busy = True
+                self._auto_pending = len(result.code_list)
+                render_output(self.ns, result, auto=True, on_cell_id=self._track_agent_cell)
+                if self._auto_pending == 0:
+                    self._finish_agent_run()
+                    return
+            else:
+                self._ask_confirm(f"Generate and execute {len(result.code_list)} cells?", pending_result=result)
             label = "✓ plan implemented\n" if auto else "✓ plan accepted (code cells generated)\n"
             send_to_panel(self.ns, "text", content=label)
             return
 
-        # Plan has no code blocks → send as implementation prompt
-        prompt = getattr(self, '_last_plan_prompt', '') or ""
+        # Plan has no code blocks → stream implementation prompt
+        prompt = self._last_plan_prompt or ""
         send_to_panel(self.ns, "text", content="↻ implementing plan...\n")
-
-        # Build implementation prompt with clear instructions
-        impl_instruction = (
+        full = (
             "[System: Plan mode has ended. The plan has been approved. "
             "You are now in implementation mode. "
             "Generate executable code cells to implement the approved plan below. "
             "Write complete, working code that the user can run directly — "
-            "do NOT output plan descriptions or markdown explanations.]"
+            "do NOT output plan descriptions or markdown explanations.]\n\n"
+            f"## Approved Plan\n\n{plan}\n\n"
+            "Implement this plan by writing executable code cells."
         )
-        full = f"{impl_instruction}\n\n## Approved Plan\n\n{plan}\n\nImplement this plan by writing executable code cells."
         if prompt:
             full = f"Original request:\n{prompt}\n\n{full}"
 
-        try:
-            raw = self._session.stream(full, show_text=False,
-                on_chunk=lambda t: send_to_panel(self.ns, "text", content=t),
-                on_thinking=lambda t: send_thinking(t))
-            send_to_panel(self.ns, "text", content="\n")
+        self._state = AgentState.STREAMING
+        self._busy = True
+        raw, interrupted = self._stream_with_interrupt(full)
+        if interrupted:
+            return
+        if not raw.strip():
+            self._finish_agent_run("Plan implementation failed (no output)")
+            return
 
-            if raw.strip():
-                result = parse(raw)
-                if auto:
-                    self._auto_pending += len(result.code_list)
-                render_output(self.ns, result, auto=auto, on_cell_id=_on_cid)
-                if auto and self._auto_pending == 0:
-                    self._busy = False
-                    send_to_panel(self.ns, "ready")
-                label = "✓ plan implemented\n" if auto else "✓ plan accepted (code cells generated)\n"
-                send_to_panel(self.ns, "text", content=label)
-            else:
-                send_to_panel(self.ns, "text", content="✗ plan implementation failed (no output)\n")
-                if auto:
-                    self._busy = False
-                    send_to_panel(self.ns, "ready")
-        except KeyboardInterrupt:
-            self._session_dirty = True
-            send_to_panel(self.ns, "text", content="\n⏏ interrupted\n")
-            send_to_panel(self.ns, "result", summary="")
-            self._auto_pending = 0
-            self._busy = False
-            send_to_panel(self.ns, "ready")
-            # Don't raise — let cell execution complete so next requestExecute works
+        result = parse(raw)
+        if auto:
+            self._state = AgentState.STREAMING
+            self._auto_pending = len(result.code_list)
+            render_output(self.ns, result, auto=True, on_cell_id=self._track_agent_cell)
+            if self._auto_pending == 0:
+                self._finish_agent_run()
+        elif result.code_list:
+            self._ask_confirm(f"Generate and execute {len(result.code_list)} cells?", pending_result=result)
+        else:
+            self._ask_confirm("Continue?", pending_result=result)
+        send_to_panel(self.ns, "text", content="✓ plan implemented\n" if auto else "✓ plan accepted (code cells generated)\n")
 
     # ---- agent_config ----
 
@@ -1042,9 +1184,9 @@ class AgentMagic(Magics):
             args.remove("--no-debug")
             cli_debug = False
         if "--plan" in args:
-            self._plan = True; args.remove("--plan")
+            args.remove("--plan")  # mode driven by frontend
         if "--no-plan" in args:
-            self._plan = False; args.remove("--no-plan")
+            args.remove("--no-plan")
         env_vars = parse_kv(args)
 
         enable_hooks: list[str] = []
