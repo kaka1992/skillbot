@@ -196,6 +196,7 @@ class AgentMagic(Magics):
         """Unified KeyboardInterrupt handler — replaces 5 duplicated copies."""
         self._session_dirty = True
         self._state = AgentState.IDLE
+        self._record_state("interrupt")
         self._busy = False
         self._auto_pending = 0
         self._pending_result = None
@@ -255,6 +256,7 @@ class AgentMagic(Magics):
     def _finish_agent_run(self, msg: str = "") -> None:
         """Clean up after agent run completes. Sends result + ready to frontend."""
         self._state = AgentState.IDLE
+        self._record_state("agent_done")
         self._busy = False
         self._auto_pending = 0
         self._pending_result = None
@@ -265,6 +267,15 @@ class AgentMagic(Magics):
         send_to_panel(self.ns, "result", summary="")
         send_to_panel(self.ns, "ready")
 
+    def _record_state(self, trigger: str) -> None:
+        """Record workflow state transition for telemetry."""
+        rec = get_recorder()
+        if rec:
+            rec.record("workflow_state",
+                state=self._state.name,
+                trigger=trigger,
+            )
+
     def _track_agent_cell(self, cid: str, code_str: str) -> None:
         """Callback: track agent-generated cell IDs for batch completion detection."""
         if cid:
@@ -273,6 +284,7 @@ class AgentMagic(Magics):
     def _ask_confirm(self, msg: str, pending_result=None) -> None:
         """Show Yes/No confirmation — text + buttons via comm."""
         self._state = AgentState.WAITING_CONFIRM
+        self._record_state("confirm_shown")
         self._busy = False
         self._pending_result = pending_result
         send_to_panel(self.ns, "result", summary="")
@@ -284,8 +296,12 @@ class AgentMagic(Magics):
     def _handle_continue(self, arg: str) -> None:
         """Handle /continue yes|no from panel."""
         arg = arg.strip()
+        rec = get_recorder()
+        if rec:
+            rec.record("agent_continue", choice="yes" if arg.strip() == "yes" else "no")
         if arg != "yes":
             self._finish_agent_run("Task stopped")
+            self._record_state("user_stop")
             return
 
         pending = self._pending_result
@@ -293,6 +309,7 @@ class AgentMagic(Magics):
         if pending is not None and pending.code_list:
             # Has code cells: inject + auto-execute
             self._state = AgentState.STREAMING
+            self._record_state("user_continue")
             self._busy = True
             self._agent_cells.clear()
             self._auto_fix_count = 0
@@ -306,7 +323,10 @@ class AgentMagic(Magics):
         # No code cells: continue the conversation
         prompt = "[System: Continue with the task. Generate the next steps.]"
         self._state = AgentState.STREAMING
+        self._record_state("user_continue")
         self._busy = True
+        if rec:
+            rec.record("agent_prompt", mode="continue", prompt="", context_preview="")
         raw, interrupted = self._stream_with_interrupt(prompt)
         if interrupted:
             return
@@ -997,12 +1017,14 @@ class AgentMagic(Magics):
             plan = self._last_plan_output or ""
             if plan:
                 self._implement_plan(plan, auto=True)
+                self._record_state("plan_confirm")
             self._last_plan_output = ""
             send_to_panel(self.ns, "result", summary="")
         elif arg == "accept_edits":
             plan = self._last_plan_output or ""
             if plan:
                 self._implement_plan(plan, auto=False)
+                self._record_state("plan_confirm")
             self._last_plan_output = ""
             send_to_panel(self.ns, "result", summary="")
         elif arg == "no":
@@ -1042,6 +1064,7 @@ class AgentMagic(Magics):
             _log.warning("auto-fix: already fixing, skipping recursive call")
             return
         self._state = AgentState.AUTO_FIXING
+        self._record_state("auto_fix")
         try:
             self._auto_fix_cell_impl(code, error_msg)
         finally:
