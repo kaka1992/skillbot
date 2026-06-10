@@ -13,7 +13,7 @@ _JSON_FENCE = re.compile(
 )
 
 _CODE_FENCE = re.compile(
-    r"(?:^|\n)```(?:python)?[ \t]*\n(.*?)\n```",
+    r"(?:^|\n)```(?:\w+)?[ \t]*\n(.*?)\n```",
     re.MULTILINE | re.DOTALL,
 )
 
