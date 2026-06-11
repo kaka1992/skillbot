@@ -276,7 +276,7 @@ def _format_tool_detail(name: str, inp: dict, data: dict | None = None) -> str:
         if name == "Glob":
             return f"\033[90m{inp.get('pattern', '?')}\033[0m"
         first_val = next(iter(inp.values()), "")
-        return f"\033[90m{str(first_val)[:120]}\033[0m"
+        return f"\033[90m{str(first_val)[:200]}\033[0m"
     # Fallback: extract detail from other data fields (label, id, tool, etc.)
     if data:
         for key in ("label", "tool_call_id", "tool", "id"):

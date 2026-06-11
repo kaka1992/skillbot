@@ -225,9 +225,7 @@ class AgentMagic(Magics):
         def _on_thinking(t):
             nonlocal thinking_chars, _think_buf, _think_last
             thinking_chars += len(t)
-            # Add space between tokens (thinking arrives word-by-word without whitespace)
-            need_space = _think_buf and not _think_buf.endswith(' ') and not _think_buf.endswith('\n') and not t.startswith(' ')
-            _think_buf += (' ' if need_space else '') + t
+            _think_buf += t  # model already outputs whitespace correctly
             now = time.time()
             # Throttle: send at most every 200ms to avoid IOPub rate limits
             if now - _think_last >= 0.2:
