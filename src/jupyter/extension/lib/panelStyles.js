@@ -92,6 +92,21 @@ exports.STYLES = `
   margin: 2px 0;
 }
 
+/* Collapsible tool output */
+.skillbot-response-text details {
+  margin-left: 16px;
+  padding: 0;
+}
+.skillbot-response-text details summary {
+  color: rgb(150,150,150);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 0;
+}
+.skillbot-response-text details summary:hover {
+  color: rgb(200,200,200);
+}
+
 .skillbot-thinking-line {
   color: rgb(180,180,180);
   font-style: italic;

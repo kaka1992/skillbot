@@ -856,10 +856,10 @@ class AgentPanel extends Widget {
       future.onIOPub = (msg: any) => {
         if (msg.header.msg_type === 'stream' && msg.content?.name === 'stdout') {
           if (firstStdout) {
-            this._renderResponseText(this._stripAnsi(msg.content.text));
+            this._renderResponseText(this._ansiToHtml(msg.content.text));
             firstStdout = false;
           } else {
-            this._appendTextChunk(this._stripAnsi(msg.content.text));
+            this._appendTextChunk(this._ansiToHtml(msg.content.text));
           }
         }
       };
@@ -1507,6 +1507,14 @@ class AgentPanel extends Widget {
     return s.replace(/\x1b\[[0-9;]*m/g, '');
   }
 
+  private _ansiToHtml(s: string): string {
+    return s.replace(/\x1b\[32m/g, '<span style="color:#4ade80">')
+            .replace(/\x1b\[31m/g, '<span style="color:#f87171">')
+            .replace(/\x1b\[90m/g, '<span style="color:#999">')
+            .replace(/\x1b\[0m/g, '</span>')
+            .replace(/\x1b\[[0-9;]*m/g, '');
+  }
+
   private _esc(s: string): string {
     const d = document.createElement('div');
     d.textContent = s;
@@ -1615,10 +1623,10 @@ class AgentPanel extends Widget {
         switch (d.action) {
           case 'text':
             if (this._skillsMode) {
-              const txt = this._stripAnsi(d.content || '');
+              const txt = this._ansiToHtml(d.content || '');
               if (txt.includes('✗')) this._installError = txt.trim();
             } else {
-              const txt = this._stripAnsi(d.content || '');
+              const txt = this._ansiToHtml(d.content || '');
               this._appendTextChunk(txt);
               // Backend sent config confirmation → enable y/n
               if (txt.includes('Press y to apply')) {

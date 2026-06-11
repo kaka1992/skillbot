@@ -114,14 +114,9 @@ class AgentSession:
                         on_chunk(chunk.text)
 
                 if chunk.blocks:
+                    # Tools first (before thinking), with result tracking
                     for b in chunk.blocks:
-                        if b.type == "thinking" and b.data:
-                            t = b.data.get("thinking", "").strip()
-                            if t:
-                                thinking_lines.append(t)
-                                if on_thinking:
-                                    on_thinking(t)
-                        elif b.type == "tool_use" and b.data:
+                        if b.type == "tool_use" and b.data:
                             name = b.data.get("name", "?")
                             tool_input = b.data.get("input", {}) or {}
                             detail = _format_tool_detail(name, tool_input, b.data)
@@ -129,7 +124,43 @@ class AgentSession:
                                 tool_names.add(name)
                             _log.debug("tool_use: %s %s", name, tool_input)
                             if on_chunk:
-                                on_chunk(f"\n\033[90m⬢ {name}\033[0m {detail}\n")
+                                on_chunk(f"\n\033[32m⏺ {name}\033[0m\033[90m({detail})\033[0m\n")
+                        elif b.type == "tool_result" and b.data:
+                            raw = b.data.get("content", "")
+                            # content may be a list of TextBlock-like objects or a string
+                            if isinstance(raw, list):
+                                content = "\n".join(
+                                    getattr(c, "text", "") or str(c) for c in raw
+                                )
+                            elif isinstance(raw, str):
+                                content = raw
+                            else:
+                                content = str(raw) if raw else ""
+                            is_error = b.data.get("is_error", False)
+                            color = "\033[31m" if is_error else "\033[90m"
+                            lines = content.split("\n")
+                            if len(lines) <= 3:
+                                if on_chunk:
+                                    on_chunk(f"  \033[90m⎿\033[0m {color}{content}\033[0m\n")
+                            else:
+                                top = "\n".join(lines[:3])
+                                rest = "\n".join(lines[3:])
+                                n = len(lines) - 3
+                                label = f"▼ {n} more line{'s' if n > 1 else ''}"
+                                if on_chunk:
+                                    on_chunk(
+                                        f"  \033[90m⎿\033[0m {color}{top}\033[0m\n"
+                                        f"  <details><summary style='color:#888;cursor:pointer;font-size:12px'>{label}</summary>\n"
+                                        f"  {color}{rest}\033[0m\n"
+                                        f"  </details>\n"
+                                    )
+                    for b in chunk.blocks:
+                        if b.type == "thinking" and b.data:
+                            t = b.data.get("thinking", "").strip()
+                            if t:
+                                thinking_lines.append(t)
+                                if on_thinking:
+                                    on_thinking(t)
         except KeyboardInterrupt:
             # Tell the server to interrupt the subprocess, then close the stream.
             if client:
@@ -139,8 +170,6 @@ class AgentSession:
 
         elapsed = round(time.time() - t0, 1)
         print()
-        if tool_names:
-            print(f"\033[90m# tools: {', '.join(sorted(tool_names))}\033[0m")
         if thinking_lines and show_text:
             summary = " ".join(thinking_lines)[:200]
             print(f"\033[90m# thinking: {summary}\033[0m")

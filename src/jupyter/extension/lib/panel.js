@@ -933,11 +933,11 @@ class AgentPanel extends widgets_1.Widget {
                 var _a;
                 if (msg.header.msg_type === 'stream' && ((_a = msg.content) === null || _a === void 0 ? void 0 : _a.name) === 'stdout') {
                     if (firstStdout) {
-                        this._renderResponseText(this._stripAnsi(msg.content.text));
+                        this._renderResponseText(this._ansiToHtml(msg.content.text));
                         firstStdout = false;
                     }
                     else {
-                        this._appendTextChunk(this._stripAnsi(msg.content.text));
+                        this._appendTextChunk(this._ansiToHtml(msg.content.text));
                     }
                 }
             };
@@ -1565,6 +1565,13 @@ class AgentPanel extends widgets_1.Widget {
     _stripAnsi(s) {
         return s.replace(/\x1b\[[0-9;]*m/g, '');
     }
+    _ansiToHtml(s) {
+        return s.replace(/\x1b\[32m/g, '<span style="color:#4ade80">')
+            .replace(/\x1b\[31m/g, '<span style="color:#f87171">')
+            .replace(/\x1b\[90m/g, '<span style="color:#999">')
+            .replace(/\x1b\[0m/g, '</span>')
+            .replace(/\x1b\[[0-9;]*m/g, '');
+    }
     _esc(s) {
         const d = document.createElement('div');
         d.textContent = s;
@@ -1670,12 +1677,12 @@ class AgentPanel extends widgets_1.Widget {
                 switch (d.action) {
                     case 'text':
                         if (this._skillsMode) {
-                            const txt = this._stripAnsi(d.content || '');
+                            const txt = this._ansiToHtml(d.content || '');
                             if (txt.includes('✗'))
                                 this._installError = txt.trim();
                         }
                         else {
-                            const txt = this._stripAnsi(d.content || '');
+                            const txt = this._ansiToHtml(d.content || '');
                             this._appendTextChunk(txt);
                             // Backend sent config confirmation → enable y/n
                             if (txt.includes('Press y to apply')) {
