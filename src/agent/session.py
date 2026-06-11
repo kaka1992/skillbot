@@ -89,9 +89,11 @@ class AgentSession:
         return self._stream(self._client, prompt, self._session_id, timeout, show_text, on_chunk, on_thinking)
 
     @staticmethod
-    def _stream(client, prompt: str, session: str,
-                timeout: int | None = None, show_text: bool = True,
-                on_chunk=None, on_thinking=None) -> str:
+    def _stream(
+        client, prompt: str, session: str,
+        timeout: int | None = None, show_text: bool = True,
+        on_chunk=None, on_thinking=None,
+    ) -> str:
         if timeout is not None and client is not None:
             client._backend._timeout = timeout
 
@@ -121,12 +123,13 @@ class AgentSession:
                                     on_thinking(t)
                         elif b.type == "tool_use" and b.data:
                             name = b.data.get("name", "?")
+                            tool_input = b.data.get("input", {}) or {}
+                            detail = _format_tool_detail(name, tool_input, b.data)
                             if name not in tool_names:
                                 tool_names.add(name)
-                                _log.debug("tool_use: %s", name)
-                                print(f"\n\033[90m[{name}]\033[0m")
-                                if on_chunk:
-                                    on_chunk(f"\n\033[90m[{name}]\033[0m\n")
+                            _log.debug("tool_use: %s %s", name, tool_input)
+                            if on_chunk:
+                                on_chunk(f"\n\033[90m⬢ {name}\033[0m {detail}\n")
         except KeyboardInterrupt:
             # Tell the server to interrupt the subprocess, then close the stream.
             if client:
@@ -226,3 +229,29 @@ class SubAgentSession:
                 pass
         self._persistent_chat = None
         self._persistent_id = None
+
+
+def _format_tool_detail(name: str, inp: dict, data: dict | None = None) -> str:
+    """Format tool input as a compact display string."""
+    # Per-tool formatting
+    if inp:
+        if name == "Bash":
+            cmd = inp.get("command", "")
+            return f"\033[90m{cmd[:120]}\033[0m"
+        if name == "Read":
+            return f"\033[90m{inp.get('file_path', '?')}\033[0m"
+        if name == "Write":
+            return f"\033[90m{inp.get('file_path', '?')}\033[0m"
+        if name == "Grep":
+            return f"\033[90m{inp.get('pattern', '?')}\033[0m"
+        if name == "Glob":
+            return f"\033[90m{inp.get('pattern', '?')}\033[0m"
+        first_val = next(iter(inp.values()), "")
+        return f"\033[90m{str(first_val)[:120]}\033[0m"
+    # Fallback: extract detail from other data fields (label, id, tool, etc.)
+    if data:
+        for key in ("label", "tool_call_id", "tool", "id"):
+            val = data.get(key)
+            if val and isinstance(val, str) and val.strip():
+                return f"\033[90m{val[:120]}\033[0m"
+    return ""

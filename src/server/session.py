@@ -59,6 +59,7 @@ def _build_options(
     allowed_tools: str | None = None,
     cwd: str | None = None,
     skills: list[str] | None = None,
+    disallowed_tools: str | None = None,
 ) -> ClaudeAgentOptions:
     claude_home = _resolve_claude_home()
     _ensure_claude_home(claude_home)
@@ -66,6 +67,10 @@ def _build_options(
     tools = None
     if allowed_tools:
         tools = [t.strip() for t in allowed_tools.split(",") if t.strip()]
+
+    disallow: list[str] = []
+    if disallowed_tools:
+        disallow = [t.strip() for t in disallowed_tools.split(",") if t.strip()]
 
     # Resolve active skills from persisted enable/disable state
     if skills is None:
@@ -78,6 +83,7 @@ def _build_options(
 
     return ClaudeAgentOptions(
         allowed_tools=tools or [],
+        disallowed_tools=disallow,
         skills=skills if skills is not None else "all",
         permission_mode="bypassPermissions",
         cwd=cwd or os.getcwd(),

@@ -22,6 +22,7 @@ PORT = int(os.environ.get("CLAUDE_SERVER_PORT", "9000"))
 HOST = os.environ.get("CLAUDE_SERVER_HOST", "127.0.0.1")
 TIMEOUT = int(os.environ.get("CLAUDE_SERVER_TIMEOUT", "600"))
 ALLOWED_TOOLS = os.environ.get("CLAUDE_SERVER_ALLOWED_TOOLS", "")
+DISALLOWED_TOOLS = os.environ.get("CLAUDE_SERVER_DISALLOWED_TOOLS", "")
 WORK_DIR = os.environ.get("CLAUDE_SERVER_WORK_DIR") or str(_resolve_claude_home() / "run")
 os.makedirs(WORK_DIR, exist_ok=True)
 SKILL_DIR = str(_resolve_claude_home() / ".claude" / "skills")
@@ -114,6 +115,7 @@ async def chat(sid: str, body: ChatRequest):
                 body.message,
                 timeout=body.timeout or TIMEOUT,
                 allowed_tools=body.allowed_tools or ALLOWED_TOOLS or None,
+                    disallowed_tools=DISALLOWED_TOOLS or None,
                 cwd=WORK_DIR,
             )
         except RuntimeError as e:
@@ -140,6 +142,7 @@ async def chat_stream(sid: str, body: ChatRequest):
                     body.message,
                     timeout=body.timeout or TIMEOUT,
                     allowed_tools=body.allowed_tools or ALLOWED_TOOLS or None,
+                    disallowed_tools=DISALLOWED_TOOLS or None,
                     cwd=WORK_DIR,
                 ):
                     yield f"data: {json.dumps({'text': chunk})}\n\n"
@@ -179,6 +182,7 @@ async def chat_trace(sid: str, body: ChatRequest):
                     body.message,
                     timeout=body.timeout or TIMEOUT,
                     allowed_tools=body.allowed_tools or ALLOWED_TOOLS or None,
+                    disallowed_tools=DISALLOWED_TOOLS or None,
                     cwd=WORK_DIR,
                 ):
                     if chunk.text:
