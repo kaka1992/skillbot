@@ -199,6 +199,7 @@ class AgentMagic(Magics):
         self._record_state("interrupt")
         self._busy = False
         self._auto_pending = 0
+        self._auto_fix_count = 0
         self._pending_result = None
         self._round_results.clear()
         send_to_panel(self.ns, "text", content=msg)
@@ -218,15 +219,29 @@ class AgentMagic(Magics):
         def _on_chunk(t):
             send_to_panel(self.ns, "text", content=t)
 
+        _think_buf = ""
+        _think_last = 0.0
+
         def _on_thinking(t):
-            nonlocal thinking_chars
+            nonlocal thinking_chars, _think_buf, _think_last
             thinking_chars += len(t)
-            send_thinking(t)
+            # Add space between tokens (thinking arrives word-by-word without whitespace)
+            need_space = _think_buf and not _think_buf.endswith(' ') and not _think_buf.endswith('\n') and not t.startswith(' ')
+            _think_buf += (' ' if need_space else '') + t
+            now = time.time()
+            # Throttle: send at most every 200ms to avoid IOPub rate limits
+            if now - _think_last >= 0.2:
+                send_thinking(_think_buf)
+                _think_buf = ""
+                _think_last = now
 
         try:
             raw = self._session.stream(prompt, show_text=False,
                 on_chunk=_on_chunk,
                 on_thinking=_on_thinking)
+            # Flush any remaining buffered thinking
+            if _think_buf:
+                send_thinking(_think_buf)
             send_to_panel(self.ns, "text", content="\n")
             elapsed_ms = int((time.time() - t0) * 1000)
             if rec:
@@ -242,6 +257,8 @@ class AgentMagic(Magics):
                 )
             return raw, False
         except KeyboardInterrupt:
+            if _think_buf:
+                send_thinking(_think_buf)
             elapsed_ms = int((time.time() - t0) * 1000)
             if rec:
                 rec.record("agent_response",
@@ -344,6 +361,10 @@ class AgentMagic(Magics):
         if self._state == AgentState.IDLE:
             send_to_panel(self.ns, "text", content="No active task.\n")
             return
+        try:
+            self._session.interrupt()
+        except Exception:
+            pass
         self._finish_agent_run("Task stopped")
 
     @staticmethod
