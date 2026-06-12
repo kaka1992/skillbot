@@ -163,9 +163,10 @@ class Session:
         timeout: float = 300,
         allowed_tools: str | None = None,
         cwd: str | None = None,
+        disallowed_tools: str | None = None,
     ) -> str:
         self.add("user", message)
-        options = _build_options(allowed_tools=allowed_tools, cwd=cwd)
+        options = _build_options(allowed_tools=allowed_tools, cwd=cwd, disallowed_tools=disallowed_tools)
 
         await self._apply_tool_fix()
 
@@ -214,13 +215,14 @@ class Session:
         timeout: float = 300,
         allowed_tools: str | None = None,
         cwd: str | None = None,
+        disallowed_tools: str | None = None,
     ) -> AsyncIterator[str]:
         """Send a message and yield text chunks progressively.
 
         The caller MUST hold ``self.lock`` for the entire iteration.
         """
         self.add("user", message)
-        options = _build_options(allowed_tools=allowed_tools, cwd=cwd)
+        options = _build_options(allowed_tools=allowed_tools, cwd=cwd, disallowed_tools=disallowed_tools)
 
         await self._apply_tool_fix()
 
@@ -281,13 +283,14 @@ class Session:
         timeout: float = 300,
         allowed_tools: str | None = None,
         cwd: str | None = None,
+        disallowed_tools: str | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Send a message and yield StreamChunks with full trace data.
 
         The caller MUST hold ``self.lock`` for the entire iteration.
         """
         self.add("user", message)
-        options = _build_options(allowed_tools=allowed_tools, cwd=cwd)
+        options = _build_options(allowed_tools=allowed_tools, cwd=cwd, disallowed_tools=disallowed_tools)
 
         # Fix interrupted tool_use state before next query
         if self._needs_tool_fix:
