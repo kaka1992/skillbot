@@ -29,6 +29,29 @@ from chat.base import StreamChunk, TraceBlock  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
+
+def _format_result_error(msg: ResultMessage) -> str:
+    """Build a detailed error message from a failed ResultMessage."""
+    parts: list[str] = []
+    if msg.errors:
+        parts.append("errors=" + "; ".join(str(e) for e in msg.errors))
+    for field, label in [
+        ("subtype", "subtype"), ("stop_reason", "stop_reason"),
+        ("api_error_status", "api_status"), ("uuid", "msg_uuid"),
+        ("duration_ms", "duration_ms"), ("num_turns", "turns"),
+        ("total_cost_usd", "cost"), ("result", "result"),
+        ("permission_denials", "denials"),
+        ("deferred_tool_use", "deferred_tool"),
+        ("model_usage", "model_usage"),
+        ("structured_output", "structured_output"),
+    ]:
+        val = getattr(msg, field, None)
+        if val is not None and val != [] and val != {} and val != "":
+            parts.append(f"{label}={val}")
+    detail = ", ".join(parts) if parts else "no diagnostic info available"
+    logger.error("Claude ResultMessage error: %s", detail)
+    return f"Claude SDK error: {detail}"
+
 def _resolve_claude_home() -> Path:
     install_dir = os.environ.get("SKILL_BOT_AGENT_INSTALL_DIR", "")
     if install_dir:
@@ -180,8 +203,7 @@ class Session:
                         text_parts.append(block.text)
             elif isinstance(msg, ResultMessage):
                 if msg.is_error:
-                    errors = msg.errors or ["Unknown error"]
-                    raise RuntimeError("; ".join(errors))
+                    raise RuntimeError(_format_result_error(msg))
 
         return "".join(text_parts)
 
@@ -250,8 +272,7 @@ class Session:
                             yield text
             elif isinstance(msg, ResultMessage):
                 if msg.is_error:
-                    errors = msg.errors or ["Unknown error"]
-                    raise RuntimeError("; ".join(errors))
+                    raise RuntimeError(_format_result_error(msg))
 
     async def send_stream_chunks(
         self,
@@ -387,8 +408,7 @@ class Session:
 
             elif isinstance(msg, ResultMessage):
                 if msg.is_error:
-                    errors = msg.errors or ["Unknown error"]
-                    raise RuntimeError("; ".join(errors))
+                    raise RuntimeError(_format_result_error(msg))
                 blocks.append(TraceBlock(
                     type="usage",
                     data={
