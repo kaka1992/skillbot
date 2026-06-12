@@ -103,7 +103,7 @@ def _from_code_fence_or_text(text: str) -> ParsedResult:
     result = ParsedResult()
     matches = list(_CODE_FENCE.finditer(text))
     if not matches:
-        _log.warning("parse: no structured content found (%d chars)", len(text))
+        _log.warning("parse: no structured content found (%d chars):\n%s", len(text), text[:2000])
         result.text = text
         if result.text:
             result.is_markdown = _has_markdown(result.text)
