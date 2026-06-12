@@ -167,7 +167,8 @@ class AgentMagic(Magics):
         self._busy = False                         # legacy — will be removed after refactor
         self._last_plan_prompt = ""
         self._last_plan_output = ""
-        self._pending_result = None                   # ParsedResult waiting for user confirmation
+        self._last_plan_result = None                  # cached ParsedResult for _implement_plan
+        self._pending_result = None                    # ParsedResult waiting for user confirmation
         self._agent_cells: dict[str, str] = {}     # cell_id → code, for auto-fix lookup
         self._round_results: list[dict] = []        # [{cell_id, code, output}] for auto-fix lookup
         self._auto_pending = 0                      # count of auto-exec cells still running
@@ -241,7 +242,7 @@ class AgentMagic(Magics):
             send_to_panel(self.ns, "text", content="\n")
             elapsed_ms = int((time.time() - t0) * 1000)
             if rec:
-                code_blocks = len(parse(raw).code_list) if raw.strip() else 0
+                code_blocks = raw.count("```") // 2 if raw.strip() else 0
                 rec.record("agent_response",
                     mode=getattr(self, '_last_mode', 'default'),
                     raw_text=raw.strip(),
@@ -268,6 +269,8 @@ class AgentMagic(Magics):
 
     def _finish_agent_run(self, msg: str = "") -> None:
         """Clean up after agent run completes. Sends result + ready to frontend."""
+        if self._state == AgentState.IDLE:
+            return  # already finished, prevent duplicate ready/result
         self._state = AgentState.IDLE
         self._record_state("agent_done")
         self._busy = False
@@ -628,6 +631,7 @@ class AgentMagic(Magics):
         result = parse(raw)
         if mode == "plan":
             self._last_plan_output = raw.strip()
+            self._last_plan_result = result  # cache parsed result to avoid re-parse in _implement_plan
             plan_text = result.plan or result.text or ""
             send_to_panel(self.ns, "plan_confirm", summary=plan_text)
             self._state = AgentState.PLAN_REVIEW
@@ -1039,18 +1043,20 @@ class AgentMagic(Magics):
             return
 
         if arg == "yes":
-            plan = self._last_plan_output or ""
-            if plan:
-                self._implement_plan(plan, auto=True)
+            if self._last_plan_result is not None:
+                self._implement_plan(self._last_plan_output or "", auto=True,
+                                     preparsed_result=self._last_plan_result)
                 self._record_state("plan_confirm")
             self._last_plan_output = ""
+            self._last_plan_result = None
             send_to_panel(self.ns, "result", summary="")
         elif arg == "accept_edits":
-            plan = self._last_plan_output or ""
-            if plan:
-                self._implement_plan(plan, auto=False)
+            if self._last_plan_result is not None:
+                self._implement_plan(self._last_plan_output or "", auto=False,
+                                     preparsed_result=self._last_plan_result)
                 self._record_state("plan_confirm")
             self._last_plan_output = ""
+            self._last_plan_result = None
             send_to_panel(self.ns, "result", summary="")
         elif arg == "no":
             self._last_plan_output = ""
@@ -1152,11 +1158,11 @@ class AgentMagic(Magics):
         else:
             self._finish_agent_run("Auto-fix: no output")
             return
-        send_to_panel(self.ns, "result", summary="")
 
-    def _implement_plan(self, plan: str, auto: bool = False) -> None:
+    def _implement_plan(self, plan: str, auto: bool = False,
+                        preparsed_result=None) -> None:
         """Execute a confirmed plan: inject code blocks if present, or send as implementation prompt."""
-        result = parse(plan)
+        result = preparsed_result if preparsed_result is not None else parse(plan)
         _log.info("plan implement: %d code blocks, auto=%s", len(result.code_list), auto)
 
         self._agent_cells.clear()
