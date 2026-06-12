@@ -225,9 +225,8 @@ class AgentMagic(Magics):
         def _on_thinking(t):
             nonlocal thinking_chars, _think_buf, _think_last
             thinking_chars += len(t)
-            _think_buf += t  # model already outputs whitespace correctly
+            _think_buf += t
             now = time.time()
-            # Throttle: send at most every 200ms to avoid IOPub rate limits
             if now - _think_last >= 0.2:
                 send_thinking(_think_buf)
                 _think_buf = ""
@@ -237,7 +236,6 @@ class AgentMagic(Magics):
             raw = self._session.stream(prompt, show_text=False,
                 on_chunk=_on_chunk,
                 on_thinking=_on_thinking)
-            # Flush any remaining buffered thinking
             if _think_buf:
                 send_thinking(_think_buf)
             send_to_panel(self.ns, "text", content="\n")

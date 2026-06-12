@@ -357,11 +357,8 @@ class Session:
                     if delta_type == "text_delta":
                         if t := delta.get("text", ""):
                             text_parts.append(t)
-                    elif delta_type == "thinking_delta":
-                        blocks.append(TraceBlock(
-                            type="thinking",
-                            data={"thinking": delta.get("thinking", "")},
-                        ))
+                    # thinking_delta skipped — incremental deltas lose whitespace;
+                    # the complete ThinkingBlock (see below) provides correct formatting
 
             elif isinstance(msg, AssistantMessage):
                 for block in msg.content:
