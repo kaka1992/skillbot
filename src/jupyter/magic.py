@@ -241,11 +241,11 @@ class AgentMagic(Magics):
             send_to_panel(self.ns, "text", content="\n")
             elapsed_ms = int((time.time() - t0) * 1000)
             if rec:
-                result = parse(raw)
+                code_blocks = len(parse(raw).code_list) if raw.strip() else 0
                 rec.record("agent_response",
                     mode=getattr(self, '_last_mode', 'default'),
                     raw_text=raw.strip(),
-                    code_blocks=len(result.code_list),
+                    code_blocks=code_blocks,
                     tool_names=sorted(tool_names),
                     thinking_chars=thinking_chars,
                     elapsed_ms=elapsed_ms,

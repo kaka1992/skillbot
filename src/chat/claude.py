@@ -2,22 +2,7 @@
 
 import json
 import logging
-import signal
 import time
-
-# Signal-aware interrupt: SIGINT sets a flag checked on SSE read timeouts.
-# macOS doesn't reliably deliver SIGINT during blocking C-level socket reads,
-# so we use a short read timeout + flag check as a workaround.
-_sigint_flag = False
-
-
-def _sigint_handler(signum, frame):
-    global _sigint_flag
-    _sigint_flag = True
-    signal.signal(signal.SIGINT, _sigint_handler)  # re-register
-
-
-signal.signal(signal.SIGINT, _sigint_handler)
 from collections.abc import Iterator
 from typing import Optional
 
@@ -148,31 +133,14 @@ class ClaudeBackend(AbstractBackend):
         resp = requests.post(
             f"{CLAUDE_BASE}/sessions/{sid}/chat/trace",
             json={"message": content, "timeout": self._timeout},
-            timeout=(5, 2),  # 5s connect, 2s read — check signals every 2s
+            timeout=self._timeout + 10,
             stream=True,
         )
         resp.raise_for_status()
         text_parts: list[str] = []
         blocks: list[TraceBlock] = []
         try:
-            from requests.exceptions import ReadTimeout, ConnectionError as ReqConnError
-            lines = resp.iter_lines(decode_unicode=True)
-            retries = 0
-            while True:
-                try:
-                    line = next(lines)
-                    retries = 0  # reset on success
-                except (ReadTimeout, ReqConnError):
-                    retries += 1
-                    global _sigint_flag
-                    if _sigint_flag:
-                        _sigint_flag = False
-                        raise KeyboardInterrupt()
-                    if retries > 300:  # 10 minutes at 2s timeout
-                        raise
-                    continue
-                except StopIteration:
-                    break
+            for line in resp.iter_lines(decode_unicode=True):
                 if not line.startswith("data: "):
                     continue
                 data = json.loads(line[6:])
