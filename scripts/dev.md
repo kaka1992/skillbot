@@ -288,7 +288,7 @@ results/
 ### 命令签名
 
 ```bash
-jupyter.sh [lab|notebook] [options]
+jupyter.sh [lab|notebook] [options] [--remote]
 jupyter.sh --rebuild              # 仅重建前端扩展（不改 Python 时）
 ```
 
@@ -300,6 +300,8 @@ jupyter.sh --rebuild              # 仅重建前端扩展（不改 Python 时）
 3. 创建 IPython profile + 启动脚本
 4. 构建前端扩展（Shadow DOM panel + SQL 高亮）
 5. 启动 Jupyter（工作目录：`.jupyter/run/`）
+
+`--remote` 绑定到 `0.0.0.0`（所有网络接口），用于远程访问。若已显式传 `--ip`，保留用户设置。
 
 ### Agent Panel（右侧面板）
 

@@ -12,13 +12,16 @@ IPYTHON_PROFILE="${PROJECT_DIR}/.jupyter"
 
 usage() {
     cat <<EOF
-Usage: jupyter.sh [lab|notebook] [options]
+Usage: jupyter.sh [lab|notebook] [options] [--remote]
 
 Start Jupyter with %%agent / %%sql magic pre-loaded.
 
+Options:
+  --remote        bind to 0.0.0.0 (all interfaces) for remote access
+
 Examples:
-  jupyter.sh                          # start notebook on 8888
-  jupyter.sh lab                      # start JupyterLab
+  jupyter.sh                          # start notebook on localhost:8888
+  jupyter.sh lab --remote             # JupyterLab, bind to all interfaces
   jupyter.sh notebook --port 9999     # custom port
   jupyter.sh lab --no-browser         # headless
 EOF
@@ -160,7 +163,8 @@ _rebuild() {
 # -----------------------------------------------------------
 _start() {
     local mode="${1:-notebook}"
-    shift || true
+    local remote="${2:-0}"
+    shift 2 || shift || true
 
     _setup
 
@@ -173,6 +177,18 @@ _start() {
     # ensure venv takes priority over system anaconda
     export PATH="${PROJECT_DIR}/.venv/bin:${PATH}"
     cd "${IPYTHON_PROFILE}/run"
+
+    # --remote: bind to all interfaces
+    if [[ "$remote" == "1" ]]; then
+        # don't override explicit --ip passed by user
+        local has_ip=0
+        for _a in "$@"; do
+            [[ "$_a" == "--ip" || "$_a" == --ip=* ]] && has_ip=1
+        done
+        if [[ $has_ip -eq 0 ]]; then
+            set -- --ip 0.0.0.0 "$@"
+        fi
+    fi
 
     case "$mode" in
         lab)      exec "${VENV_PYTHON}" -m jupyterlab "$@" ;;
@@ -194,13 +210,24 @@ main() {
     fi
 
     local mode="notebook"
+    local remote=0
     if [[ $# -gt 0 ]]; then
         case "$1" in
             lab|notebook) mode="$1"; shift ;;
         esac
     fi
 
-    _start "$mode" "$@"
+    # extract --remote flag (don't pass it to Jupyter)
+    local passthru=()
+    for _a in "$@"; do
+        if [[ "$_a" == "--remote" ]]; then
+            remote=1
+        else
+            passthru+=("$_a")
+        fi
+    done
+
+    _start "$mode" "$remote" "${passthru[@]}"
 }
 
 main "$@"

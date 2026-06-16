@@ -90,8 +90,9 @@ skillbot/
 ### jupyter.sh
 
 ```bash
-./scripts/jupyter.sh                    # 启动 notebook (port 8888)
+./scripts/jupyter.sh                    # 启动 notebook (localhost:8888)
 ./scripts/jupyter.sh lab                # 启动 JupyterLab
+./scripts/jupyter.sh lab --remote       # JupyterLab，绑定 0.0.0.0（远程访问）
 ./scripts/jupyter.sh notebook --port 9999
 ./scripts/jupyter.sh --rebuild          # 仅重建前端扩展
 ```
