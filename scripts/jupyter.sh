@@ -84,11 +84,14 @@ BOOTSTRAP_EOF
             cd "$ext_dir"
             [ ! -d "node_modules" ] && npm install --silent 2>&1 | tail -1
             npx tsc 2>&1 | tail -1
-            # patch: license-webpack-plugin bug with Node >=25
-            local lp_file="node_modules/@jupyterlab/builder/node_modules/license-webpack-plugin/dist/WebpackModuleFileIterator.js"
-            if [ -f "$lp_file" ]; then
-                sed -i '' "s/return filename.split('=')\[1\].trim()/var parts = filename.split('=')\n            return parts.length > 1 ? parts[1].trim() : null/" "$lp_file"
-            fi
+            # patch: license-webpack-plugin bug with Node >=25 (two files affected)
+            local lp_file1="node_modules/@jupyterlab/builder/node_modules/license-webpack-plugin/dist/WebpackModuleFileIterator.js"
+            local lp_file2="node_modules/license-webpack-plugin/dist/WebpackInnerModuleIterator.js"
+            for _f in "$lp_file1" "$lp_file2"; do
+                if [ -f "$_f" ]; then
+                    sed -i '' "s/return filename.split('=')\[1\].trim()/var parts = filename.split('=')\n            return parts.length > 1 ? parts[1].trim() : null/" "$_f"
+                fi
+            done
             PATH="${PROJECT_DIR}/.venv/bin:${HOME}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
                 "${VENV_PYTHON}" -m jupyter labextension build . 2>&1 | tail -1
             # Copy built extension to JupyterLab's shared directory
@@ -141,10 +144,13 @@ _rebuild() {
     echo "  [1/3] tsc..."
     npx tsc
     echo "  [2/3] webpack..."
-    local lp_file="node_modules/@jupyterlab/builder/node_modules/license-webpack-plugin/dist/WebpackModuleFileIterator.js"
-    if [ -f "$lp_file" ]; then
-        sed -i '' "s/return filename.split('=')\[1\].trim()/var parts = filename.split('=')\n            return parts.length > 1 ? parts[1].trim() : null/" "$lp_file"
-    fi
+    local lp_file1="node_modules/@jupyterlab/builder/node_modules/license-webpack-plugin/dist/WebpackModuleFileIterator.js"
+    local lp_file2="node_modules/license-webpack-plugin/dist/WebpackInnerModuleIterator.js"
+    for _f in "$lp_file1" "$lp_file2"; do
+        if [ -f "$_f" ]; then
+            sed -i '' "s/return filename.split('=')\[1\].trim()/var parts = filename.split('=')\n            return parts.length > 1 ? parts[1].trim() : null/" "$_f"
+        fi
+    done
     PATH="${PROJECT_DIR}/.venv/bin:${HOME}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
         "${VENV_PYTHON}" -m jupyter labextension build .
     echo "  [3/3] sync to labextensions..."
