@@ -91,10 +91,7 @@ BOOTSTRAP_EOF
             fi
             PATH="${PROJECT_DIR}/.venv/bin:${HOME}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
                 "${VENV_PYTHON}" -m jupyter labextension build . 2>&1 | tail -1
-            cp -r lib labextension/
-            PATH="${PROJECT_DIR}/.venv/bin:${HOME}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
-                "${VENV_PYTHON}" -m jupyter labextension install labextension/ 2>&1 | tail -3
-            # Clean then copy to shared labextensions/ — prevents stale webpack chunks
+            # Copy built extension to JupyterLab's shared directory
             rm -rf "${PROJECT_DIR}/.venv/share/jupyter/labextensions/skillbot-jupyter"
             cp -r labextension/ "${PROJECT_DIR}/.venv/share/jupyter/labextensions/skillbot-jupyter"
             cd "${PROJECT_DIR}"
@@ -150,7 +147,6 @@ _rebuild() {
     fi
     PATH="${PROJECT_DIR}/.venv/bin:${HOME}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
         "${VENV_PYTHON}" -m jupyter labextension build .
-    cp -r lib labextension/
     echo "  [3/3] sync to labextensions..."
     rm -rf "${ext_install_dir}"
     cp -r labextension/ "${ext_install_dir}"
@@ -227,7 +223,7 @@ main() {
         fi
     done
 
-    _start "$mode" "$remote" "${passthru[@]}"
+    _start "$mode" "$remote" ${passthru:+"${passthru[@]}"}
 }
 
 main "$@"
