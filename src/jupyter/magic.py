@@ -440,7 +440,7 @@ class AgentMagic(Magics):
             old.cleanup()
         self._init_session(self._agent, self._timeout, self._claude_md_path)
         if self._session.client is None:
-            raise RuntimeError("session init failed — is Claude server (port 9000) running?")
+            raise RuntimeError(f"session init failed — is agent {self._agent} running?")
         from pathlib import Path as _Path
         _project_root = _Path(__file__).resolve().parents[2]
         rec = SessionEventRecorder(
