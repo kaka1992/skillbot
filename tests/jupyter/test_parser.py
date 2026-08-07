@@ -117,7 +117,7 @@ class TestCodeFence:
 
     def test_empty_block(self):
         r = _p("```python\n\n```")
-        assert r.code_list == [""]
+        assert r.code_list == []
 
     def test_unclosed_ignored(self):
         r = _p("```python\nprint(1)")
@@ -226,3 +226,86 @@ class TestMarkdownDetection:
     def test_code_fence_text_md(self):
         r = _p("```python\nprint(1)\n```\n\n## Summary\nhere is result")
         assert r.is_markdown is True
+
+
+class TestJsonTypeSafety:
+    """Weird JSON shapes must not crash _from_json."""
+
+    def test_non_string_text(self):
+        r = _p('```json\n{"text": 123}\n```')
+        assert r.text == "123"
+
+    def test_null_files(self):
+        r = _p('```json\n{"text": "hi", "files": null}\n```')
+        assert r.text == "hi"
+        assert r.files == []
+
+    def test_string_files(self):
+        r = _p('```json\n{"text": "hi", "files": "a.csv"}\n```')
+        assert r.files == ["a.csv"]
+
+    def test_array_root(self):
+        r = _p('```json\n[{"text": "nope"}]\n```')
+        assert r.text == '[{"text": "nope"}]'
+        assert r.code_list == []
+
+    def test_int_plan(self):
+        r = _p('```json\n{"plan": 42}\n```')
+        assert r.plan == "42"
+
+    def test_non_list_code(self):
+        r = _p('```json\n{"code": 42}\n```')
+        assert r.code_list == []
+
+
+class TestParseReviewResult:
+    """parse_review_result must not crash on non-dict JSON shapes."""
+
+    def test_valid_dict(self):
+        from jupyter.parser import parse_review_result
+        r = parse_review_result('{"status": "NOT_SOLVED", "code": "x = 1"}')
+        assert r["status"] == "NOT_SOLVED"
+        assert r["code"] == "x = 1"
+
+    def test_list_json_falls_back(self):
+        """Valid JSON that is a list must not raise AttributeError."""
+        from jupyter.parser import parse_review_result
+        r = parse_review_result('["SOLVED", "desc"]')
+        assert r["status"] is None or r["status"] == "SOLVED"
+        assert isinstance(r["code"], str) or r["code"] is None
+
+    def test_string_json_falls_back(self):
+        from jupyter.parser import parse_review_result
+        r = parse_review_result('"just text"')
+        assert r["code"] is None
+
+    def test_number_json_falls_back(self):
+        from jupyter.parser import parse_review_result
+        r = parse_review_result("42")
+        assert r["status"] is None
+
+    def test_plain_text(self):
+        from jupyter.parser import parse_review_result
+        r = parse_review_result("NOT_SOLVED: blocked")
+        assert r["status"] == "NOT_SOLVED"
+
+
+class TestEmptyCodeFence:
+    """Empty code fences must not produce empty code_list entries (fix C)."""
+
+    def test_only_empty_fence(self):
+        r = _p("```python\n\n```")
+        assert r.code_list == []
+
+    def test_empty_fence_between_real_blocks(self):
+        r = _p("```python\nprint(1)\n```\n```\n\n```\n```python\nprint(2)\n```")
+        assert r.code_list == ["print(1)", "print(2)"]
+
+    def test_whitespace_fence(self):
+        r = _p("```python\n   \n```")
+        assert r.code_list == []
+
+    def test_mixed_text_kept(self):
+        r = _p("intro\n```python\n\n```\noutro")
+        assert r.code_list == []
+        assert "intro" in r.text and "outro" in r.text

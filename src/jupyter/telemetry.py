@@ -16,6 +16,7 @@ class SessionEventRecorder:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._buffer: list[dict] = []
         self._flushed = False
+        self._end_recorded = False
         self._exec_order = 0
         self._record_event("session_start")
 
@@ -46,8 +47,9 @@ class SessionEventRecorder:
         """Write all buffered events to JSONL. Returns the file path."""
         if self._flushed:
             return None
-        self._flushed = True
-        self._record_event("session_end", total_events=len(self._buffer))
+        if not self._end_recorded:
+            self._record_event("session_end", total_events=len(self._buffer))
+            self._end_recorded = True
         try:
             lines = []
             for entry in self._buffer:
@@ -58,9 +60,10 @@ class SessionEventRecorder:
                         {"session_id": self._session_id, "event": "serialization_failed"}))
             with open(self._path, "w", encoding="utf-8") as f:
                 f.write("\n".join(lines) + "\n")
+            self._flushed = True
             return str(self._path)
         except OSError:
-            return None
+            return None  # keep buffered events so a later flush can retry
 
 
 _recorder: SessionEventRecorder | None = None

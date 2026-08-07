@@ -807,6 +807,14 @@ class AgentPanel extends Widget {
       return;
     }
 
+    // No kernel — sending would lose the prompt and leave a stuck spinner
+    if (!this._kernel) {
+      this._setStatus('⚠', 'idle');
+      this._renderResponseText('<span style="color:rgb(220,120,100)">[no kernel connected — start a kernel in the notebook first]</span>');
+      this._updateStatusDisplay();
+      return;
+    }
+
     if (this._history.length === 0 || this._history[this._history.length - 1] !== text) {
       this._history.push(text);
     }
@@ -1072,7 +1080,7 @@ class AgentPanel extends Widget {
           if (e2.key === 'd') {
             if (this._kernel) {
               this._kernel.requestExecute({
-                code: `get_ipython().user_ns['_panel_input']('/skills uninstall ${toRemove.name}')`,
+                code: `get_ipython().user_ns['_panel_input'](${JSON.stringify('/skills uninstall ' + toRemove.name)})`,
                 store_history: false,
               });
             }
@@ -1110,7 +1118,7 @@ class AgentPanel extends Widget {
           s.enabled = !s.enabled;
           this._refreshSkillRows();
           this._kernel.requestExecute({
-            code: `get_ipython().user_ns['_panel_input']('/skills toggle ${s.name}')`,
+            code: `get_ipython().user_ns['_panel_input'](${JSON.stringify('/skills toggle ' + s.name)})`,
             store_history: false,
           });
         }
@@ -1151,7 +1159,7 @@ class AgentPanel extends Widget {
           const path = input.value.trim();
           if (path && this._kernel) {
             this._kernel.requestExecute({
-              code: `get_ipython().user_ns['_panel_input']('/skills install ${path.replace(/'/g, "\\'")}')`,
+              code: `get_ipython().user_ns['_panel_input'](${JSON.stringify('/skills install ' + path)})`,
               store_history: false,
             });
           }
@@ -1370,7 +1378,12 @@ class AgentPanel extends Widget {
       const raw = localStorage.getItem(AgentPanel.STORAGE_KEY);
       if (!raw) return;
       const s = JSON.parse(raw);
-      if (s.output) { this._outputEl.innerHTML = s.output; this._scrollBottom(); }
+      if (s.output) {
+        // persisted HTML is self-generated, but strip scripts/handlers anyway
+        const clean = s.output.replace(/<script[\s\S]*?<\/script>/gi, '')
+                              .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+        this._outputEl.innerHTML = clean; this._scrollBottom();
+      }
       if (s.history) this._history = s.history;
       if (s.mode) { this._mode = s.mode; this._updateModeInfo(); }
       if (s.status) this._statusEl.innerHTML = s.status;
@@ -1508,6 +1521,8 @@ class AgentPanel extends Widget {
   }
 
   private _ansiToHtml(s: string): string {
+    // escape raw text first so ANSI conversion can't inject markup
+    s = this._esc(s);
     return s.replace(/\x1b\[32m/g, '<span style="color:#4ade80">')
             .replace(/\x1b\[31m/g, '<span style="color:#f87171">')
             .replace(/\x1b\[90m/g, '<span style="color:#999">')
@@ -1536,15 +1551,16 @@ class AgentPanel extends Widget {
   private _handleCellCommImpl(comm: any, msg: any): void {
     const data = msg.content?.data || {};
     const nb = this._tracker?.currentWidget;
-    if (!nb) return;
+    // Always reply so the kernel can close the comm; otherwise it leaks and
+    // the on_cell_id callback (batch-completion tracking) never fires
+    if (!nb || !nb.model) { comm.send({ cell_id: '' }); return; }
     const model = nb.model;
-    if (!model) return;
 
     const code: string = data.code || '';
     const auto: boolean = data.auto !== false;
     const cellType: string = data.cell_type || 'code';
     const replaceId: string = data.replace_cell_id || '';
-    if (!code) return;
+    if (!code) { comm.send({ cell_id: '' }); return; }
 
     const notebook = nb.content;
 
@@ -1660,6 +1676,22 @@ class AgentPanel extends Widget {
             this._installError = '';
             this._renderSkillList(d.skills || []);
             break;
+          case 'skill_info': {
+            const info = d.skill || {};
+            if (!info.name) break;
+            if (!this._skillsMode) this._enterSkillsMode();
+            if (!this._skillListWrapper) this._renderSkillList(this._skillData);
+            const idx = this._skillData.findIndex((s: any) => s.name === info.name);
+            if (idx === -1) {
+              this._skillData.push({ name: info.name, description: info.description || '', enabled: !!info.enabled, body: info.body || '' });
+              this._expandedIdx = this._skillData.length - 1;
+            } else {
+              this._skillData[idx] = Object.assign({}, this._skillData[idx], { description: info.description || '', enabled: !!info.enabled, body: info.body || '' });
+              this._expandedIdx = idx;
+            }
+            this._refreshSkillRows();
+            break;
+          }
           case 'continue_confirm':
             this._stopSpinner();
             this._busy = false;
@@ -1900,9 +1932,12 @@ export const panelPlugin: JupyterFrontEndPlugin<void> = {
 
     let _currentCtx: any = null;
     let _cellsChangedModel: any = null;
+    let _currentNbPath = '';
     const onKernelChanged = (_sender: any, args: any) => {
+      // Always reset the comm: a kernel change (restart, switch, or lazy start
+      // where oldValue is null) must never leave _comm bound to an old kernel.
+      panel.resetComm();
       if (args.oldValue) {
-        panel.resetComm();
         panel._clear();
       }
       if (args.newValue) panel.connectKernel(args.newValue);
@@ -1911,6 +1946,13 @@ export const panelPlugin: JupyterFrontEndPlugin<void> = {
     const register = () => {
       const nb = tracker.currentWidget;
       if (!nb) return;
+      const nbPath = nb.context.path || nb.context.localPath || '';
+      if (nbPath !== _currentNbPath) {
+        // Notebook switch — drop comms from the previous notebook's kernel
+        _currentNbPath = nbPath;
+        panel.resetComm();
+        panel._clear();
+      }
       const ctx = nb.context.sessionContext;
       if (!ctx) return;
 

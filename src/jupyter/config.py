@@ -15,10 +15,19 @@ def pop_flag(args: list[str], name: str, convert: type = str):
     except ValueError:
         return None
     if i + 1 >= len(args):
+        args.pop(i)  # flag with no value — consume flag, return None
         return None
-    val = args.pop(i + 1)
-    args.pop(i)
-    return convert(val)
+    val = args[i + 1]
+    if val.startswith("-"):
+        args.pop(i)  # next item is a flag — don't swallow it as our value
+        return None
+    del args[i + 1]
+    del args[i]
+    try:
+        return convert(val)
+    except (ValueError, TypeError):
+        _log.warning("pop_flag: invalid value for %s: %r", name, val)
+        return None
 
 
 def parse_kv(args: list[str]) -> dict[str, str]:
@@ -38,7 +47,8 @@ def load_yaml_config(path: str | None) -> dict:
         return {}
     try:
         import yaml
-        return yaml.safe_load(Path(path).read_text()) or {}
+        data = yaml.safe_load(Path(path).read_text()) or {}
+        return data if isinstance(data, dict) else {}
     except FileNotFoundError:
         print(f"[agent_config] config file not found: {path}", file=sys.stderr)
     except Exception as e:
@@ -67,7 +77,8 @@ def load_tools(tools_cfg: dict) -> None:
     except Exception as e:
         _log.warning("builtin tools load failed: %s", e)
 
-    for path in tools_cfg.get("paths") or []:
+    paths = tools_cfg.get("paths") if isinstance(tools_cfg.get("paths"), list) else []
+    for path in paths:
         try:
             _discover_dir(path, path)
         except Exception as e:
@@ -120,25 +131,38 @@ def configure_agent(
     set_debug(cli_debug or cfg_debug)
 
     agent = cli_agent or cfg.get("agent") or defaults.get("agent") or current_agent
-    timeout = cli_timeout or cfg.get("timeout") or defaults.get("timeout") or current_timeout
+    # explicit None checks so a falsy-but-valid 0 timeout is respected
+    timeout = current_timeout
+    if defaults.get("timeout") is not None:
+        timeout = defaults["timeout"]
+    if cfg.get("timeout") is not None:
+        timeout = cfg["timeout"]
+    if cli_timeout is not None:
+        timeout = cli_timeout
     claude_md = cli_claude_md or cfg.get("claude_md") or current_claude_md
 
     # merge env: YAML base + CLI overrides
-    merged_env = {**(cfg.get("env") or {}), **(cli_env or {})}
+    cfg_env = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}
+    merged_env = {**cfg_env, **(cli_env or {})}
     if merged_env:
         os.environ.update({k: str(v) for k, v in merged_env.items()})
 
-    # tools: always incremental
-    tools_cfg = cfg.get("tools") or {}
+    # tools: always incremental (malformed YAML sections degrade gracefully)
+    tools_cfg = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
     load_tools(tools_cfg)
-    apply_preferences(tools_cfg.get("preferences") or {})
+    prefs = tools_cfg.get("preferences")
+    apply_preferences(prefs if isinstance(prefs, dict) else {})
 
     # hook config: YAML base + CLI overrides
-    hook_cfg = cfg.get("hooks", {})
-    for name in (enable_hooks or []):
-        hook_cfg.setdefault("groups", {}).setdefault(name, {})["enabled"] = True
-    for name in (disable_hooks or []):
-        hook_cfg.setdefault("groups", {}).setdefault(name, {})["enabled"] = False
+    hook_cfg = cfg.get("hooks") if isinstance(cfg.get("hooks"), dict) else {}
+    if enable_hooks or disable_hooks:
+        groups = hook_cfg.get("groups")
+        if not isinstance(groups, dict):
+            groups = hook_cfg["groups"] = {}
+        for name in (enable_hooks or []):
+            groups.setdefault(name, {})["enabled"] = True
+        for name in (disable_hooks or []):
+            groups.setdefault(name, {})["enabled"] = False
 
     session_rebuild = (
         agent != current_agent

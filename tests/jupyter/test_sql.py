@@ -45,6 +45,23 @@ def _register_mock_tools():
     ToolRegistry.clear()
 
 
+class TestCallMissingTool:
+    """_call must raise a clean error when a preset tool isn't registered."""
+
+    def test_missing_tool_raises_runtime_error(self):
+        import asyncio
+        runner = SqlRunner()
+        with pytest.raises(RuntimeError, match="tool not available: spark_nonexistent"):
+            asyncio.run(runner._call("spark_nonexistent", {"job_id": "x"}))
+
+    def test_cancel_missing_tool_clean_error(self):
+        import asyncio
+        ToolRegistry.clear()  # simulate partial registration
+        runner = SqlRunner()
+        with pytest.raises(RuntimeError, match="tool not available"):
+            asyncio.run(runner._call("spark_cancel_job", {"job_id": "x"}))
+
+
 class TestSqlRunnerSubmit:
     def test_submit_returns_job_id(self):
         runner = SqlRunner()

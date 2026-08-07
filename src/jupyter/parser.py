@@ -78,17 +78,28 @@ def parse(text: str) -> ParsedResult:
     return _from_code_fence_or_text(text)
 
 
-def _from_json(data: dict) -> ParsedResult:
+def _from_json(data) -> ParsedResult:
     """Build ParsedResult from parsed JSON dict."""
     result = ParsedResult()
-    result.text = data.get("text", "")
-    result.plan = data.get("plan", "")
+    if not isinstance(data, dict):
+        # e.g. a fenced JSON array — not structured output, keep as text
+        result.text = json.dumps(data)
+        result.is_markdown = _has_markdown(result.text)
+        return result
+    text = data.get("text", "")
+    result.text = text if isinstance(text, str) else str(text)
+    plan = data.get("plan", "")
+    result.plan = plan if isinstance(plan, str) else str(plan)
     code_raw = data.get("code", "")
     if isinstance(code_raw, list):
         result.code_list = [str(c) for c in code_raw if str(c).strip()]
     elif isinstance(code_raw, str) and code_raw.strip():
         result.code_list = [code_raw.strip()]
-    result.files = [str(f) for f in data.get("files", [])]
+    files = data.get("files", [])
+    if isinstance(files, str):
+        result.files = [files]
+    elif isinstance(files, list):
+        result.files = [str(f) for f in files if str(f).strip()]
     if result.text:
         result.is_markdown = _has_markdown(result.text)
     return result
@@ -116,7 +127,9 @@ def _from_code_fence_or_text(text: str) -> ParsedResult:
         before = text[last_end:m.start()].strip()
         if before:
             text_parts.append(before)
-        result.code_list.append(m.group(1).strip())
+        code = m.group(1).strip()
+        if code:
+            result.code_list.append(code)
         last_end = m.end()
     after = text[last_end:].strip()
     if after:
@@ -154,8 +167,9 @@ def parse_review_result(raw: str) -> dict:
         except _json.JSONDecodeError:
             pass
 
-    if data:
-        status = str(data.get("text") or "").strip().upper()
+    if isinstance(data, dict):
+        # status keyword may arrive in the "status" field (per template) or text
+        status = str(data.get("status") or data.get("text") or "").strip().upper()
         reason = str(data.get("reason") or "").strip()
         code = data.get("code") or None
         if isinstance(code, list):

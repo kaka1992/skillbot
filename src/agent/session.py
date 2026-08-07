@@ -126,16 +126,17 @@ class AgentSession:
                             if on_chunk:
                                 on_chunk(f"\n\033[32m⏺ {name}\033[0m\033[90m({detail})\033[0m\n")
                         elif b.type == "tool_result" and b.data:
-                            raw = b.data.get("content", "")
+                            # Display only — must not overwrite accumulated text
+                            tool_content = b.data.get("content", "")
                             # content may be a list of TextBlock-like objects or a string
-                            if isinstance(raw, list):
+                            if isinstance(tool_content, list):
                                 content = "\n".join(
-                                    getattr(c, "text", "") or str(c) for c in raw
+                                    getattr(c, "text", "") or str(c) for c in tool_content
                                 )
-                            elif isinstance(raw, str):
-                                content = raw
+                            elif isinstance(tool_content, str):
+                                content = tool_content
                             else:
-                                content = str(raw) if raw else ""
+                                content = str(tool_content) if tool_content else ""
                             is_error = b.data.get("is_error", False)
                             color = "\033[31m" if is_error else "\033[90m"
                             lines = content.split("\n")

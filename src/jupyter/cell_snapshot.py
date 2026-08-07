@@ -23,10 +23,16 @@ def _base_dir(nb_path: str = "") -> Path:
     return base / dir_for(nb_path)
 
 
+def _safe_component(name: str) -> bool:
+    """Reject path separators / traversal in ids used as path components."""
+    return bool(name) and "/" not in name and "\\" not in name \
+        and name != ".." and not name.startswith(".")
+
+
 def save(cell_id: str, code: str, output: str = "", error: str = "",
          nb_path: str = "") -> Path | None:
     """Save a version snapshot. Returns the file path or None."""
-    if not cell_id:
+    if not _safe_component(cell_id):
         return None
     d = _base_dir(nb_path) / cell_id
     d.mkdir(parents=True, exist_ok=True)
@@ -64,6 +70,8 @@ def save(cell_id: str, code: str, output: str = "", error: str = "",
 
 def list_versions(cell_id: str, nb_path: str = "") -> list[dict]:
     """Return version list for a cell, newest first."""
+    if not _safe_component(cell_id):
+        return []
     d = _base_dir(nb_path) / cell_id
     if not d.is_dir():
         return []
@@ -80,6 +88,8 @@ def list_versions(cell_id: str, nb_path: str = "") -> list[dict]:
 
 def get_version(cell_id: str, version: str, nb_path: str = "") -> dict | None:
     """Get a specific version snapshot."""
+    if not _safe_component(cell_id) or not _safe_component(version):
+        return None
     path = _base_dir(nb_path) / cell_id / f"{version}.json"
     if not path.is_file():
         return None

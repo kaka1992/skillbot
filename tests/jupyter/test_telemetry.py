@@ -52,3 +52,30 @@ class TestSessionEventRecorder:
         assert rec.next_exec_order() == 1
         assert rec.next_exec_order() == 2
         assert rec.next_exec_order() == 3
+
+    def test_failed_flush_keeps_buffer_for_retry(self, tmp_path, monkeypatch):
+        """Write failure must not mark the recorder flushed (fix: loss of
+        the entire session's telemetry on first write error)."""
+        target = tmp_path / "events.jsonl"
+        rec = SessionEventRecorder("s", str(target))
+        rec.record("cell_executed", cell_id="x", code="print(1)")
+
+        import builtins
+        real_open = builtins.open
+        calls = {"n": 0}
+
+        def failing_open(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError("disk full")
+            return real_open(*args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", failing_open)
+        assert rec.flush() is None
+        assert rec._flushed is False
+
+        monkeypatch.setattr(builtins, "open", real_open)
+        result = rec.flush()
+        assert result == str(target)
+        lines = Path(target).read_text().strip().split("\n")
+        assert len(lines) == 3  # session_start + cell_executed + session_end

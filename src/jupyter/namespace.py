@@ -50,18 +50,16 @@ class Namespace:
     def get(self, name: str, default=None) -> object:
         return self._shell.user_ns.get(name, default)
 
-    def context(self) -> str:
-        """Full snapshot: variables + recent cells."""
-        self._seen = set(self.vars().keys())
-        self._cell_idx = len(self._cells)
-        self._hook_idx = len(self._hook_events)
-        return self._build_context(self.vars(), self._cells, self._hook_events)
-
     def track_pending_edit(self, source: str) -> None:
         """Record an unexecuted cell edit from the frontend."""
         src = source.strip()
         if src:
             self._pending_edits.append(src[:3000])
+
+    def _remove_cell_at(self, i: int) -> None:
+        del self._cells[i]
+        if i < self._cell_idx:
+            self._cell_idx -= 1  # keep watermark aligned or later deltas skip cells
 
     def remove_cell(self, source: str) -> None:
         """Remove cells matching *source* from tracked history (deleted in notebook)."""
@@ -70,14 +68,17 @@ class Namespace:
             return
         for i in range(len(self._cells) - 1, -1, -1):
             if self._cells[i]["code"][:1500] == src:
-                del self._cells[i]
+                self._remove_cell_at(i)
                 break
 
     def remove_cell_by_id(self, cell_id: str) -> None:
         """Remove a cell from tracking by its ID (used after cell optimization)."""
         if not cell_id:
             return
-        self._cells = [c for c in self._cells if c.get("cell_id") != cell_id]
+        for i in range(len(self._cells) - 1, -1, -1):
+            if self._cells[i].get("cell_id") == cell_id:
+                self._remove_cell_at(i)
+                break
 
     def track_context(self, note: str) -> None:
         """Inject a system context note visible to future agent interactions."""
@@ -107,7 +108,8 @@ class Namespace:
         self._cell_idx = len(self._cells)
         self._pending_idx = len(self._pending_edits)
         self._hook_idx = len(self._hook_events)
-        return self._build_context(self.vars(), self._cells, self._hook_events)
+        return self._build_context(self.vars(), self._cells, self._hook_events,
+                                   pending_edits=self._pending_edits)
 
     def reset(self) -> None:
         self._seen.clear()

@@ -71,6 +71,18 @@ class TestNamespace:
         ns.context()
         assert ns.delta() == ""
 
+    def test_context_includes_pending_edits(self):
+        """Full-snapshot context must include unexecuted cell edits (fix: they
+        were consumed by the watermark but never rendered)."""
+        s = FakeShell()
+        s.user_ns = {"a": 1}
+        ns = Namespace(s)
+        ns.track_pending_edit("df = pd.read_csv('x.csv')")
+        ctx = ns.context()
+        assert "Unexecuted cell edits" in ctx
+        assert "pd.read_csv" in ctx
+        assert "a: int" in ctx
+
     def test_reset(self):
         s = FakeShell()
         s.user_ns = {"a": 1}
@@ -91,6 +103,48 @@ class TestNamespace:
         assert "x: int" in ctx
         assert "print(x)" in ctx
         assert "→ 1" in ctx
+
+
+class TestCellWatermark:
+    """Removing a cell must not skip cells in later deltas."""
+
+    def test_remove_before_watermark(self):
+        s = FakeShell()
+        s.user_ns = {}
+        ns = Namespace(s)
+        for i in range(5):
+            ns.track_cell(f"cell {i}")
+        ns.context()          # watermark = 5, all consumed
+        ns.remove_cell("cell 1")   # removed before watermark → idx 1 < 5
+        ns.track_cell("cell 5")
+        d = ns.delta()
+        # cell 2,3,4 already consumed; only cell 5 must appear
+        assert "cell 5" in d
+        assert "cell 2" not in d
+
+    def test_remove_after_watermark_pending(self):
+        s = FakeShell()
+        s.user_ns = {}
+        ns = Namespace(s)
+        ns.track_cell("cell 0")
+        ns.context()          # watermark = 1
+        ns.track_cell("cell 1")
+        ns.remove_cell("cell 1")   # pending cell removed before delivery
+        d = ns.delta()
+        assert d == ""
+
+    def test_remove_by_id_before_watermark(self):
+        s = FakeShell()
+        s.user_ns = {}
+        ns = Namespace(s)
+        for i in range(4):
+            ns.track_cell(f"cell {i}", cell_id=f"id{i}")
+        ns.context()          # watermark = 4
+        ns.remove_cell_by_id("id0")  # removed before watermark
+        ns.track_cell("cell 4", cell_id="id4")
+        d = ns.delta()
+        assert "cell 4" in d
+        assert "cell 3" not in d
 
 
 class TestDescribe:

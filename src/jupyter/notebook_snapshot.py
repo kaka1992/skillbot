@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from pathlib import Path
 
@@ -63,6 +64,10 @@ def take(cells: list | None = None, nb_path: str = "") -> Path | None:
 
     ts = int(time.time())
     path = d / f"{ts}.json"
+    n = 1
+    while path.exists():
+        path = d / f"{ts}_{n}.json"
+        n += 1
     path.write_text(json.dumps({"timestamp": ts, "cells": cell_list},
                     indent=2, ensure_ascii=False), encoding="utf-8")
     _log.info("snapshot saved: %s (%d cells)", path.name, len(cell_list))
@@ -101,6 +106,9 @@ def _list_dir(d: Path) -> list[dict]:
 
 
 def get_snapshot(snapshot_id: str, nb_path: str = "") -> dict | None:
+    # snapshot ids are "{ts}" / "{ts}_{n}" stems — anything else is traversal
+    if not snapshot_id or not re.fullmatch(r"[0-9_]+", snapshot_id):
+        return None
     path = _base_dir(nb_path) / f"{snapshot_id}.json"
     if not path.is_file():
         return None

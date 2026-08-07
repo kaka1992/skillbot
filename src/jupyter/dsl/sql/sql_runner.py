@@ -71,6 +71,8 @@ class SqlRunner:
     @staticmethod
     async def _call(preset_name: str, params: dict[str, Any]) -> dict[str, Any]:
         tool = ToolRegistry.get(preset_name)
+        if tool is None:
+            raise RuntimeError(f"tool not available: {preset_name}")
         result = await tool.execute(params)
         if result.error:
             raise RuntimeError(result.error)

@@ -124,14 +124,14 @@ class AgentCellReviewHook(Hook):
 
         # Inject code if agent provided one (SOLVING or SOLVED with install cmd etc.)
         if code:
-            render_code(ns, code, auto=auto, trace=auto)
+            render_code(ns, code, auto=auto)
             render_info("[review] code from review injected")
 
         if status == "NOT_SOLVED":
             code_before = last_cell.get("code", "")
             reason = review.get("reason", raw.strip()[:500])
             fix = f"# Fix: {reason}\n{code_before}" if code_before else f"# Fix: {reason}"
-            render_code(ns, fix, auto=auto, trace=True)
+            render_code(ns, fix, auto=auto)
             ns.track_hook(f"[review] NOT_SOLVED → fix cell")
             render_info("[review] ✓ fix cell generated")
         elif status == "SOLVED":
@@ -141,7 +141,7 @@ class AgentCellReviewHook(Hook):
                 text=review.get("text", ""),
                 is_markdown=is_md,
             )
-            render_output(ns, result)
+            render_output(ns, result, session=session)
             ns.track_hook(f"[review] SOLVED: {reason[:100]}")
         elif status == "SOLVING":
             reason = review.get("reason", "")

@@ -65,12 +65,14 @@ def render_code(ns: Namespace, code: str, auto: bool = False,
     if not code:
         return
     code = code.strip()
+    marker = "\n# %%agent generate code"
     if cell_type == "markdown":
         pass
     else:
         if _is_sql(code) and not code.startswith("%%sql"):
             code = f"%%sql\n{code}"
-        code = f"{code}\n# %%agent generate code"
+        if marker not in code:
+            code = f"{code}{marker}"
 
     _log.info("render_code: %d chars auto=%s type=%s", len(code), auto, cell_type)
 
@@ -99,36 +101,42 @@ def render_image(data: bytes) -> None:
 def render_sql_dataframe(ns: Namespace, data: dict, var_name: str):
     """Load SQL result into namespace as DataFrame. Returns the DataFrame or None."""
     sample = data.get("sample_data", [])
+    df = None
     if sample and len(sample) > 1:
         cols = sample[0]
         rows = sample[1:1001]  # max 1000 rows for preview display
-        df_sample = pd.DataFrame(rows, columns=cols)
+        df = pd.DataFrame(rows, columns=cols)
         render_text(f"[{var_name}] sample: {len(sample) - 1} rows x {len(cols)} cols" +
                     (" (showing first 1000)" if len(sample) > 1001 else ""))
-        render_text(df_sample.to_string(max_rows=20, max_cols=10, max_colwidth=30))
+        render_text(df.to_string(max_rows=20, max_cols=10, max_colwidth=30))
 
     output_path = data.get("output_path", "")
     result_url = data.get("result_url", "")
     if output_path and Path(output_path).is_file():
         df = pd.read_csv(output_path)
-        ns.inject(var_name, df)
         render_text(f"[{var_name}] loaded from {output_path}: {len(df)} rows x {len(df.columns)} cols")
-        return df
     elif result_url:
         df = pd.read_csv(result_url)
-        ns.inject(var_name, df)
         render_text(f"[{var_name}] loaded from {result_url}: {len(df)} rows x {len(df.columns)} cols")
+
+    if df is not None:
+        ns.inject(var_name, df)
         return df
-    else:
-        render_text(f"\033[91m[{var_name}] no data available\033[0m")
-        return None
+    render_text(f"\033[91m[{var_name}] no data available\033[0m")
+    return None
 
 
 def render_output(ns: Namespace, result: ParsedResult,
                   skip_text: bool = False,
                   auto: bool = False, plan_cell_id: str = "",
-                  on_cell_id: callable | None = None) -> None:
-    """Dispatch parsed agent result to render methods."""
+                  on_cell_id: callable | None = None,
+                  session=None) -> int:
+    """Dispatch parsed agent result to render methods.
+
+    Returns the number of code cells actually sent (after .py file
+    appends and the code_review hook may have changed the list) —
+    callers use it to count pending auto-executions.
+    """
     if result.text and not skip_text:
         if result.is_markdown:
             render_markdown(result.text)
@@ -137,7 +145,7 @@ def render_output(ns: Namespace, result: ParsedResult,
 
     if result.plan:
         content = "# %%plan\n\n" + result.plan
-        def _on_plan_cell(cid):
+        def _on_plan_cell(cid, code):
             ns._shell.user_ns["__plan_cell_id__"] = cid
         render_code(ns, content, cell_type="markdown", replace_cell_id=plan_cell_id,
                     on_cell_id=_on_plan_cell)
@@ -152,7 +160,10 @@ def render_output(ns: Namespace, result: ParsedResult,
         p = Path(path)
         if path.endswith(".py"):
             if p.is_file():
-                result.code_list.append(p.read_text())
+                try:
+                    result.code_list.append(p.read_text(encoding="utf-8", errors="replace"))
+                except OSError:
+                    _log.warning("render_output: cannot read %s", path)
         elif path.endswith(".csv"):
             _load_csv(path, "", ns)
         elif path.endswith((".png", ".jpg", ".jpeg", ".svg")):
@@ -164,11 +175,13 @@ def render_output(ns: Namespace, result: ParsedResult,
     if result.code_list:
         from hook import HookRegistry, HookEvent
         context = {"code_list": result.code_list, "ns": ns}
-        HookRegistry.dispatch(HookEvent.CODE_REVIEW, context)
+        HookRegistry.dispatch(HookEvent.CODE_REVIEW, context, session=session)
         result.code_list = context["code_list"]
 
         for c in result.code_list:
             render_code(ns, c, auto=auto, on_cell_id=on_cell_id)
+
+    return len(result.code_list)
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +197,24 @@ def _is_sql(code: str) -> bool:
     stmt = sqlparse.parse(code.strip())
     if not stmt:
         return False
-    return stmt[0].get_type() not in (None, "UNKNOWN")
+    t = stmt[0]
+    if t.get_type() in (None, "UNKNOWN"):
+        return False
+    # sqlparse reports SELECT even for Python like `select = [1,2,3]` or
+    # `select[0]`; a real SQL keyword is never followed by `=` / `[`
+    seen = 0
+    for tok in t.tokens:
+        if tok.is_whitespace:
+            continue
+        seen += 1
+        if seen == 1:
+            continue  # the leading keyword itself
+        if (str(tok.ttype).startswith("Token.Operator")
+                or tok.ttype == sqlparse.tokens.Punctuation
+                or getattr(tok, "value", "").startswith("[")):
+            return False
+        break
+    return True
 
 
 def _load_csv(name: str, content: str, ns: Namespace) -> None:

@@ -40,8 +40,11 @@ def send_cell_via_comm(ns, code: str, auto: bool = False, cell_type: str = "code
                 cell_id = msg.get("content", {}).get("data", {}).get("cell_id", "")
                 if cell_id and on_cell_id:
                     on_cell_id(cell_id, code)
-
-            # Don't close — comm stays alive for async reply, GC cleans up later
+                # Frontend replies with cell_id exactly once (see comm.ts), then close
+                try:
+                    comm.close()
+                except Exception:
+                    pass
         return ""
     except Exception:
         _log.debug("send_cell_via_comm: failed", exc_info=True)

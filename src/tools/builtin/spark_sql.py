@@ -24,6 +24,7 @@ from tools.builtin._spark_sql_presets import (
 _SPARK_REMOTE = os.environ.get("SPARK_REMOTE", "sc://localhost:15002")
 _spark = None
 _query_store: dict[str, dict] = {}
+_MAX_QUERY_RECORDS = 100
 
 _SPARK_REQUIRES = [
     ToolRequirement(type="env", key="SPARK_REMOTE", description="Spark Connect endpoint"),
@@ -40,6 +41,15 @@ def _get_spark():
     return _spark
 
 
+def _prune_query_store() -> None:
+    """Drop oldest finished records so the store can't grow unbounded."""
+    if len(_query_store) <= _MAX_QUERY_RECORDS:
+        return
+    finished = [k for k, rec in _query_store.items() if rec["status"] != "RUNNING"]
+    for k in finished[: len(_query_store) - _MAX_QUERY_RECORDS]:
+        del _query_store[k]
+
+
 def _run_query(job_id: str, sql: str) -> None:
     rec = _query_store[job_id]
     try:
@@ -50,8 +60,10 @@ def _run_query(job_id: str, sql: str) -> None:
         rec["result"] = df.collect()
         rec["status"] = "FINISHED"
     except Exception as e:
-        rec["error"] = str(e)
-        rec["status"] = "FAILED"
+        # don't overwrite an explicit CANCELLED (cancelJobGroup raises in thread)
+        if rec["status"] != "CANCELLED":
+            rec["error"] = str(e)
+            rec["status"] = "FAILED"
 
 
 # ----------------------------------------------------------------
@@ -93,6 +105,7 @@ async def spark_submit_query(params: dict) -> ToolResult:
     t = threading.Thread(target=_run_query, args=(job_id, params["sql"]), daemon=True)
     _query_store[job_id]["thread"] = t
     t.start()
+    _prune_query_store()
     return ToolResult(data={
         "success": "true",
         "command": "spark_submit_query",
@@ -114,17 +127,20 @@ async def spark_get_job_status(params: dict) -> ToolResult:
     t = rec["thread"]
     alive = t.is_alive() if t else False
     status = "RUNNING" if alive else rec["status"]
+    data = {
+        "job_id": job_id,
+        "status": status,
+        "query_log_url": "",
+        "engine_type": "spark",
+        "result_url": "",
+        "log_url": "",
+    }
+    if status == "FAILED" and rec.get("error"):
+        data["error"] = rec["error"]
     return ToolResult(data={
         "success": "true",
         "command": "spark_get_job_status",
-        "data": {
-            "job_id": job_id,
-            "status": status,
-            "query_log_url": "",
-            "engine_type": "spark",
-            "result_url": "",
-            "log_url": "",
-        },
+        "data": data,
     })
 
 

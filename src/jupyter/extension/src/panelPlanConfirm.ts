@@ -80,10 +80,10 @@ export function sendConfirmToBackend(panel: any, cmd: string): void {
     future.onIOPub = (msg: any) => {
       if (msg.header.msg_type === 'stream' && msg.content?.name === 'stdout') {
         if (firstStdout) {
-          panel._renderResponseText(panel._stripAnsi(msg.content.text));
+          panel._renderResponseText(panel._ansiToHtml(msg.content.text));
           firstStdout = false;
         } else {
-          panel._appendTextChunk(panel._stripAnsi(msg.content.text));
+          panel._appendTextChunk(panel._ansiToHtml(msg.content.text));
         }
       }
     };

@@ -50,21 +50,6 @@ class TestRender:
             render_code(ns, "print(1)", auto=False)
             assert mock.call_args[1]["auto"] is False
 
-    def test_code_trace(self):
-        ns = Namespace(FakeShell())
-        with patch("jupyter.comm.send_cell_via_comm") as mock:
-            mock.return_value = True
-            render_code(ns, "print(1)", trace=True)
-            code = mock.call_args[0][1]
-            assert "%agent --trace" in code
-
-    def test_code_trace_auto(self):
-        ns = Namespace(FakeShell())
-        with patch("jupyter.comm.send_cell_via_comm") as mock:
-            mock.return_value = True
-            render_code(ns, "print(1)", auto=True, trace=True)
-            assert "%agent --trace --auto" in mock.call_args[0][1]
-
     def test_code_format_magic_prefix(self):
         ns = Namespace(FakeShell())
         with patch("jupyter.comm.send_cell_via_comm") as mock:
@@ -121,18 +106,47 @@ class TestRender:
         ns = Namespace(FakeShell())
         with patch("jupyter.comm.send_cell_via_comm") as mock:
             mock.return_value = True
-            render_output(ns, ParsedResult(code_list=["a=1", "b=2"]))
+            n = render_output(ns, ParsedResult(code_list=["a=1", "b=2"]))
             assert mock.call_count == 2
+            assert n == 2
 
-    def test_multi_code_trace_last_only(self):
+    def test_returns_cell_count_empty(self):
         ns = Namespace(FakeShell())
         with patch("jupyter.comm.send_cell_via_comm") as mock:
-            mock.return_value = True
-            render_output(ns, ParsedResult(code_list=["a=1", "b=2"]), trace=True)
-            # First call: no trace
-            assert "%agent --trace" not in mock.call_args_list[0][0][1]
-            # Second call: trace appended
-            assert "%agent --trace" in mock.call_args_list[1][0][1]
+            assert render_output(ns, ParsedResult(text="no code")) == 0
+            mock.assert_not_called()
+
+    def test_py_file_appends_to_count(self):
+        import tempfile, os
+        ns = Namespace(FakeShell())
+        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+            f.write("x = 1\ny = 2\n")
+            tmp = f.name
+        try:
+            with patch("jupyter.comm.send_cell_via_comm") as mock:
+                mock.return_value = True
+                r = ParsedResult(code_list=["a=1"], files=[tmp])
+                n = render_output(ns, r)
+                assert n == 2
+                assert "y = 2" in mock.call_args_list[1][0][1]
+        finally:
+            os.unlink(tmp)
+
+    def test_py_file_bad_encoding_no_crash(self):
+        import tempfile, os
+        ns = Namespace(FakeShell())
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
+            f.write(b"x = 1 # \xff\xfe bad bytes")
+            tmp = f.name
+        try:
+            with patch("jupyter.comm.send_cell_via_comm") as mock:
+                mock.return_value = True
+                r = ParsedResult(files=[tmp])
+                n = render_output(ns, r)
+                assert n == 1  # appended with errors="replace"
+                mock.assert_called_once()
+        finally:
+            os.unlink(tmp)
 
     def test_image_display(self):
         import base64

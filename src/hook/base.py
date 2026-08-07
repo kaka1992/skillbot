@@ -47,8 +47,14 @@ class HookRegistry:
 
     @classmethod
     def register_group(cls, group: HookGroup, *events: str) -> None:
+        # Replace per hook class so re-registration (session rebuild, config
+        # change) doesn't accumulate duplicate hooks executing each event
         for event in events:
-            cls._events.setdefault(event, []).extend(group.hooks)
+            for hook in group.hooks:
+                cls._events.setdefault(event, [])
+                cls._events[event] = [h for h in cls._events[event]
+                                      if type(h).__name__ != type(hook).__name__]
+                cls._events[event].append(hook)
             cls._events[event].sort()
 
     @classmethod

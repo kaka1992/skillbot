@@ -33,6 +33,7 @@ function renderResponseText(panel, content) {
     appendTextChunk(panel, content);
 }
 function appendTextChunk(panel, content) {
+    // content must already be HTML-safe (escaped at the source)
     if (!panel._textEl || !panel._textEl.parentElement) {
         panel._textEl = document.createElement('div');
         panel._textEl.className = 'skillbot-response-text';

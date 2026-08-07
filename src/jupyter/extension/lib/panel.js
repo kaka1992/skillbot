@@ -885,6 +885,13 @@ class AgentPanel extends widgets_1.Widget {
             this._resizeInput();
             return;
         }
+        // No kernel — sending would lose the prompt and leave a stuck spinner
+        if (!this._kernel) {
+            this._setStatus('⚠', 'idle');
+            this._renderResponseText('<span style="color:rgb(220,120,100)">[no kernel connected — start a kernel in the notebook first]</span>');
+            this._updateStatusDisplay();
+            return;
+        }
         if (this._history.length === 0 || this._history[this._history.length - 1] !== text) {
             this._history.push(text);
         }
@@ -1134,7 +1141,7 @@ class AgentPanel extends widgets_1.Widget {
                     if (e2.key === 'd') {
                         if (this._kernel) {
                             this._kernel.requestExecute({
-                                code: `get_ipython().user_ns['_panel_input']('/skills uninstall ${toRemove.name}')`,
+                                code: `get_ipython().user_ns['_panel_input'](${JSON.stringify('/skills uninstall ' + toRemove.name)})`,
                                 store_history: false,
                             });
                         }
@@ -1178,7 +1185,7 @@ class AgentPanel extends widgets_1.Widget {
                     s.enabled = !s.enabled;
                     this._refreshSkillRows();
                     this._kernel.requestExecute({
-                        code: `get_ipython().user_ns['_panel_input']('/skills toggle ${s.name}')`,
+                        code: `get_ipython().user_ns['_panel_input'](${JSON.stringify('/skills toggle ' + s.name)})`,
                         store_history: false,
                     });
                 }
@@ -1220,7 +1227,7 @@ class AgentPanel extends widgets_1.Widget {
                     const path = input.value.trim();
                     if (path && this._kernel) {
                         this._kernel.requestExecute({
-                            code: `get_ipython().user_ns['_panel_input']('/skills install ${path.replace(/'/g, "\\'")}')`,
+                            code: `get_ipython().user_ns['_panel_input'](${JSON.stringify('/skills install ' + path)})`,
                             store_history: false,
                         });
                     }
@@ -1434,7 +1441,10 @@ class AgentPanel extends widgets_1.Widget {
                 return;
             const s = JSON.parse(raw);
             if (s.output) {
-                this._outputEl.innerHTML = s.output;
+                // persisted HTML is self-generated, but strip scripts/handlers anyway
+                const clean = s.output.replace(/<script[\s\S]*?<\/script>/gi, '')
+                    .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+                this._outputEl.innerHTML = clean;
                 this._scrollBottom();
             }
             if (s.history)
@@ -1566,6 +1576,8 @@ class AgentPanel extends widgets_1.Widget {
         return s.replace(/\x1b\[[0-9;]*m/g, '');
     }
     _ansiToHtml(s) {
+        // escape raw text first so ANSI conversion can't inject markup
+        s = this._esc(s);
         return s.replace(/\x1b\[32m/g, '<span style="color:#4ade80">')
             .replace(/\x1b\[31m/g, '<span style="color:#f87171">')
             .replace(/\x1b\[90m/g, '<span style="color:#999">')
@@ -1592,17 +1604,21 @@ class AgentPanel extends widgets_1.Widget {
         var _a, _b;
         const data = ((_a = msg.content) === null || _a === void 0 ? void 0 : _a.data) || {};
         const nb = (_b = this._tracker) === null || _b === void 0 ? void 0 : _b.currentWidget;
-        if (!nb)
+        // Always reply so the kernel can close the comm; otherwise it leaks and
+        // the on_cell_id callback (batch-completion tracking) never fires
+        if (!nb || !nb.model) {
+            comm.send({ cell_id: '' });
             return;
+        }
         const model = nb.model;
-        if (!model)
-            return;
         const code = data.code || '';
         const auto = data.auto !== false;
         const cellType = data.cell_type || 'code';
         const replaceId = data.replace_cell_id || '';
-        if (!code)
+        if (!code) {
+            comm.send({ cell_id: '' });
             return;
+        }
         const notebook = nb.content;
         if (replaceId) {
             const cells = model.sharedModel.cells;
@@ -1726,6 +1742,26 @@ class AgentPanel extends widgets_1.Widget {
                         this._installError = '';
                         this._renderSkillList(d.skills || []);
                         break;
+                    case 'skill_info': {
+                        const info = d.skill || {};
+                        if (!info.name)
+                            break;
+                        if (!this._skillsMode)
+                            this._enterSkillsMode();
+                        if (!this._skillListWrapper)
+                            this._renderSkillList(this._skillData);
+                        const idx = this._skillData.findIndex((s) => s.name === info.name);
+                        if (idx === -1) {
+                            this._skillData.push({ name: info.name, description: info.description || '', enabled: !!info.enabled, body: info.body || '' });
+                            this._expandedIdx = this._skillData.length - 1;
+                        }
+                        else {
+                            this._skillData[idx] = Object.assign({}, this._skillData[idx], { description: info.description || '', enabled: !!info.enabled, body: info.body || '' });
+                            this._expandedIdx = idx;
+                        }
+                        this._refreshSkillRows();
+                        break;
+                    }
                     case 'continue_confirm':
                         this._stopSpinner();
                         this._busy = false;
@@ -1989,9 +2025,12 @@ exports.panelPlugin = {
         let _panelOpened = false;
         let _currentCtx = null;
         let _cellsChangedModel = null;
+        let _currentNbPath = '';
         const onKernelChanged = (_sender, args) => {
+            // Always reset the comm: a kernel change (restart, switch, or lazy start
+            // where oldValue is null) must never leave _comm bound to an old kernel.
+            panel.resetComm();
             if (args.oldValue) {
-                panel.resetComm();
                 panel._clear();
             }
             if (args.newValue)
@@ -2002,6 +2041,13 @@ exports.panelPlugin = {
             const nb = tracker.currentWidget;
             if (!nb)
                 return;
+            const nbPath = nb.context.path || nb.context.localPath || '';
+            if (nbPath !== _currentNbPath) {
+                // Notebook switch — drop comms from the previous notebook's kernel
+                _currentNbPath = nbPath;
+                panel.resetComm();
+                panel._clear();
+            }
             const ctx = nb.context.sessionContext;
             if (!ctx)
                 return;

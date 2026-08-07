@@ -178,7 +178,8 @@ class AgentMagic(Magics):
         self._jupyter_config_path = ""              # path from JUPYTER_CONFIG_PATH env var
         self._config_pending = None                 # pending (resolved, new_path, old_path)
         self._cell_restored = False                 # track if any cell was individually restored
-        self._restoring_cells: set = set()          # cell_ids being restored, skip snapshot for these
+        self._restoring_cells: dict[str, float] = {}  # cell_id → restore ts, skip snapshot for these (300s TTL)
+        self._cell_start_ts: float = 0.0            # pre_run_cell timestamp for elapsed_ms telemetry
 
         self._load_dotenv()
 
@@ -187,6 +188,7 @@ class AgentMagic(Magics):
         self._hook_cfg = cfg.get("hooks", {})
         self._startup_config_msg = self._load_jupyter_config()
         self.ns.delta()
+        shell.events.register("pre_run_cell", self._on_cell_start)
         shell.events.register("post_run_cell", self._on_cell_run)
         from .panel import init_panel_comm
         init_panel_comm(shell)
@@ -266,6 +268,20 @@ class AgentMagic(Magics):
                 )
             self._interrupt_cleanup()
             return "", True
+        except Exception as e:
+            # e.g. network/backend errors — reset state instead of crashing the kernel
+            _log.exception("stream failed: %s", e)
+            elapsed_ms = int((time.time() - t0) * 1000)
+            if rec:
+                rec.record("agent_response",
+                    elapsed_ms=elapsed_ms,
+                    thinking_chars=thinking_chars,
+                    tool_names=sorted(tool_names),
+                    interrupted=True,
+                    error=str(e)[:200],
+                )
+            self._interrupt_cleanup(f"\n⚠ stream error: {e}\n")
+            return "", True
 
     def _finish_agent_run(self, msg: str = "") -> None:
         """Clean up after agent run completes. Sends result + ready to frontend."""
@@ -304,17 +320,24 @@ class AgentMagic(Magics):
         self._busy = False
         self._pending_result = pending_result
         send_to_panel(self.ns, "result", summary="")
-        send_to_panel(self.ns, "ready")
         send_to_panel(self.ns, "text",
             content=f"\n{'─'*40}\n{msg}\nType /continue yes or /continue no\n{'─'*40}\n")
+        # continue_confirm implies ready (frontend stops spinner + dequeues) — sending
+        # both would dequeue TWO queued prompts for a single confirmation slot
         send_to_panel(self.ns, "continue_confirm", summary=msg)
 
     def _handle_continue(self, arg: str) -> None:
         """Handle /continue yes|no from panel."""
         arg = arg.strip()
+        if not arg:
+            send_to_panel(self.ns, "text", content="Usage: /continue yes|no\n")
+            return
+        if self._state in (AgentState.STREAMING, AgentState.AUTO_FIXING):
+            send_to_panel(self.ns, "text", content="⏳ agent is working, please wait...\n")
+            return
         rec = get_recorder()
         if rec:
-            rec.record("agent_continue", choice="yes" if arg.strip() == "yes" else "no")
+            rec.record("agent_continue", choice="yes" if arg == "yes" else "no")
         if arg != "yes":
             self._finish_agent_run("Task stopped")
             self._record_state("user_stop")
@@ -329,8 +352,9 @@ class AgentMagic(Magics):
             self._busy = True
             self._agent_cells.clear()
             self._auto_fix_count = 0
-            self._auto_pending = len(pending.code_list)
-            render_output(self.ns, pending, auto=True, on_cell_id=self._track_agent_cell)
+            self._auto_pending = render_output(self.ns, pending, auto=True,
+                                               on_cell_id=self._track_agent_cell,
+                                               session=self._session)
             if self._auto_pending == 0:
                 self._finish_agent_run()
             # else: _on_cell_run handles completion → finish
@@ -465,6 +489,10 @@ class AgentMagic(Magics):
             on_init=lambda s: _register_hooks(timeout, self._hook_cfg),
         )
 
+    def _on_cell_start(self, info) -> None:
+        """pre_run_cell hook — record execution start time for telemetry."""
+        self._cell_start_ts = time.time()
+
     def _on_cell_run(self, result):
         info = getattr(result, "info", None)
         if info is None:
@@ -490,30 +518,37 @@ class AgentMagic(Magics):
 
         # ---- agent cell tracking ----
         if is_agent_cell:
-            # Track cell for auto-fix lookup
-            self._agent_cells[cell_id] = code.strip()
             self._round_results.append({
                 "cell_id": cell_id, "code": code.strip(), "output": output.strip()
             })
 
+            # Batch membership: cell created by the current run (pre-registered via
+            # on_cell_id comm reply). Manual re-runs of older agent cells must not
+            # decrement the counter or trigger auto-fix for the wrong batch.
+            in_batch = cell_id in self._agent_cells
+            if not cell_id and self._state in (AgentState.STREAMING, AgentState.AUTO_FIXING):
+                in_batch = True  # no cell id from frontend — fall back to active batch
+
             # Auto mode: decrement pending count
-            if self._auto_pending > 0:
+            if in_batch and self._auto_pending > 0:
                 self._auto_pending -= 1
                 _log.debug("auto pending: %d remaining", self._auto_pending)
 
             # Auto-fix: agent-generated cell failed → ask AI to fix
-            if not result.success and self._state in (AgentState.STREAMING, AgentState.AUTO_FIXING):
+            if in_batch and not result.success and self._state in (AgentState.STREAMING, AgentState.AUTO_FIXING):
                 if error_str:
                     self._auto_fix_cell(code.strip(), error_str)
 
         # ---- snapshot logic ----
-        restoring = cell_id in getattr(self, '_restoring_cells', set())
+        now = time.time()
+        self._restoring_cells = {c: t for c, t in self._restoring_cells.items() if now - t < 300}
+        restoring = cell_id in self._restoring_cells
         if cell_id and code.strip() and not restoring:
             from .cell_snapshot import save as save_cell_snapshot
             save_cell_snapshot(cell_id, code.strip(), output.strip(), error_str, nb_path=_notebook_path())
         if code.strip():
             if restoring:
-                self._restoring_cells.discard(cell_id)
+                self._restoring_cells.pop(cell_id, None)
             else:
                 from .notebook_snapshot import take as take_snapshot
                 take_snapshot(self.ns._cells, nb_path=_notebook_path())
@@ -525,13 +560,15 @@ class AgentMagic(Magics):
             if code.startswith("%%sql"):
                 cell_type = "%%sql"
             error = getattr(result, "error_in_exec", None) or getattr(result, "error_before_exec", None)
+            elapsed_ms = int((time.time() - self._cell_start_ts) * 1000) if self._cell_start_ts else 0
+            self._cell_start_ts = 0.0
             rec.record("cell_executed",
                 cell_id=cell_id,
                 type=cell_type,
                 code=code.strip(),
                 output=output.strip(),
                 error=str(error) if error else None,
-                elapsed_ms=0.0,
+                elapsed_ms=elapsed_ms,
                 is_agent_cell=is_agent_cell,
                 exec_order=rec.next_exec_order(),
             )
@@ -550,8 +587,8 @@ class AgentMagic(Magics):
         if msg and send_to_panel(self.ns, "text", content=msg):
             self._startup_config_msg = ""
         text = text.strip()
-        if text.startswith("/confirm "):
-            self._handle_panel_confirm(text[9:])
+        if text.startswith("/confirm"):
+            self._handle_panel_confirm(text[8:].strip())
         elif text == "/clear":
             send_to_panel(self.ns, "clear")
         elif text.startswith("/mode "):
@@ -641,12 +678,11 @@ class AgentMagic(Magics):
             _log.info("auto mode: %d code blocks", len(result.code_list))
             self._agent_cells.clear()
             self._auto_fix_count = 0
-            self._auto_pending = len(result.code_list)
+            self._auto_pending = render_output(self.ns, result, auto=True,
+                                               on_cell_id=self._track_agent_cell,
+                                               session=self._session)
             if self._auto_pending == 0:
                 self._finish_agent_run()
-            else:
-                render_output(self.ns, result, auto=True, on_cell_id=self._track_agent_cell)
-                # _on_cell_run handles completion: sends ready when _auto_pending == 0
         else:
             if result.code_list:
                 self._ask_confirm(f"Generate and execute {len(result.code_list)} cells?", pending_result=result)
@@ -946,11 +982,11 @@ class AgentMagic(Magics):
             return
         cell_id = parts[1]
         version = parts[2]
-        code = restore(cell_id, version)
+        code = restore(cell_id, version, nb_path=_notebook_path())
         if code is None:
             send_to_panel(self.ns, "text", content=f"Version {version} not found.\n")
             return
-        self._restoring_cells.add(cell_id)
+        self._restoring_cells[cell_id] = time.time()
         from .comm import send_cell_via_comm
         send_cell_via_comm(self.ns, code, auto=False, cell_type="code", replace_cell_id=cell_id)
         self._cell_restored = True
@@ -1041,6 +1077,9 @@ class AgentMagic(Magics):
         arg = arg.strip()
         if not arg:
             return
+        if self._state in (AgentState.STREAMING, AgentState.AUTO_FIXING):
+            send_to_panel(self.ns, "text", content="⏳ agent is working, please wait...\n")
+            return
 
         if arg == "yes":
             if self._last_plan_result is not None:
@@ -1049,7 +1088,6 @@ class AgentMagic(Magics):
                 self._record_state("plan_confirm")
             self._last_plan_output = ""
             self._last_plan_result = None
-            send_to_panel(self.ns, "result", summary="")
         elif arg == "accept_edits":
             if self._last_plan_result is not None:
                 self._implement_plan(self._last_plan_output or "", auto=False,
@@ -1057,9 +1095,9 @@ class AgentMagic(Magics):
                 self._record_state("plan_confirm")
             self._last_plan_output = ""
             self._last_plan_result = None
-            send_to_panel(self.ns, "result", summary="")
         elif arg == "no":
             self._last_plan_output = ""
+            self._last_plan_result = None  # else /confirm yes would re-execute the cancelled plan
             self._finish_agent_run("Plan cancelled")
         else:
             # Revision feedback
@@ -1076,15 +1114,20 @@ class AgentMagic(Magics):
                 if raw.strip():
                     self._last_plan_output = raw.strip()
                     result = parse(raw)
+                    self._last_plan_result = result  # else confirm would execute the old plan
                     plan_text = result.plan or result.text or ""
                     self._state = AgentState.PLAN_REVIEW
                     self._busy = False
                     send_to_panel(self.ns, "plan_confirm", summary=plan_text)
                     send_to_panel(self.ns, "ready")
                 else:
-                    self._last_plan_output = ""
-                    send_to_panel(self.ns, "text", content="✗ plan revision failed (no output)\n")
-                    send_to_panel(self.ns, "result", summary="")
+                    # keep the previous plan; just return to review so the user
+                    # can retry the revision or confirm the original plan
+                    self._state = AgentState.PLAN_REVIEW
+                    self._busy = False
+                    send_to_panel(self.ns, "text", content="✗ plan revision failed (no output) — previous plan kept\n")
+                    send_to_panel(self.ns, "plan_confirm", summary=self._last_plan_output or "")
+                    send_to_panel(self.ns, "ready")
             else:
                 send_to_panel(self.ns, "text", content="✗ no plan to revise\n")
                 send_to_panel(self.ns, "result", summary="")
@@ -1146,12 +1189,10 @@ class AgentMagic(Magics):
                 fixed_code = result.code_list[0]
                 from .render import render_code
                 self._auto_pending += 1
-                render_code(self.ns, fixed_code, auto=True, replace_cell_id=cell_id)
+                render_code(self.ns, fixed_code, auto=True, replace_cell_id=cell_id,
+                            on_cell_id=self._track_agent_cell)
                 send_to_panel(self.ns, "text",
                     content="✓ auto-fixed (replaced)\n" if cell_id else "✓ auto-fixed (new cell)\n")
-                if self._auto_fix_count >= 2:
-                    self._finish_agent_run()
-                    return
             else:
                 self._finish_agent_run("Auto-fix: no code in response")
                 return
@@ -1172,15 +1213,14 @@ class AgentMagic(Magics):
             if auto:
                 self._state = AgentState.STREAMING
                 self._busy = True
-                self._auto_pending = len(result.code_list)
-                render_output(self.ns, result, auto=True, on_cell_id=self._track_agent_cell)
+                self._auto_pending = render_output(self.ns, result, auto=True,
+                                                   on_cell_id=self._track_agent_cell,
+                                                   session=self._session)
                 if self._auto_pending == 0:
                     self._finish_agent_run()
                     return
             else:
                 self._ask_confirm(f"Generate and execute {len(result.code_list)} cells?", pending_result=result)
-            label = "✓ plan implemented\n" if auto else "✓ plan accepted (code cells generated)\n"
-            send_to_panel(self.ns, "text", content=label)
             return
 
         # Plan has no code blocks → stream implementation prompt
@@ -1210,15 +1250,15 @@ class AgentMagic(Magics):
         result = parse(raw)
         if auto:
             self._state = AgentState.STREAMING
-            self._auto_pending = len(result.code_list)
-            render_output(self.ns, result, auto=True, on_cell_id=self._track_agent_cell)
+            self._auto_pending = render_output(self.ns, result, auto=True,
+                                               on_cell_id=self._track_agent_cell,
+                                               session=self._session)
             if self._auto_pending == 0:
                 self._finish_agent_run()
         elif result.code_list:
             self._ask_confirm(f"Generate and execute {len(result.code_list)} cells?", pending_result=result)
         else:
             self._ask_confirm("Continue?", pending_result=result)
-        send_to_panel(self.ns, "text", content="✓ plan implemented\n" if auto else "✓ plan accepted (code cells generated)\n")
 
     # ---- agent_config ----
 
