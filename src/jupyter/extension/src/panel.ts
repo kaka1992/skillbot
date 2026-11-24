@@ -92,6 +92,8 @@ class AgentPanel extends Widget {
     text: string;
     mode: 'default' | 'plan' | 'auto';
     cellReferences: CellReference[];
+    notebookPath: string;
+    kernelId: string;
   }> = [];
   private _cellReferences: CellReference[] = [];
   private _cellReferencesEl!: HTMLElement;
@@ -1078,10 +1080,18 @@ class AgentPanel extends Widget {
       return;
     }
     if (this._hasActiveWorkflow && !isSlash) {
+      const notebookPath = this._currentPath;
+      const kernelId = this._kernel?.id;
+      if (!notebookPath || !kernelId) {
+        this._renderResponseText('[cannot queue without a notebook and kernel]');
+        return;
+      }
       this._promptQueue.push({
         text,
         mode: this._mode,
         cellReferences,
+        notebookPath,
+        kernelId,
       });
       this._updateStatusDisplay();
       this._inputEl.value = '';
@@ -1346,6 +1356,10 @@ class AgentPanel extends Widget {
       return;
     }
     const next = this._promptQueue.shift()!;
+    if (next.notebookPath !== this._currentPath || next.kernelId !== this._kernel?.id) {
+      this._discardQueuedPrompts(1);
+      return;
+    }
     // Cancel any active plan confirm — dequeued prompt takes priority
     if (this._planConfirmActive) {
       this._cancelPlanConfirm();
@@ -1358,6 +1372,20 @@ class AgentPanel extends Widget {
     this._renderCellReferences();
     this._sendPrompt();
     this._mode = savedMode;
+  }
+
+  private _discardQueuedPrompts(alreadyRemoved = 0): void {
+    const count = this._promptQueue.length + alreadyRemoved;
+    this._promptQueue = [];
+    if (!count) return;
+    this._showQueueDiscard(count);
+    this._updateStatusDisplay();
+  }
+
+  private _showQueueDiscard(count: number): void {
+    if (!count) return;
+    if (this._infoTimer) clearTimeout(this._infoTimer);
+    this._infoEl.textContent = `${count} queued prompt(s) discarded after notebook or kernel change.`;
   }
 
   // ---- persistence (localStorage) ----
@@ -1389,11 +1417,15 @@ class AgentPanel extends Widget {
       return false;
     }
     if (this._currentPath) this._saveState();  // persist buffer we're leaving
+    const discarded = this._promptQueue.length;
+    this._promptQueue = [];
     this._currentPath = path;
     if (!kernel && this._kernel) this.resetComm();
     if (kernel) this.connectKernel(kernel);
     this._loadBuffer(path);
     this._renderSessionBar();
+    this._showQueueDiscard(discarded);
+    this._updateStatusDisplay();
     return true;
   }
 
@@ -1736,6 +1768,7 @@ class AgentPanel extends Widget {
   // ---- kernel / comm -------------------------------------------------------
 
   resetComm(): void {
+    this._discardQueuedPrompts();
     if (this._comm) {
       try { this._comm.close(); } catch (_) {}
       this._comm = null;

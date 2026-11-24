@@ -20,7 +20,6 @@ def magic():
     m._session_dirty = False
     m._pending_result = None
     m._pending_auto_fix = None
-    m._round_results = []
     m._agent_cells = {}
     m._auto_fix_count = 0
     m._workflow_notebook_path = "a.ipynb"

@@ -1091,6 +1091,7 @@ class AgentPanel extends widgets_1.Widget {
         return ['AGENT_STREAMING', 'AUTO_FIXING'].includes(this._workflowState);
     }
     _sendPrompt() {
+        var _a;
         if (this._planConfirmActive)
             return;
         const text = this._inputEl.value.trim();
@@ -1124,10 +1125,18 @@ class AgentPanel extends widgets_1.Widget {
             return;
         }
         if (this._hasActiveWorkflow && !isSlash) {
+            const notebookPath = this._currentPath;
+            const kernelId = (_a = this._kernel) === null || _a === void 0 ? void 0 : _a.id;
+            if (!notebookPath || !kernelId) {
+                this._renderResponseText('[cannot queue without a notebook and kernel]');
+                return;
+            }
             this._promptQueue.push({
                 text,
                 mode: this._mode,
                 cellReferences,
+                notebookPath,
+                kernelId,
             });
             this._updateStatusDisplay();
             this._inputEl.value = '';
@@ -1357,11 +1366,16 @@ class AgentPanel extends widgets_1.Widget {
         this._resizeInput();
     }
     _dequeueNext() {
+        var _a;
         if (this._promptQueue.length === 0) {
             this._updateStatusDisplay();
             return;
         }
         const next = this._promptQueue.shift();
+        if (next.notebookPath !== this._currentPath || next.kernelId !== ((_a = this._kernel) === null || _a === void 0 ? void 0 : _a.id)) {
+            this._discardQueuedPrompts(1);
+            return;
+        }
         // Cancel any active plan confirm — dequeued prompt takes priority
         if (this._planConfirmActive) {
             this._cancelPlanConfirm();
@@ -1374,6 +1388,21 @@ class AgentPanel extends widgets_1.Widget {
         this._renderCellReferences();
         this._sendPrompt();
         this._mode = savedMode;
+    }
+    _discardQueuedPrompts(alreadyRemoved = 0) {
+        const count = this._promptQueue.length + alreadyRemoved;
+        this._promptQueue = [];
+        if (!count)
+            return;
+        this._showQueueDiscard(count);
+        this._updateStatusDisplay();
+    }
+    _showQueueDiscard(count) {
+        if (!count)
+            return;
+        if (this._infoTimer)
+            clearTimeout(this._infoTimer);
+        this._infoEl.textContent = `${count} queued prompt(s) discarded after notebook or kernel change.`;
     }
     // ---- persistence (localStorage) ----
     // ---- session persistence + switcher (see panelSessions.ts) --------------
@@ -1404,6 +1433,8 @@ class AgentPanel extends widgets_1.Widget {
         }
         if (this._currentPath)
             this._saveState(); // persist buffer we're leaving
+        const discarded = this._promptQueue.length;
+        this._promptQueue = [];
         this._currentPath = path;
         if (!kernel && this._kernel)
             this.resetComm();
@@ -1411,6 +1442,8 @@ class AgentPanel extends widgets_1.Widget {
             this.connectKernel(kernel);
         this._loadBuffer(path);
         this._renderSessionBar();
+        this._showQueueDiscard(discarded);
+        this._updateStatusDisplay();
         return true;
     }
     /** Tell the backend the active notebook changed so it resets agent memory. */
@@ -1732,6 +1765,7 @@ class AgentPanel extends widgets_1.Widget {
     }
     // ---- kernel / comm -------------------------------------------------------
     resetComm() {
+        this._discardQueuedPrompts();
         if (this._comm) {
             try {
                 this._comm.close();

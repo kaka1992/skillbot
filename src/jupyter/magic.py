@@ -398,10 +398,9 @@ class AgentMagic(Magics):
         self._last_plan_result = None                  # cached ParsedResult for _implement_plan
         self._plan_cell_id = ""                        # notebook markdown cell holding the current plan
         self._pending_result = None                    # ParsedResult waiting for user confirmation
-        self._agent_cells: dict[str, str] = {}     # cell_id → code, for auto-fix lookup
-        self._round_results: list[dict] = []        # [{cell_id, code, output}] for auto-fix lookup
+        self._agent_cells: dict[str, str] = {}     # tracked agent cell IDs
         self._auto_fix_count = 0                    # limit retries per batch
-        self._pending_auto_fix = None               # (code, error) after failed batch closes
+        self._pending_auto_fix: tuple[str, str, str] | None = None  # (cell_id, code, error)
         self._session_ready = False                 # lazy-init session on first query
         self._session_dirty = False                 # set on interrupt, prepend note on next query
         self._jupyter_config_path = ""              # path from JUPYTER_CONFIG_PATH env var
@@ -449,7 +448,6 @@ class AgentMagic(Magics):
             self._permission_mode = ExecutionMode.DEFAULT
             self._pending_result = None
             self._pending_auto_fix = None
-            self._round_results.clear()
             self._agent_cells.clear()
             self._auto_fix_count = 0
             self._workflow_notebook_path = ""
@@ -578,7 +576,7 @@ class AgentMagic(Magics):
             return
         if event == "failed":
             error = getattr(receipt, "error_message", "") or "Cell execution failed"
-            can_fix = self._auto_fix_count < 2
+            can_fix = bool(item.cell_id) and self._auto_fix_count < 2
             self._transition(
                 WorkflowEvent.CELL_FAILED,
                 auto_fix=can_fix,
@@ -586,7 +584,7 @@ class AgentMagic(Magics):
                 **progress,
             )
             if can_fix:
-                self._pending_auto_fix = (item.request.code, error)
+                self._pending_auto_fix = (item.cell_id, item.request.code, error)
             return
         if event == "rejected":
             error = getattr(receipt, "error_message", "") or "Cell request rejected"
@@ -612,16 +610,15 @@ class AgentMagic(Magics):
             self._transition(WorkflowEvent.CELL_CANCELLED, **progress)
             return
         if event == "batch_failed" and self._pending_auto_fix:
-            code, error = self._pending_auto_fix
+            cell_id, code, error = self._pending_auto_fix
             self._pending_auto_fix = None
-            self._auto_fix_cell(code, error)
+            self._auto_fix_cell(cell_id, code, error)
 
     def _interrupt_cleanup(self, msg: str = "\n⏏ interrupted\n") -> None:
         """Unified KeyboardInterrupt handler — replaces 5 duplicated copies."""
         self._session_dirty = True
         self._auto_fix_count = 0
         self._pending_result = None
-        self._round_results.clear()
         if self._state is not WorkflowState.INTERRUPTING:
             self._transition(WorkflowEvent.STOP_REQUESTED)
         self._execution.cancel_active("interrupt")
@@ -740,7 +737,6 @@ class AgentMagic(Magics):
         if self._state == AgentState.IDLE:
             return  # already finished, prevent duplicate ready/result
         self._pending_result = None
-        self._round_results.clear()
         self._agent_cells.clear()
         if msg:
             send_to_panel(self.ns, "text", content=f"{msg}\n")
@@ -997,12 +993,6 @@ class AgentMagic(Magics):
             if e:
                 error_str = str(e)[:2000]
         self.ns.track_cell(code.strip(), output.strip(), cell_id=cell_id)
-
-        # ---- agent cell tracking ----
-        if is_agent_cell:
-            self._round_results.append({
-                "cell_id": cell_id, "code": code.strip(), "output": output.strip()
-            })
 
         # ---- snapshot logic ----
         now = time.time()
@@ -1679,14 +1669,14 @@ class AgentMagic(Magics):
                 send_to_panel(self.ns, "text", content="✗ no plan to revise\n")
                 send_to_panel(self.ns, "result", summary="")
 
-    def _auto_fix_cell(self, code: str, error_msg: str) -> None:
+    def _auto_fix_cell(self, cell_id: str, code: str, error_msg: str) -> None:
         """Auto mode: cell execution failed → ask AI to fix and replace in-place."""
         if self._state is not AgentState.AUTO_FIXING:
             _log.warning("auto-fix ignored outside AUTO_FIXING")
             return
-        self._auto_fix_cell_impl(code, error_msg)
+        self._auto_fix_cell_impl(cell_id, code, error_msg)
 
-    def _auto_fix_cell_impl(self, code: str, error_msg: str) -> None:
+    def _auto_fix_cell_impl(self, cell_id: str, code: str, error_msg: str) -> None:
         self._auto_fix_count += 1
         if self._auto_fix_count >= 3:
             _log.warning("auto-fix: retry limit reached (%d)", self._auto_fix_count)
@@ -1701,17 +1691,9 @@ class AgentMagic(Magics):
             )
             return
 
-        # Find the cell_id for this code to replace in-place
-        cell_id = ""
-        for r in self._round_results:
-            if (r.get("code", "") or "").strip() == code.strip():
-                cell_id = r.get("cell_id", "")
-                break
-
-        _log.info("auto-fix #%d: cell=%s error=%s", self._auto_fix_count, cell_id or "(new)", error_msg[:100])
-        action = "replacing failed cell" if cell_id else "inserting fix below"
+        _log.info("auto-fix #%d: cell=%s error=%s", self._auto_fix_count, cell_id, error_msg[:100])
         send_to_panel(self.ns, "text",
-            content=f"\n⚠ execution error (attempt {self._auto_fix_count}/3) — {action}:\n{error_msg}\n")
+            content=f"\n⚠ execution error (attempt {self._auto_fix_count}/2) — replacing failed cell:\n{error_msg}\n")
 
         # Strip magic markers that could confuse the AI
         clean_code = code
@@ -1739,8 +1721,6 @@ class AgentMagic(Magics):
                     auto=True,
                     replace_cell_id=cell_id,
                 )
-                send_to_panel(self.ns, "text",
-                    content="✓ auto-fixed (replaced)\n" if cell_id else "✓ auto-fixed (new cell)\n")
             else:
                 self._transition(
                     WorkflowEvent.AUTO_FIX_EXHAUSTED,

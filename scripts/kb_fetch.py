@@ -61,6 +61,7 @@ def main():
                 f"<!-- source_type: {stype} | doc_id: {doc_id} | "
                 f"title: {title} -->\n\n"
             )
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(header + content, encoding="utf-8")
             results.append((category, title, "OK", len(content), str(path.relative_to(DRAFT.parent))))
         else:
