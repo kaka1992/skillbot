@@ -36,9 +36,23 @@ def load_ipython_extension(ipython):
         _panel_set_mode,
         _panel_track_cell_delete,
         _panel_track_cell_edit,
+        _panel_save_conversation,
+        _panel_load_conversation,
+        _panel_list_conversations,
+        _panel_delete_conversation,
+        _panel_switch_notebook,
+        _gallery_refresh,
+        _gallery_kb_html,
     )
     ipython.user_ns['_panel_input'] = _panel_input
     ipython.user_ns['_panel_set_mode'] = _panel_set_mode
     ipython.user_ns['_panel_track_cell_edit'] = _panel_track_cell_edit
     ipython.user_ns['_panel_track_cell_delete'] = _panel_track_cell_delete
+    ipython.user_ns['_panel_save_conversation'] = _panel_save_conversation
+    ipython.user_ns['_panel_load_conversation'] = _panel_load_conversation
+    ipython.user_ns['_panel_list_conversations'] = _panel_list_conversations
+    ipython.user_ns['_panel_delete_conversation'] = _panel_delete_conversation
+    ipython.user_ns['_panel_switch_notebook'] = _panel_switch_notebook
+    ipython.user_ns['_gallery_refresh'] = _gallery_refresh
+    ipython.user_ns['_gallery_kb_html'] = _gallery_kb_html
     ipython.register_magics(AgentMagic)

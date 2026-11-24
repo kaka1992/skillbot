@@ -40,6 +40,10 @@ class AgentStartupTimeout(ChatError):
 class AbstractBackend(ABC):
     """Unified chat backend interface."""
 
+    def set_execution_mode(self, mode: str) -> None:
+        """Fail closed when a backend cannot enforce notebook permissions."""
+        raise RuntimeError("This backend does not support execution permissions")
+
     @abstractmethod
     def chat(self, content: str, session: str, model: Optional[str] = None) -> str:
         """Send a single message and return the full response."""
@@ -126,6 +130,10 @@ class AbstractBackend(ABC):
         Subsequent queries on the same session continue with full history.
         """
         ...
+
+    def prepare_run(self, session: str) -> dict | None:
+        """Prepare an optional out-of-band control channel for the next run."""
+        return None
 
     def list_sessions(self) -> list[str]:
         """List active session IDs."""

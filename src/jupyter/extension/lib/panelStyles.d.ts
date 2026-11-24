@@ -1,6 +1,7 @@
 export declare const CC: {
     bg: string;
     surface: string;
+    raised: string;
     text: string;
     inactive: string;
     subtle: string;
@@ -10,6 +11,7 @@ export declare const CC: {
     success: string;
     error: string;
     userBg: string;
+    userLine: string;
     pointer: string;
 };
 export declare const STYLES: string;

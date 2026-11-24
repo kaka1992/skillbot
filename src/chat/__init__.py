@@ -32,7 +32,7 @@ _AGENT_SKILL_PATHS: dict[str, str] = {
     "claude-code": ".claude/skills",
     "deer-flow": "skills/custom",
     "nanobot": "nanobot/skills",
-    "hermes-agent": "skills/custom",
+    "hermes-agent": "skills",
 }
 
 
@@ -94,8 +94,18 @@ class ChatClient:
 
         claude-code: injects a minimal delta notice on mid-session changes
         (SDK handles full loading at startup).
-        Other agents: injects full skill body via SkillManager.inject_prompt().
+        Other agents: inject skill instructions using the configured strategy.
         """
+        top_k = self._skill_top_k()
+        if top_k and self._agent != "claude-code":
+            prompt = self.skills.inject_prompt(
+                progressive=self._progressive_skills_enabled(),
+                query=content,
+                top_k=top_k,
+                rerank=self._skill_rerank_enabled(),
+            )
+            return f"{prompt}\n\n{content}" if prompt else content
+
         current = (
             tuple(self.skills.active_skills),
             tuple(self.skills.disabled_skills),
@@ -127,11 +137,41 @@ class ChatClient:
                 parts.append(f"skill DISABLED (do NOT use): {', '.join(sorted(disabled))}")
             return "[System note: skill configuration changed]\n" + "\n".join(parts) + "\n\n" + content
 
-        # Non-claude agents: full prompt injection
-        prompt = self.skills.inject_prompt()
+        prompt = self.skills.inject_prompt(
+            progressive=self._progressive_skills_enabled()
+        )
         if prompt:
             return prompt + "\n\n" + content
         return content
+
+    @staticmethod
+    def _env_enabled(name: str) -> bool:
+        return os.environ.get(name, "").strip().lower() not in {
+            "",
+            "0",
+            "false",
+            "no",
+            "off",
+        }
+
+    @classmethod
+    def _progressive_skills_enabled(cls) -> bool:
+        return cls._env_enabled("SKILLBOT_PROGRESSIVE_SKILLS")
+
+    @staticmethod
+    def _skill_top_k() -> int:
+        """Return the per-message keyword retrieval limit; zero disables it."""
+        try:
+            return max(
+                0,
+                int(os.environ.get("SKILLBOT_SKILL_TOPK", "").strip() or "0"),
+            )
+        except ValueError:
+            return 0
+
+    @classmethod
+    def _skill_rerank_enabled(cls) -> bool:
+        return cls._env_enabled("SKILLBOT_SKILL_RERANK")
 
     # ------------------------------------------------------------------
     # public API
@@ -189,6 +229,10 @@ class ChatClient:
     def interrupt(self, session: str) -> None:
         """Interrupt the current streaming query."""
         self._backend.interrupt(session)
+
+    def prepare_run(self, session: str) -> dict | None:
+        """Prepare an out-of-band steering target when supported."""
+        return self._backend.prepare_run(session)
 
     @property
     def agent(self) -> str:

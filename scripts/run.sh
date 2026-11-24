@@ -110,6 +110,22 @@ _setup_deps() {
     esac
 }
 
+# Ensure node/npm are on PATH. `start`/`sync` run under a non-login shell where
+# nvm's shims aren't sourced, so `nohup npm ...` fails with "npm: No such file
+# or directory". Source nvm (following its `default` alias — no hardcoded
+# version) so webui launches inherit a working node.
+_ensure_node_on_path() {
+    command -v npm &>/dev/null && return 0
+    local nvm_dir="${NVM_DIR:-${HOME}/.nvm}"
+    if [[ -s "${nvm_dir}/nvm.sh" ]]; then
+        export NVM_DIR="$nvm_dir"
+        # shellcheck disable=SC1090,SC1091
+        \. "${nvm_dir}/nvm.sh" >/dev/null 2>&1
+        nvm use default >/dev/null 2>&1 || nvm use node >/dev/null 2>&1 || true
+    fi
+    command -v npm &>/dev/null
+}
+
 # WebUI port per agent (avoid port collision on 5173)
 _webui_port() {
     case "$1" in
@@ -140,23 +156,38 @@ _start_webui() {
         return 0
     fi
 
+    # nohup subshells below don't inherit nvm's PATH; make node/npm reachable.
+    if ! _ensure_node_on_path; then
+        echo "  [WARN] node/npm not found (nvm not sourced?), skipping webui"
+        return 0
+    fi
+
     # claude-code: build + proxy server (API :9000 proxied through :5175)
     if [[ "$agent" == "claude-code" ]]; then
         (cd "${agent_path}/${webui_dir}" && npm run build 2>/dev/null)
     fi
 
-    # hermes-agent: start dashboard backend first (webui proxies /api to it)
+    # hermes-agent: the dashboard *is* the frontend — it runs `vite build` and
+    # serves the compiled Web UI on :9119 (there is no standalone :5174 dev
+    # server; `web` has no `start` script and vite lives in the workspace root).
     if [[ "$agent" == "hermes-agent" ]]; then
-        if ! lsof -i :9119 -sTCP:LISTEN -t &>/dev/null; then
-            local dash_log="${log_dir}/${agent}-dashboard.log"
-            nohup "${agent_path}/.venv/bin/hermes" dashboard --no-open > "$dash_log" 2>&1 &
-            sleep 2
-            if lsof -i :9119 -sTCP:LISTEN -t &>/dev/null; then
-                echo "  [OK] dashboard started (port 9119)"
-            fi
-        else
-            echo "  [INFO] dashboard already running on port 9119"
+        if lsof -i :9119 -sTCP:LISTEN -t &>/dev/null; then
+            echo "  [INFO] dashboard/webui already running (http://localhost:9119)"
+            return 0
         fi
+        local dash_log="${log_dir}/${agent}-dashboard.log"
+        (cd "${agent_path}" && nohup "${agent_path}/.venv/bin/hermes" dashboard --no-open > "$dash_log" 2>&1 &)
+        local i=0
+        while (( i < 15 )); do
+            lsof -i :9119 -sTCP:LISTEN -t &>/dev/null && break
+            sleep 1; i=$((i + 1))
+        done
+        if lsof -i :9119 -sTCP:LISTEN -t &>/dev/null; then
+            echo "  [OK] dashboard/webui started (http://localhost:9119)"
+        else
+            echo "  [WARN] dashboard start pending, check: tail -f ${dash_log}"
+        fi
+        return 0
     fi
 
     if lsof -i ":${port}" -sTCP:LISTEN -t &>/dev/null; then
@@ -245,8 +276,12 @@ require_agent() {
 check_installed() {
     local agent="$1"
     if [[ "$agent" == "claude-code" ]]; then
-        if ! command -v claude &>/dev/null; then
-            echo "ERROR: claude not found. Run: install.sh install claude-code" >&2
+        if ! command -v claude &>/dev/null && \
+           ! "${VENV_PYTHON:-${PROJECT_DIR}/.venv/bin/python}" -c \
+               "import claude_agent_sdk; from pathlib import Path; assert (Path(claude_agent_sdk.__file__).parent / '_bundled' / 'claude').is_file()" \
+               2>/dev/null; then
+            echo "ERROR: Claude CLI not found globally or in claude-agent-sdk." >&2
+            echo "Run: install.sh init" >&2
             exit 1
         fi
         return 0
@@ -937,6 +972,10 @@ cmd_sync() {
             fi
         done
     fi
+
+    # Git placeholders are not runtime content and make conservative recursive
+    # search policies reject an otherwise readable skill tree.
+    find "$dest" -type f -name '.gitkeep' -delete
 
     echo ""
     echo "  result: $(_get_skills_list "$agent")"

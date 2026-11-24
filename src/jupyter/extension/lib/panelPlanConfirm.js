@@ -82,11 +82,11 @@ function sendConfirmToBackend(panel, cmd) {
             var _a;
             if (msg.header.msg_type === 'stream' && ((_a = msg.content) === null || _a === void 0 ? void 0 : _a.name) === 'stdout') {
                 if (firstStdout) {
-                    panel._renderResponseText(panel._ansiToHtml(msg.content.text));
+                    panel._renderResponseText(panel._stripAnsi(msg.content.text));
                     firstStdout = false;
                 }
                 else {
-                    panel._appendTextChunk(panel._ansiToHtml(msg.content.text));
+                    panel._appendTextChunk(panel._stripAnsi(msg.content.text));
                 }
             }
         };

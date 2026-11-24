@@ -43,6 +43,21 @@ class ParsedResult:
     is_markdown: bool = False
 
 
+def parse_json_envelope(text: str) -> ParsedResult | None:
+    """Parse the agent JSON envelope, returning None for ordinary text."""
+    m = _JSON_FENCE.search(text)
+    candidate = m.group(1) if m else text.strip()
+    if not m and not candidate.startswith("{"):
+        return None
+    try:
+        data = json.loads(candidate)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return _from_json(data)
+
+
 def parse(text: str) -> ParsedResult:
     """Parse agent output with cascading fallback.
 

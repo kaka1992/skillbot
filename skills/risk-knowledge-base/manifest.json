@@ -1,0 +1,393 @@
+[
+  {
+    "title": "3DS2.0分享",
+    "path": "01_风控总览/3DS2.0分享.md",
+    "category": "风控总览",
+    "doc_type": "业务介绍",
+    "tags": [
+      "3DS",
+      "支付风控",
+      "交易风控"
+    ],
+    "metrics": [
+      "用户主动放弃率"
+    ],
+    "business_lines": [],
+    "summary": "介绍 3DS2.0 的原理、实现流程、优势及未来演进方向",
+    "source_url": "https://bytedance.sg.larkoffice.com/docx/EaSEd2RBHo5m4RxTHuIlVkgjgEb",
+    "source_token": "EaSEd2RBHo5m4RxTHuIlVkgjgEb",
+    "source_type": "docx",
+    "last_synced": "2026-08-12"
+  },
+  {
+    "title": "CheckPoint列表",
+    "path": "01_风控总览/CheckPoint列表.md",
+    "category": "风控总览",
+    "doc_type": "其他",
+    "tags": [
+      "CheckPoint",
+      "支付风控",
+      "交易风控",
+      "账号安全",
+      "电商",
+      "直播"
+    ],
+    "metrics": [],
+    "business_lines": [
+      "电商",
+      "直播"
+    ],
+    "summary": "汇总 PIPO 各业务场景的风控 CheckPoint 点位、事件与上游服务",
+    "source_url": "https://bytedance.sg.larkoffice.com/wiki/NCnrwffXLiuObhkXU3jcw5oln2e",
+    "source_token": "NCnrwffXLiuObhkXU3jcw5oln2e",
+    "source_type": "wiki",
+    "last_synced": "2026-08-12"
+  },
+  {
+    "title": "PIPO 支付风控核心指标口径 One Pager",
+    "path": "01_风控总览/PIPO支付风控核心指标口径OnePager.md",
+    "category": "风控总览",
+    "doc_type": "指标口径",
+    "tags": [
+      "支付风控",
+      "交易风控",
+      "指标",
+      "口径",
+      "拦截率",
+      "资损率",
+      "净资损率",
+      "ATO",
+      "3DS",
+      "PIPO"
+    ],
+    "metrics": [
+      "风控整体拦截率",
+      "PIPO风控拦截率",
+      "3DS相关失败率",
+      "3DS核验失败率",
+      "Challenge 3DS用户放弃率",
+      "3DS触发率",
+      "渠道/发卡行风控拦截率",
+      "ATO验证相关失败率",
+      "渠道3DS相关失败率",
+      "渠道3DS核验失败率",
+      "渠道Challenge 3DS用户放弃率",
+      "渠道3DS触发率",
+      "欺诈资损率",
+      "欺诈净资损率",
+      "欺诈净资损率（财务口径）",
+      "ATO Rate",
+      "B-ATO 欺诈资损金额"
+    ],
+    "business_lines": [
+      "全线"
+    ],
+    "summary": "定义 PIPO 支付风控核心指标（拦截率/资损率/净资损率/ATO 等）的口径与计算逻辑",
+    "source_url": "https://bytedance.sg.larkoffice.com/wiki/OKFhwkFROiiPEzkjw0Hc12tUnWg",
+    "source_token": "OKFhwkFROiiPEzkjw0Hc12tUnWg",
+    "source_type": "wiki",
+    "last_synced": "2026-08-12"
+  },
+  {
+    "title": "国际支付账号体系介绍 GP Account System Introduction（2024.06）",
+    "path": "01_风控总览/国际支付账号体系介绍.md",
+    "category": "风控总览",
+    "doc_type": "业务介绍",
+    "tags": [
+      "账号体系",
+      "账号安全",
+      "指标",
+      "PIPO",
+      "GPP",
+      "电商",
+      "直播"
+    ],
+    "metrics": [
+      "支付账号开户转化率",
+      "月活用户身份信息覆盖率",
+      "TikTok卡包渗透（PI合并进度）",
+      "TikTok KYC合并进度"
+    ],
+    "business_lines": [
+      "电商",
+      "直播"
+    ],
+    "summary": "介绍国际支付(GP)账号体系模型、标识定义、功能现状与迭代规划",
+    "source_url": "https://bytedance.sg.larkoffice.com/wiki/SOBvwqWBwiUhSBkEmdZc8PECnVr",
+    "source_token": "SOBvwqWBwiUhSBkEmdZc8PECnVr",
+    "source_type": "wiki",
+    "last_synced": "2026-08-12"
+  },
+  {
+    "title": "GPP-TikTok Live业务线分享//GPP-TikTok Live sharing",
+    "path": "02_业务场景/GPP-TikTokLive业务线分享.md",
+    "category": "业务场景",
+    "doc_type": "业务介绍",
+    "tags": [
+      "直播",
+      "TikTokLive",
+      "PIPO",
+      "GPP",
+      "成功率",
+      "3DS",
+      "指标"
+    ],
+    "metrics": [
+      "支付成功率",
+      "TSR",
+      "Payout成功率",
+      "PSR",
+      "到账时长",
+      "自营占比",
+      "健康度"
+    ],
+    "business_lines": [
+      "直播"
+    ],
+    "summary": "介绍TikTok直播打赏体系及官网充值、主播提现、周期性打款、订阅等场景与PIPO支付能力",
+    "source_url": "https://bytedance.sg.larkoffice.com/wiki/ACYSwba3RiKyahkkcrAcxVx1nLb",
+    "source_token": "ACYSwba3RiKyahkkcrAcxVx1nLb",
+    "source_type": "wiki",
+    "last_synced": "2026-08-12"
+  },
+  {
+    "title": "GPP- TikTok Local Service Sharing",
+    "path": "02_业务场景/GPP-TikTokLocalService分享.md",
+    "category": "业务场景",
+    "doc_type": "业务介绍",
+    "tags": [
+      "LocalService",
+      "PIPO",
+      "GPP",
+      "TTS",
+      "指标"
+    ],
+    "metrics": [
+      "GMV",
+      "GTV",
+      "CAGR",
+      "市占率"
+    ],
+    "business_lines": [
+      "LocalService"
+    ],
+    "summary": "介绍TikTok本地生活服务开环/闭环模式、券商品形态及与PIPO在印尼泰国的合作方案",
+    "source_url": "https://bytedance.sg.larkoffice.com/wiki/XRxwwwQA2ifnSgkc6qrc2rZanzd",
+    "source_token": "XRxwwwQA2ifnSgkc6qrc2rZanzd",
+    "source_type": "wiki",
+    "last_synced": "2026-08-12"
+  },
+  {
+    "title": "GPP-电商业务线分享|E-commerce Introduction",
+    "path": "02_业务场景/GPP-电商业务线分享.md",
+    "category": "业务场景",
+    "doc_type": "业务介绍",
+    "tags": [
+      "电商",
+      "TTS",
+      "PIPO",
+      "GPP",
+      "成功率",
+      "指标"
+    ],
+    "metrics": [
+      "GMV",
+      "PSR",
+      "NPS",
+      "CSAT",
+      "转化率",
+      "COD占比"
+    ],
+    "business_lines": [
+      "电商"
+    ],
+    "summary": "介绍TikTok Shop电商业务模式、角色分工、支付能力及各国市场展业与PIPO合作方案",
+    "source_url": "https://bytedance.sg.larkoffice.com/wiki/BS4owO25UicSLEk8vc6cEKk6n5f",
+    "source_token": "BS4owO25UicSLEk8vc6cEKk6n5f",
+    "source_type": "wiki",
+    "last_synced": "2026-08-12"
+  },
+  {
+    "title": "TTS ROW交易黑标V3",
+    "path": "03_风险类型/TTS-ROW交易黑标V3.md",
+    "category": "风险类型",
+    "doc_type": "标签定义",
+    "tags": [
+      "支付风控",
+      "交易风控",
+      "黑标",
+      "白标",
+      "黑白标签",
+      "3DS",
+      "电商",
+      "TTS"
+    ],
+    "metrics": [
+      "成功交易账户中的拒付率",
+      "交易全部失败或有拒付的账户比例",
+      "黑标准确率",
+      "黑标覆盖规模"
+    ],
+    "business_lines": [
+      "电商"
+    ],
+    "summary": "电商ROW交易黑标V3：统一一度外扩评估口径，标准化银行返回码，覆盖扩至3-4倍",
+    "source_url": "https://bytedance.sg.larkoffice.com/docx/NoxLdl168odBR1xzDLElYbtZgyc",
+    "source_token": "NoxLdl168odBR1xzDLElYbtZgyc",
+    "source_type": "docx",
+    "last_synced": "2026-08-12"
+  },
+  {
+    "title": "TTS ROW交易黑标V4",
+    "path": "03_风险类型/TTS-ROW交易黑标V4.md",
+    "category": "风险类型",
+    "doc_type": "标签定义",
+    "tags": [
+      "支付风控",
+      "交易风控",
+      "黑标",
+      "白标",
+      "黑白标签",
+      "3DS",
+      "电商",
+      "TTS"
+    ],
+    "metrics": [
+      "成功交易账户中的拒付率",
+      "交易全部失败或有拒付的账户比例",
+      "黑标准确率",
+      "黑标覆盖规模"
+    ],
+    "business_lines": [
+      "电商",
+      "直播"
+    ],
+    "summary": "电商ROW交易黑标V4：以一度外扩反推评估准确度，收紧规则并提纯，覆盖扩至3倍",
+    "source_url": "https://bytedance.sg.larkoffice.com/docx/NdvHda7wdoYg2pxIP3imRObVyKd",
+    "source_token": "NdvHda7wdoYg2pxIP3imRObVyKd",
+    "source_type": "docx",
+    "last_synced": "2026-08-12"
+  },
+  {
+    "title": "EU TTS Payment Risk 黑标V4",
+    "path": "03_风险类型/外链-D1xBdCDDnoq2.md",
+    "category": "风险类型",
+    "doc_type": "标签定义",
+    "tags": [
+      "支付风控",
+      "交易风控",
+      "黑标",
+      "白标",
+      "黑白标签",
+      "3DS",
+      "电商",
+      "TTS"
+    ],
+    "metrics": [
+      "bad rate",
+      "拒付or全部失败率",
+      "黑标准确率",
+      "黑标量级占比"
+    ],
+    "business_lines": [
+      "电商"
+    ],
+    "summary": "EU/UK电商黑标V4：来源逻辑精细化+双重验证排白，UK/EU bad rate提升至36%",
+    "source_url": "https://bytedance.my.larkoffice.com/docx/D1xBdCDDnoq2lyxLXnjmpPycyvV",
+    "source_token": "D1xBdCDDnoq2lyxLXnjmpPycyvV",
+    "source_type": "external",
+    "last_synced": "2026-08-12"
+  },
+  {
+    "title": "直播黑白标签定义和False Positive分析 TTLive Bad Tagging Definition and False Positive Analysis",
+    "path": "03_风险类型/直播黑白标签定义与FP分析.md",
+    "category": "风险类型",
+    "doc_type": "标签定义",
+    "tags": [
+      "支付风控",
+      "交易风控",
+      "黑标",
+      "白标",
+      "黑白标签",
+      "False Positive",
+      "误杀率",
+      "直播",
+      "TikTokLive"
+    ],
+    "metrics": [
+      "FPR",
+      "TPR",
+      "FTR",
+      "EVIL率",
+      "EVIL+BAD率",
+      "ANGEL占比",
+      "ANGEL+GOOD占比"
+    ],
+    "business_lines": [
+      "直播"
+    ],
+    "summary": "直播黑白标签基于黑白种子强介质关联传播打5级标签，并用于已拦截交易FP分析",
+    "source_url": "https://bytedance.sg.larkoffice.com/docx/EW59dcy88osQ3vxud6mlbJCfg1z",
+    "source_token": "EW59dcy88osQ3vxud6mlbJCfg1z",
+    "source_type": "docx",
+    "last_synced": "2026-08-12"
+  },
+  {
+    "title": "黑白标优化",
+    "path": "03_风险类型/黑白标优化.md",
+    "category": "风险类型",
+    "doc_type": "标签定义",
+    "tags": [
+      "支付风控",
+      "交易风控",
+      "黑标",
+      "白标",
+      "黑白标签",
+      "False Positive"
+    ],
+    "metrics": [
+      "evil+bad占比",
+      "frd_amt_rat",
+      "amt_to_frd",
+      "fraud率"
+    ],
+    "business_lines": [
+      "直播"
+    ],
+    "summary": "更适合拦截模型训练/评估的黑白标：黑种子剔FF，仅1度关联，简化EVIL/ANGEL打标",
+    "source_url": "https://bytedance.sg.larkoffice.com/wiki/FPe7wZWupi25jNkWrWuchKLYnUf",
+    "source_token": "FPe7wZWupi25jNkWrWuchKLYnUf",
+    "source_type": "wiki",
+    "last_synced": "2026-08-12"
+  },
+  {
+    "title": "智能规则优化",
+    "path": "04_规则与策略/智能规则优化.md",
+    "category": "规则与策略",
+    "doc_type": "规则策略",
+    "tags": [
+      "支付风控",
+      "规则优化",
+      "规则生成",
+      "策略"
+    ],
+    "metrics": [
+      "Precision",
+      "Recall",
+      "拦截ROI",
+      "稳定性",
+      "可解释性",
+      "准确率",
+      "chargeback召回率",
+      "FPR"
+    ],
+    "business_lines": [
+      "全线"
+    ],
+    "summary": "面向策略专家的规则调优与规则生成组件化方案：标准库+特征库+约束优化+专家决策",
+    "source_url": "https://bytedance.sg.larkoffice.com/docx/PJnEd8NvqooFXYxDWE8lrlzBgoh",
+    "source_token": "PJnEd8NvqooFXYxDWE8lrlzBgoh",
+    "source_type": "docx",
+    "last_synced": "2026-08-12"
+  }
+]

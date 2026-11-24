@@ -6,15 +6,20 @@ export function ensureResponsePrefix(panel: any): void {
     panel._responseStarted = true;
     const prefix = document.createElement('div');
     prefix.className = 'skillbot-response-prefix';
-    prefix.innerHTML = '  <span style="color:#888">⎿</span> ';
+    prefix.innerHTML = '<span class="skillbot-agent-avatar">✦</span><span class="skillbot-agent-name">skillbot</span>';
     panel._appendToBlock(prefix);
   }
 }
 
-export function renderPrompt(panel: any, text: string): void {
+export function renderPrompt(panel: any, text: string, refs: any[] = []): void {
   const div = document.createElement('div');
   div.className = 'skillbot-prompt-line';
-  div.innerHTML = `<span class="skillbot-prompt-prefix">❯</span><span class="skillbot-prompt-text">${panel._esc(text)}</span>`;
+  const refsHtml = refs.length
+    ? `<span class="skillbot-prompt-refs">${refs.map(ref =>
+        `<span class="skillbot-prompt-ref">@${panel._esc(ref.label)}</span>`,
+      ).join('')}</span>`
+    : '';
+  div.innerHTML = `<span class="skillbot-prompt-prefix">❯</span><span class="skillbot-prompt-text">${refsHtml}${panel._esc(text)}</span>`;
   panel._appendToBlock(div);
 }
 
@@ -29,11 +34,11 @@ export function appendTextChunk(panel: any, content: string): void {
   if (!panel._textEl || !panel._textEl.parentElement) {
     panel._textEl = document.createElement('div');
     panel._textEl.className = 'skillbot-response-text';
-    panel._textEl.innerHTML = content;
     panel._appendToBlock(panel._textEl);
-  } else {
-    panel._textEl.innerHTML += content;
   }
+  const markdown = (panel._textEl.dataset.markdown || '') + content;
+  panel._textEl.dataset.markdown = markdown;
+  panel._renderMarkdown(panel._textEl, markdown);
 }
 
 export function renderTool(panel: any, name: string): void {
