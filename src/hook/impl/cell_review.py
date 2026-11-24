@@ -151,4 +151,3 @@ class AgentCellReviewHook(Hook):
             ns.track_hook(f"[review] unexpected: {raw[:200]}")
             render_debug(f"[review] unexpected: {raw[:200]}")
         return HookResult(HookStatus.SUCCESS)
-

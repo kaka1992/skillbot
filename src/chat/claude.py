@@ -8,6 +8,7 @@ from typing import Optional
 
 import requests
 
+from agent.permissions import ExecutionMode
 from .base import AbstractBackend, AgentStartupTimeout, StreamChunk, TraceBlock
 
 _log = logging.getLogger(__name__)
@@ -34,11 +35,17 @@ class ClaudeBackend(AbstractBackend):
     ) -> None:
         self._sessions: set[str] = set()
         self._server_sids: dict[str, str] = {}  # client session → server sid
+        self._session_tokens: dict[str, str] = {}
+        self._prepared_runs: dict[str, dict] = {}
         self._model = model
         self._timeout = timeout
+        self._execution_mode = ExecutionMode.DEFAULT
 
         if auto_start:
             self._ensure_running()
+
+    def set_execution_mode(self, mode: str) -> None:
+        self._execution_mode = ExecutionMode(mode)
 
     @staticmethod
     def _is_port_ready(port: int) -> bool:
@@ -72,11 +79,17 @@ class ClaudeBackend(AbstractBackend):
 
     def _get_session(self, session: str) -> str:
         """Return cached server-side session ID, creating one on first call."""
+        health = requests.get(f"{CLAUDE_BASE}/health", timeout=5)
+        health.raise_for_status()
+        if health.json().get("permission_policy_version") != 1:
+            raise RuntimeError("Claude server lacks execution permissions; restart the updated server")
         if session not in self._server_sids:
             try:
                 resp = requests.post(f"{CLAUDE_BASE}/sessions", timeout=5)
                 if resp.status_code == 201:
-                    self._server_sids[session] = resp.json()["session_id"]
+                    data = resp.json()
+                    self._server_sids[session] = data["session_id"]
+                    self._session_tokens[session] = data["session_token"]
                 else:
                     self._server_sids[session] = f"chat-{session}"
             except Exception:
@@ -87,6 +100,27 @@ class ClaudeBackend(AbstractBackend):
     # chat / stream
     # ------------------------------------------------------------------
 
+    def prepare_run(self, session: str) -> dict:
+        """Create a token-scoped steering target for the next streamed query."""
+        sid = self._get_session(session)
+        resp = requests.post(
+            f"{CLAUDE_BASE}/sessions/{sid}/runs",
+            json={"session_token": self._session_tokens.get(session, "")},
+            timeout=5,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        target = {
+            "url": (
+                f"{CLAUDE_BASE}/sessions/{sid}/runs/"
+                f"{data['run_id']}/steer"
+            ),
+            "run_id": data["run_id"],
+            "control_token": data["control_token"],
+        }
+        self._prepared_runs[session] = target
+        return target
+
     def chat(
         self, content: str, session: str, model: Optional[str] = None
     ) -> str:
@@ -95,7 +129,8 @@ class ClaudeBackend(AbstractBackend):
         sid = self._get_session(session)
         resp = requests.post(
             f"{CLAUDE_BASE}/sessions/{sid}/chat",
-            json={"message": content, "timeout": self._timeout},
+            json={"message": content, "timeout": self._timeout,
+                  "execution_mode": self._execution_mode.value},
             timeout=self._timeout + 10,
         )
         resp.raise_for_status()
@@ -108,7 +143,8 @@ class ClaudeBackend(AbstractBackend):
         sid = self._get_session(session)
         resp = requests.post(
             f"{CLAUDE_BASE}/sessions/{sid}/chat/stream",
-            json={"message": content, "timeout": self._timeout},
+            json={"message": content, "timeout": self._timeout,
+                  "execution_mode": self._execution_mode.value},
             timeout=self._timeout + 10,
             stream=True,
         )
@@ -130,9 +166,12 @@ class ClaudeBackend(AbstractBackend):
         """Stream with trace data (thinking, tool_use, subagent, usage)."""
         self._sessions.add(session)
         sid = self._get_session(session)
+        target = self._prepared_runs.pop(session, None)
         resp = requests.post(
             f"{CLAUDE_BASE}/sessions/{sid}/chat/trace",
-            json={"message": content, "timeout": self._timeout},
+            json={"message": content, "timeout": self._timeout,
+                  "execution_mode": self._execution_mode.value,
+                  "run_id": target.get("run_id") if target else None},
             timeout=self._timeout + 10,
             stream=True,
         )
@@ -188,6 +227,8 @@ class ClaudeBackend(AbstractBackend):
 
     def clear_session(self, session: str) -> None:
         self._sessions.discard(session)
+        self._prepared_runs.pop(session, None)
+        self._session_tokens.pop(session, None)
         if session in self._server_sids:
             sid = self._server_sids.pop(session)
             try:

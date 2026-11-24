@@ -24,6 +24,12 @@ def init_panel_comm(shell) -> None:
             from jupyter.magic import _get_magic
             inst = _get_magic()
             if inst:
+                workflow = getattr(inst, "_workflow", None)
+                if workflow is not None:
+                    comm.send(data={
+                        "action": "workflow_state",
+                        **workflow.snapshot.as_dict(),
+                    })
                 msg = getattr(inst, '_startup_config_msg', '')
                 if msg:
                     comm.send(data={"action": "text", "content": msg})
@@ -80,3 +86,44 @@ def send_code_block(language: str, code: str) -> bool:
 def send_result(summary: str) -> bool:
     """Render an execution-result summary."""
     return send_to_panel(None, "result", summary=summary)
+
+
+# ---------------------------------------------------------------------------
+# Gallery comm — left-hand read-only Skills / Knowledge browser
+# ---------------------------------------------------------------------------
+# Independent from the panel comm above so the gallery keeps working even when
+# the Agent Panel comm is not open. Same frontend-initiated handshake: the
+# widget creates the comm, the kernel stashes the handle in `_gallery_comm`.
+
+GALLERY_TARGET = "skillbot:gallery"
+_gallery_comm = None
+
+
+def init_gallery_comm(shell) -> None:
+    """Register the gallery comm target. Called once on extension init."""
+    global _gallery_comm
+    try:
+        kernel = shell.kernel
+        if not kernel or not hasattr(kernel, "comm_manager"):
+            return
+
+        def _on_comm(comm, _open_msg):
+            global _gallery_comm
+            _gallery_comm = comm
+
+        kernel.comm_manager.register_target(GALLERY_TARGET, _on_comm)
+    except Exception:
+        _log.debug("init_gallery_comm: failed", exc_info=True)
+
+
+def send_to_gallery(action: str, **data) -> bool:
+    """Send a display message to the left-hand gallery widget."""
+    global _gallery_comm
+    if _gallery_comm is None:
+        return False
+    try:
+        _gallery_comm.send(data={"action": action, **data})
+        return True
+    except Exception:
+        _log.debug("send_to_gallery: failed", exc_info=True)
+        return False

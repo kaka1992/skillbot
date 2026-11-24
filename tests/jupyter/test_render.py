@@ -3,7 +3,7 @@
 import sys
 sys.path.insert(0, "src")
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from jupyter.namespace import Namespace
@@ -147,6 +147,21 @@ class TestRender:
                 mock.assert_called_once()
         finally:
             os.unlink(tmp)
+
+    def test_reviewed_code_and_file_use_one_batch(self, tmp_path):
+        script = tmp_path / "result.py"
+        script.write_text("y = 2", encoding="utf-8")
+        submit = Mock()
+        with patch("jupyter.comm.send_cell_via_comm") as legacy_comm:
+            n = render_output(
+                Namespace(FakeShell()),
+                ParsedResult(code_list=["x = 1"], files=[str(script)]),
+                auto=True,
+                cell_submitter=submit,
+            )
+        assert n == 2
+        submit.assert_called_once_with(["x = 1", "y = 2"], True)
+        legacy_comm.assert_not_called()
 
     def test_image_display(self):
         import base64

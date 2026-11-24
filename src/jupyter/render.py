@@ -58,21 +58,25 @@ def render_error(text: str) -> None:
         print(f"\033[91m{text}\033[0m", file=sys.stderr)
 
 
+def prepare_cell_code(code: str, cell_type: str = "code") -> str:
+    """Normalize generated code before it is materialized as a notebook Cell."""
+    code = code.strip()
+    marker = "\n# %%agent generate code"
+    if cell_type != "markdown":
+        if _is_sql(code) and not code.startswith("%%sql"):
+            code = f"%%sql\n{code}"
+        if marker not in code:
+            code = f"{code}{marker}"
+    return code
+
+
 def render_code(ns: Namespace, code: str, auto: bool = False,
                 cell_type: str = "code", replace_cell_id: str = "",
                 on_cell_id: callable | None = None) -> None:
     """Send code to frontend via comm; extension creates cell + optionally executes."""
     if not code:
         return
-    code = code.strip()
-    marker = "\n# %%agent generate code"
-    if cell_type == "markdown":
-        pass
-    else:
-        if _is_sql(code) and not code.startswith("%%sql"):
-            code = f"%%sql\n{code}"
-        if marker not in code:
-            code = f"{code}{marker}"
+    code = prepare_cell_code(code, cell_type)
 
     _log.info("render_code: %d chars auto=%s type=%s", len(code), auto, cell_type)
 
@@ -130,12 +134,11 @@ def render_output(ns: Namespace, result: ParsedResult,
                   skip_text: bool = False,
                   auto: bool = False, plan_cell_id: str = "",
                   on_cell_id: callable | None = None,
-                  session=None) -> int:
+                  session=None, cell_submitter: callable | None = None) -> int:
     """Dispatch parsed agent result to render methods.
 
-    Returns the number of code cells actually sent (after .py file
-    appends and the code_review hook may have changed the list) —
-    callers use it to count pending auto-executions.
+    Returns the number of code cells handed to the dispatch path after
+    .py file appends and code review. Execution outcome comes from Comm receipts.
     """
     if result.text and not skip_text:
         if result.is_markdown:
@@ -145,7 +148,7 @@ def render_output(ns: Namespace, result: ParsedResult,
 
     if result.plan:
         content = "# %%plan\n\n" + result.plan
-        def _on_plan_cell(cid, code):
+        def _on_plan_cell(cid, _code):
             ns._shell.user_ns["__plan_cell_id__"] = cid
         render_code(ns, content, cell_type="markdown", replace_cell_id=plan_cell_id,
                     on_cell_id=_on_plan_cell)
@@ -178,8 +181,12 @@ def render_output(ns: Namespace, result: ParsedResult,
         HookRegistry.dispatch(HookEvent.CODE_REVIEW, context, session=session)
         result.code_list = context["code_list"]
 
-        for c in result.code_list:
-            render_code(ns, c, auto=auto, on_cell_id=on_cell_id)
+        if result.code_list:
+            if cell_submitter is not None:
+                cell_submitter(result.code_list, auto)
+            else:
+                for c in result.code_list:
+                    render_code(ns, c, auto=auto, on_cell_id=on_cell_id)
 
     return len(result.code_list)
 
@@ -261,5 +268,3 @@ def _display_image_file(name: str, content: str) -> None:
             render_text(f"[{name}] image display error")
     else:
         render_text(f"[{name}] image display skipped (empty content, file not found)")
-
-

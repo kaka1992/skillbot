@@ -4,7 +4,7 @@ import sys
 sys.path.insert(0, "src")
 
 import pytest
-from jupyter.parser import parse
+from jupyter.parser import parse, parse_json_envelope
 
 
 def _p(text):
@@ -83,6 +83,24 @@ class TestRawJson:
         assert r.text == '[{"text": "nope"}]'
 
 
+class TestJsonEnvelope:
+    def test_extracts_display_text(self):
+        r = parse_json_envelope(
+            '```json\n{"text": "你好\\n\\n**世界**", "code": []}\n```'
+        )
+        assert r is not None
+        assert r.text == "你好\n\n**世界**"
+
+    @pytest.mark.parametrize("text", [
+        "ordinary response",
+        "```python\nprint(1)\n```",
+        "{broken json",
+        '[{"text": "not an envelope"}]',
+    ])
+    def test_rejects_non_envelope(self, text):
+        assert parse_json_envelope(text) is None
+
+
 # ============================================================
 # Code fence
 # ============================================================
@@ -110,10 +128,9 @@ class TestCodeFence:
         assert r.code_list == []
 
     def test_bare_fence_after_lang_fence(self):
-        """Closing ``` of bash block acts as bare opening fence for next block."""
+        """Adjacent language fences are parsed as independent code blocks."""
         r = _p("```bash\necho hi\n```\n```sql\nselect 1\n```")
-        # closing ``` of bash block → bare fence opening; captures ```sql + content
-        assert len(r.code_list) == 1
+        assert r.code_list == ["echo hi", "select 1"]
 
     def test_empty_block(self):
         r = _p("```python\n\n```")
@@ -141,7 +158,7 @@ class TestCodeFence:
 class TestInvalidJsonFallback:
     def test_invalid_fenced_to_raw(self):
         r = _p("```json\n{broken\n```")
-        assert r.code_list == []
+        assert r.code_list == ["{broken"]
 
     def test_invalid_fenced_with_code(self):
         """Invalid JSON → fallback; closing ``` of json block acts as bare fence."""

@@ -16,8 +16,11 @@ SECTIONS = {
     "jupyter": (
         "Running inside a Jupyter notebook. Key rules:\n"
         "- Code for the user to see and run MUST go in the \"code\" field, NEVER executed via Bash.\n"
-        "- Use Bash for: file operations, data fetching, dependency installation, running tools.\n"
-        "- Save generated files (charts, CSVs) to /tmp/ — they will be loaded into the notebook.\n"
+        "- The runtime enforces execution permissions. Plan/default turns are read-only.\n"
+        "- Bash, native subagents and external tools are disabled. Return code for data fetching, "
+        "dependency installation and computation as notebook cells, subject to user approval.\n"
+        "- Direct Write/Edit tools are limited to the artifact directory named by the runtime, "
+        "and only on execute/auto turns. Never write configuration or credentials.\n"
         "- If the user needs to see output, return it in \"text\" — do not print to stdout via Bash."
     ),
     "magic": (
@@ -56,17 +59,30 @@ SECTIONS = {
     ),
     "tool_usage": (
         "Tool constraints:\n"
-        "- Bash(git:*), Bash(pip:*), Bash(curl:*) → setup and data fetching.\n"
-        "- Bash(python3:*) → generate files, never run interactive code.\n"
-        "- Write → only /tmp/ outputs that persist across tool calls.\n"
+        "- Read/Grep/Glob → only the runtime's configured read roots.\n"
+        "- Write/Edit → only the runtime's scoped artifact directory when authorized.\n"
+        "- Tool denials are authoritative; do not retry via another tool or delegate.\n"
         "- Never execute user-facing code — always return it in \"code\" field."
     ),
     "plan": (
-        "You are in plan mode. For EVERY request:\n"
-        "- Output your analysis plan in the \"plan\" JSON field as markdown. Do NOT execute.\n"
-        '- End your response with "code": "%confirm yes" for user confirmation.\n'
-        "- Only proceed to execution after the user confirms.\n"
-        '- If the user provides feedback, adjust your plan and output an updated "plan" field.'
+        "You are in PLAN MODE. Your ONLY job this turn is to produce a plan — you must NOT act.\n"
+        "Hard rules for THIS response:\n"
+        "- Put the full step-by-step plan in the \"plan\" JSON field as markdown. It MUST be non-empty.\n"
+        "- The \"code\" field MUST be an empty array []. Do NOT write any user-facing code.\n"
+        "- This is a READ-ONLY planning turn. You MAY use read-only tools (Read/Grep/Glob/LS and "
+        "knowledge-base lookups) to inform the plan, but you MUST NOT write/edit files, execute code, "
+        "run Bash state-changing commands, or inspect live data (no queries, no runs).\n"
+        "- When the task involves risk-control plans, metric computation, or rule/strategy tuning, "
+        "prefer consulting the risk knowledge base first (the risk-knowledge-base skill: Read its index.md / "
+        "manifest.json → Grep → Read the target file) and cite the source of any metric definition or "
+        "rule you rely on.\n"
+        "- If the plan depends on unknown details (columns, schema, file layout) not covered by the "
+        "knowledge base, state your assumptions in the plan and add a first step that verifies them "
+        "AFTER confirmation. Do not run verification queries now.\n"
+        "- The plan should cover: data loading, the concrete steps/experiments, models & params, "
+        "metrics, and the final deliverable — enough that the user can approve it as-is.\n"
+        "- Only after the user confirms will you switch to implementation and generate code.\n"
+        "- If the user gives feedback, output a revised non-empty \"plan\" and still keep \"code\": []."
     ),
     "plan_optional": (
         "For complex multi-step tasks, briefly describe your approach before execution.\n"

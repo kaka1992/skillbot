@@ -47,6 +47,95 @@ def test_create_session():
     data = resp.json()
     assert "session_id" in data
     assert len(data["session_id"]) == 12
+    assert data["session_token"]
+
+
+def test_prepare_run_returns_scoped_control_target():
+    from fastapi.testclient import TestClient
+    from server.app import app
+
+    client = TestClient(app)
+    session = client.post("/sessions").json()
+    sid = session["session_id"]
+
+    resp = client.post(
+        f"/sessions/{sid}/runs",
+        json={"session_token": session["session_token"]},
+    )
+
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["session_id"] == sid
+    assert len(data["run_id"]) == 32
+    assert data["control_token"]
+
+
+def test_steer_rejects_inactive_run():
+    from fastapi.testclient import TestClient
+    from server.app import app
+
+    client = TestClient(app)
+    session = client.post("/sessions").json()
+    sid = session["session_id"]
+    run = client.post(
+        f"/sessions/{sid}/runs",
+        json={"session_token": session["session_token"]},
+    ).json()
+
+    resp = client.post(
+        f"/sessions/{sid}/runs/{run['run_id']}/steer",
+        json={
+            "message_id": "m1",
+            "message": "change direction",
+            "control_token": run["control_token"],
+        },
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "RUN_NOT_ACTIVE"
+
+
+def test_prepare_run_requires_session_token():
+    from fastapi.testclient import TestClient
+    from server.app import app
+
+    client = TestClient(app)
+    sid = client.post("/sessions").json()["session_id"]
+
+    resp = client.post(
+        f"/sessions/{sid}/runs",
+        json={"session_token": "wrong"},
+    )
+
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "INVALID_SESSION_TOKEN"
+
+
+def test_steer_cannot_request_permission_change():
+    from fastapi.testclient import TestClient
+    from server.app import app
+
+    client = TestClient(app)
+    session = client.post("/sessions").json()
+    run = client.post(
+        f"/sessions/{session['session_id']}/runs",
+        json={"session_token": session["session_token"]},
+    ).json()
+
+    resp = client.post(
+        (
+            f"/sessions/{session['session_id']}/runs/"
+            f"{run['run_id']}/steer"
+        ),
+        json={
+            "message_id": "m1",
+            "message": "change direction",
+            "control_token": run["control_token"],
+            "execution_mode": "auto",
+        },
+    )
+
+    assert resp.status_code == 422
 
 
 def test_list_sessions():

@@ -55,7 +55,7 @@ markers = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/chat", "src/eval"]
+packages = ["src/chat", "src/eval", "src/agent"]
 
 [build-system]
 requires = ["hatchling"]

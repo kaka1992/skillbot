@@ -9,6 +9,15 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 VENV_PYTHON="${PROJECT_DIR}/.venv/bin/python"
 SRC="${PROJECT_DIR}/src"
 IPYTHON_PROFILE="${PROJECT_DIR}/.jupyter"
+NODE_BIN=""
+if command -v node &>/dev/null; then
+    NODE_BIN="$(dirname "$(command -v node)")"
+fi
+
+export JUPYTER_CONFIG_DIR="${JUPYTER_CONFIG_DIR:-${IPYTHON_PROFILE}/config}"
+export JUPYTER_DATA_DIR="${JUPYTER_DATA_DIR:-${IPYTHON_PROFILE}/data}"
+export JUPYTER_RUNTIME_DIR="${JUPYTER_RUNTIME_DIR:-${IPYTHON_PROFILE}/runtime}"
+export IPYTHONDIR="${IPYTHONDIR:-${IPYTHON_PROFILE}/ipython}"
 
 usage() {
     cat <<EOF
@@ -36,6 +45,11 @@ _setup() {
 
     # clean stale labextension artifacts (deprecated approach)
     rm -rf "${IPYTHON_PROFILE}/labextensions" "${IPYTHON_PROFILE}/jupyter_lab_config.py" 2>/dev/null || true
+    mkdir -p \
+        "${JUPYTER_CONFIG_DIR}" \
+        "${JUPYTER_DATA_DIR}" \
+        "${JUPYTER_RUNTIME_DIR}" \
+        "${IPYTHONDIR}"
 
     # ensure project venv + deps
     if [[ ! -x "${VENV_PYTHON}" ]] || ! "${VENV_PYTHON}" -c "import jupyter" 2>/dev/null; then
@@ -44,7 +58,7 @@ _setup() {
     fi
 
     # ---- skillbot kernel ----
-    local kernel_dir="${IPYTHON_PROFILE}/kernels/skillbot"
+    local kernel_dir="${JUPYTER_DATA_DIR}/kernels/skillbot"
     mkdir -p "$kernel_dir"
     cat > "${kernel_dir}/kernel.json" <<KERNEL_EOF
 {
@@ -92,7 +106,7 @@ BOOTSTRAP_EOF
                     sed -i '' "s/return filename.split('=')\[1\].trim()/var parts = filename.split('=')\n            return parts.length > 1 ? parts[1].trim() : null/" "$_f"
                 fi
             done
-            PATH="${PROJECT_DIR}/.venv/bin:${HOME}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+            PATH="${NODE_BIN:+${NODE_BIN}:}${PROJECT_DIR}/.venv/bin:${HOME}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
                 "${VENV_PYTHON}" -m jupyter labextension build . 2>&1 | tail -1
             # Copy built extension to JupyterLab's shared directory
             rm -rf "${PROJECT_DIR}/.venv/share/jupyter/labextensions/skillbot-jupyter"
@@ -151,7 +165,7 @@ _rebuild() {
             sed -i '' "s/return filename.split('=')\[1\].trim()/var parts = filename.split('=')\n            return parts.length > 1 ? parts[1].trim() : null/" "$_f"
         fi
     done
-    PATH="${PROJECT_DIR}/.venv/bin:${HOME}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+    PATH="${NODE_BIN:+${NODE_BIN}:}${PROJECT_DIR}/.venv/bin:${HOME}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
         "${VENV_PYTHON}" -m jupyter labextension build .
     echo "  [3/3] sync to labextensions..."
     rm -rf "${ext_install_dir}"
@@ -176,6 +190,10 @@ _start() {
 
     export PYTHONPATH="${SRC}${PYTHONPATH:+:${PYTHONPATH}}"
     export IPYTHONDIR="${IPYTHON_PROFILE}"
+    # Keep the initial skill catalog compact. Set to 0 to restore full-body
+    # prompt injection; optional TOPK/RERANK controls can narrow it per request.
+    export SKILLBOT_PROGRESSIVE_SKILLS="${SKILLBOT_PROGRESSIVE_SKILLS:-1}"
+    echo "  progressive skills: ${SKILLBOT_PROGRESSIVE_SKILLS}"
     # ensure venv takes priority over system anaconda
     export PATH="${PROJECT_DIR}/.venv/bin:${PATH}"
     cd "${IPYTHON_PROFILE}/run"

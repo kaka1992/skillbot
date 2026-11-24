@@ -37,21 +37,26 @@ exports.panelPlugin = void 0;
 const widgets_1 = require("@lumino/widgets");
 const apputils_1 = require("@jupyterlab/apputils");
 const notebook_1 = require("@jupyterlab/notebook");
+const rendermime_1 = require("@jupyterlab/rendermime");
 const widgets_2 = require("@lumino/widgets");
 const panelStyles_1 = require("./panelStyles");
 const R = __importStar(require("./panelRenderer"));
 const PC = __importStar(require("./panelPlanConfirm"));
+const SS = __importStar(require("./panelSessions"));
+const SK = __importStar(require("./panelSkills"));
 const TARGET = 'skillbot:tui';
 let _panelInstance = null;
 // ===========================================================================
 // AgentPanel
 // ===========================================================================
 class AgentPanel extends widgets_1.Widget {
-    constructor() {
+    constructor(_rendermime) {
         super();
+        this._rendermime = _rendermime;
         this._killRing = ''; // for Ctrl+Y yank
         this._lastKill = ''; // track consecutive kill type for accumulation
         this._charsPerLine = 80; // computed from textarea width / monospace char width
+        this._topDotEl = null;
         this._statusTimer = null;
         this._execStartTime = 0;
         this._statusIcon = '○';
@@ -83,9 +88,19 @@ class AgentPanel extends widgets_1.Widget {
         this._textEl = null; // accumulated text element for streaming
         this._thinkingEl = null; // accumulated thinking element
         this._thinkingCollapsed = true; // Ctrl+T to toggle collapse
-        this._busy = false; // agent is working → queue new prompts
+        this._workflowState = 'IDLE'; // backend-authoritative workflow projection
+        this._workflowRevision = 0;
+        this._steerTarget = null;
         this._promptQueue = [];
+        this._cellReferences = [];
+        this._cellCandidates = [];
+        this._dropdownKind = null;
         this._skillsMode = false; // skills view active → input hidden
+        // multi-session management (per-notebook conversation buffers + switcher)
+        this._currentPath = ''; // notebook path bound to the shown conversation
+        this._sessionsCollapsed = false; // switcher collapsed state (persisted)
+        this._app = null; // app handle for docmanager:open / newUntitled
+        this._markdownRendering = new WeakSet();
         // ---- skill rendering ----
         this._skillRows = [];
         this._skillSelectedIdx = 0;
@@ -108,6 +123,11 @@ class AgentPanel extends widgets_1.Widget {
         this.node.style.color = panelStyles_1.CC.text;
         // Shadow DOM — isolates all CSS from JupyterLab
         this._root = this.node.attachShadow({ mode: 'open' });
+        // restore session switcher collapsed state
+        try {
+            this._sessionsCollapsed = localStorage.getItem(SS.COLLAPSE_KEY) === '1';
+        }
+        catch (_) { }
         const style = document.createElement('style');
         style.textContent = panelStyles_1.STYLES;
         this._root.appendChild(style);
@@ -115,10 +135,18 @@ class AgentPanel extends widgets_1.Widget {
         const welcome = document.createElement('div');
         welcome.className = 'skillbot-welcome';
         welcome.innerHTML = `
-      <div style="font-size:14px;font-weight:600;color:${panelStyles_1.CC.text};margin-bottom:4px;">Agent Panel</div>
-      <div style="font-size:12px;font-weight:500;color:rgb(180,180,180);">Enter send · Shift+↵ newline · ↑↓ history · Shift+Tab mode · Ctrl+T thinking · Ctrl+C interrupt · /skills manage · /continue loop · /stop task</div>
+      <div class="skillbot-welcome-header">
+        <span class="skillbot-status-dot skillbot-status-dot--idle" id="skillbot-topdot"></span>
+        <span class="skillbot-welcome-title">Agent Panel</span>
+      </div>
+      <div class="skillbot-welcome-hint">Enter send · Shift+↵ newline · ↑↓ history · Shift+Tab mode · Ctrl+T thinking · Ctrl+C interrupt · /skills manage · /continue loop · /stop task</div>
     `;
         this._root.appendChild(welcome);
+        this._topDotEl = welcome.querySelector('#skillbot-topdot');
+        // session switcher bar — one tab per known notebook conversation
+        this._sessionBarEl = document.createElement('div');
+        this._sessionBarEl.className = 'skillbot-session-bar';
+        this._root.appendChild(this._sessionBarEl);
         // output — click to focus input + keyboard for Ctrl+T
         this._outputEl = document.createElement('div');
         this._outputEl.className = 'skillbot-output';
@@ -181,6 +209,16 @@ class AgentPanel extends widgets_1.Widget {
         this._statusEl.className = 'skillbot-status';
         this._statusEl.innerHTML = '<span>○ idle</span><span>skillbot</span>';
         this._root.appendChild(this._statusEl);
+        // action bar — visible buttons for common agent controls
+        this._actionBarEl = document.createElement('div');
+        this._actionBarEl.className = 'skillbot-action-bar';
+        this._root.appendChild(this._actionBarEl);
+        this._renderActionBar();
+        // Explicit notebook Cell references attached to the next prompt.
+        this._cellReferencesEl = document.createElement('div');
+        this._cellReferencesEl.className = 'skillbot-cell-references';
+        this._cellReferencesEl.style.display = 'none';
+        this._root.appendChild(this._cellReferencesEl);
         // input
         this._inputWrapper = document.createElement('div');
         this._inputWrapper.className = 'skillbot-input-wrapper';
@@ -199,7 +237,7 @@ class AgentPanel extends widgets_1.Widget {
         // Command dropdown
         this._commandDropdown = document.createElement('div');
         this._commandDropdown.className = 'skillbot-command-dropdown';
-        this._commandDropdown.style.cssText = `display:none;position:absolute;bottom:100%;left:0;right:0;background:${panelStyles_1.CC.bg};border:1px solid rgba(255,255,255,0.15);border-radius:4px;max-height:180px;overflow-y:auto;z-index:10;margin-bottom:2px;`;
+        this._commandDropdown.style.cssText = `display:none;position:absolute;bottom:100%;left:0;right:0;max-height:180px;overflow-y:auto;z-index:10;margin-bottom:4px;`;
         this._inputWrapper.style.position = 'relative';
         this._inputWrapper.appendChild(this._commandDropdown);
         this._commands = ['/confirm ', '/clear', '/continue ', '/mode ', '/skills ', '/config ', '/snapshot', '/stop'];
@@ -217,6 +255,7 @@ class AgentPanel extends widgets_1.Widget {
         this._infoEl.className = 'skillbot-info';
         this._root.appendChild(this._infoEl);
         this._restoreState();
+        this._renderSessionBar();
     }
     // ---- keyboard -----------------------------------------------------------
     _onKeydown(e) {
@@ -530,6 +569,14 @@ class AgentPanel extends widgets_1.Widget {
         if (e.key === 'Enter' && !e.isComposing) {
             this._killRing = '';
             this._lastKill = '';
+            if (this._commandDropdown.style.display !== 'none'
+                && !e.shiftKey
+                && !e.metaKey
+                && !e.altKey) {
+                e.preventDefault();
+                this._commitCommand();
+                return;
+            }
             if (e.shiftKey || e.metaKey || e.altKey) {
                 e.preventDefault();
                 // Clear selection before inserting newline
@@ -748,25 +795,62 @@ class AgentPanel extends widgets_1.Widget {
     }
     _updateCommandDropdown() {
         const val = this._inputEl.value;
+        const beforeCursor = val.slice(0, this._inputEl.selectionStart);
+        const mention = beforeCursor.match(/(^|\s)@([^\s@]*)$/);
+        if (mention) {
+            const query = mention[2].toLowerCase();
+            this._cellCandidates = this._collectCellReferences().filter(ref => `${ref.label} ${ref.code}`.toLowerCase().includes(query));
+            this._dropdownKind = 'cell';
+            this._renderCellCandidates();
+            return;
+        }
         if (!val.startsWith('/') || val.includes(' ')) {
             this._commandDropdown.style.display = 'none';
             this._commandIdx = -1;
+            this._dropdownKind = null;
             return;
         }
         const matches = this._commands.filter(c => c.startsWith(val) && c !== val);
         if (matches.length === 0) {
             this._commandDropdown.style.display = 'none';
             this._commandIdx = -1;
+            this._dropdownKind = null;
             return;
         }
+        this._dropdownKind = 'command';
         if (this._commandIdx < 0 || this._commandIdx >= matches.length)
             this._commandIdx = 0;
         this._commandDropdown.innerHTML = '';
         matches.forEach((cmd, i) => {
             const item = document.createElement('div');
-            item.style.cssText = `padding:3px 8px;font-size:12px;cursor:pointer;color:${panelStyles_1.CC.text};${i === this._commandIdx ? 'background:rgba(255,255,255,0.1);' : ''}`;
+            item.className = i === this._commandIdx ? 'skillbot-command-item active' : 'skillbot-command-item';
             item.textContent = cmd;
             item.addEventListener('click', () => { this._inputEl.value = cmd; this._inputEl.focus(); this._commandDropdown.style.display = 'none'; });
+            this._commandDropdown.appendChild(item);
+        });
+        this._commandDropdown.style.display = 'block';
+    }
+    _renderCellCandidates() {
+        if (this._cellCandidates.length === 0) {
+            this._commandDropdown.style.display = 'none';
+            this._commandIdx = -1;
+            return;
+        }
+        if (this._commandIdx < 0
+            || this._commandIdx >= this._cellCandidates.length) {
+            this._commandIdx = 0;
+        }
+        this._commandDropdown.innerHTML = '';
+        this._cellCandidates.forEach((ref, index) => {
+            var _a;
+            const item = document.createElement('div');
+            item.className = index === this._commandIdx
+                ? 'skillbot-command-item active'
+                : 'skillbot-command-item';
+            const firstLine = ((_a = ref.code.split('\n').find(line => line.trim())) === null || _a === void 0 ? void 0 : _a.trim()) || '(empty)';
+            item.textContent = `${ref.label}  ${firstLine.slice(0, 80)}`;
+            item.title = firstLine;
+            item.addEventListener('click', () => this._commitCellReference(index));
             this._commandDropdown.appendChild(item);
         });
         this._commandDropdown.style.display = 'block';
@@ -774,6 +858,13 @@ class AgentPanel extends widgets_1.Widget {
     _selectCommand(delta) {
         if (this._commandDropdown.style.display === 'none')
             return;
+        if (this._dropdownKind === 'cell') {
+            if (this._cellCandidates.length === 0)
+                return;
+            this._commandIdx = (this._commandIdx + delta + this._cellCandidates.length) % this._cellCandidates.length;
+            this._renderCellCandidates();
+            return;
+        }
         const val = this._inputEl.value;
         const matches = this._commands.filter(c => c.startsWith(val) && c !== val);
         if (matches.length === 0)
@@ -784,6 +875,10 @@ class AgentPanel extends widgets_1.Widget {
     _commitCommand() {
         if (this._commandDropdown.style.display === 'none')
             return;
+        if (this._dropdownKind === 'cell') {
+            this._commitCellReference(this._commandIdx >= 0 ? this._commandIdx : 0);
+            return;
+        }
         const val = this._inputEl.value;
         const matches = this._commands.filter(c => c.startsWith(val) && c !== val);
         if (matches.length === 0)
@@ -796,6 +891,124 @@ class AgentPanel extends widgets_1.Widget {
             this._commandIdx = -1;
             this._resizeInput();
         }
+    }
+    _collectCellReferences() {
+        var _a;
+        const notebook = (_a = this._tracker) === null || _a === void 0 ? void 0 : _a.currentWidget;
+        if (!(notebook === null || notebook === void 0 ? void 0 : notebook.content))
+            return [];
+        return notebook.content.widgets.map((cell, index) => {
+            var _a, _b, _c, _d;
+            const code = String(((_b = (_a = cell.model.sharedModel).getSource) === null || _b === void 0 ? void 0 : _b.call(_a)) || '');
+            let output = '';
+            let error = '';
+            try {
+                const outputs = cell.model.outputs;
+                const serialized = ((_c = outputs === null || outputs === void 0 ? void 0 : outputs.toJSON) === null || _c === void 0 ? void 0 : _c.call(outputs)) || [];
+                for (const item of serialized) {
+                    if (item.output_type === 'error') {
+                        const traceback = Array.isArray(item.traceback)
+                            ? item.traceback.join('\n')
+                            : '';
+                        error = traceback || `${item.ename || 'Error'}: ${item.evalue || ''}`;
+                    }
+                    else if (item.output_type === 'stream') {
+                        output += Array.isArray(item.text) ? item.text.join('') : String(item.text || '');
+                    }
+                    else {
+                        const plain = (_d = item.data) === null || _d === void 0 ? void 0 : _d['text/plain'];
+                        if (plain)
+                            output += Array.isArray(plain) ? plain.join('') : String(plain);
+                    }
+                }
+            }
+            catch (_) { }
+            return {
+                cell_id: String(cell.model.id),
+                label: `Cell ${index + 1}`,
+                cell_type: String(cell.model.type || 'code'),
+                code: code.slice(0, 5000),
+                output: output.slice(0, 2000),
+                error: error.slice(0, 2000),
+            };
+        });
+    }
+    _commitCellReference(index) {
+        const ref = this._cellCandidates[index];
+        if (!ref)
+            return;
+        this._addCellReference(ref);
+        const value = this._inputEl.value;
+        const cursor = this._inputEl.selectionStart;
+        const before = value.slice(0, cursor);
+        const match = before.match(/(^|\s)@([^\s@]*)$/);
+        if (match) {
+            const start = cursor - match[0].length + match[1].length;
+            this._inputEl.value = value.slice(0, start) + value.slice(cursor);
+            this._inputEl.selectionStart = this._inputEl.selectionEnd = start;
+        }
+        this._commandDropdown.style.display = 'none';
+        this._dropdownKind = null;
+        this._commandIdx = -1;
+        this._inputEl.focus();
+        this._resizeInput();
+    }
+    _addCellReference(ref) {
+        const existing = this._cellReferences.findIndex(item => item.cell_id === ref.cell_id);
+        if (existing >= 0)
+            this._cellReferences.splice(existing, 1);
+        this._cellReferences.push(ref);
+        this._renderCellReferences();
+    }
+    _renderCellReferences() {
+        this._cellReferencesEl.innerHTML = '';
+        this._cellReferencesEl.style.display = this._cellReferences.length
+            ? 'flex'
+            : 'none';
+        this._cellReferences.forEach(ref => {
+            const chip = document.createElement('span');
+            chip.className = 'skillbot-cell-reference';
+            chip.title = ref.code.split('\n')[0] || ref.label;
+            const label = document.createElement('span');
+            label.textContent = `@${ref.label}`;
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.textContent = '×';
+            remove.title = `Remove ${ref.label}`;
+            remove.addEventListener('click', () => {
+                this._cellReferences = this._cellReferences.filter(item => item.cell_id !== ref.cell_id);
+                this._renderCellReferences();
+            });
+            chip.append(label, remove);
+            this._cellReferencesEl.appendChild(chip);
+        });
+    }
+    addActiveCellReference() {
+        var _a, _b;
+        const notebook = (_a = this._tracker) === null || _a === void 0 ? void 0 : _a.currentWidget;
+        const active = notebook === null || notebook === void 0 ? void 0 : notebook.content.activeCell;
+        if (!notebook || !active)
+            return;
+        const index = notebook.content.widgets.indexOf(active);
+        const ref = this._collectCellReferences()[index];
+        if (!ref)
+            return;
+        this._addCellReference(ref);
+        (_b = this._app) === null || _b === void 0 ? void 0 : _b.shell.activateById(this.id);
+        this._inputEl.focus();
+    }
+    _openCellPicker() {
+        const prefix = this._inputEl.value && !/\s$/.test(this._inputEl.value)
+            ? ' @'
+            : '@';
+        const cursor = this._inputEl.selectionStart;
+        this._inputEl.value = (this._inputEl.value.slice(0, cursor)
+            + prefix
+            + this._inputEl.value.slice(this._inputEl.selectionEnd));
+        const nextCursor = cursor + prefix.length;
+        this._inputEl.selectionStart = this._inputEl.selectionEnd = nextCursor;
+        this._inputEl.focus();
+        this._updateCommandDropdown();
     }
     _tabComplete() {
         // Dropdown visible: commit current selection (or first match if no selection)
@@ -821,6 +1034,7 @@ class AgentPanel extends widgets_1.Widget {
         const idx = AgentPanel.MODE_ORDER.indexOf(this._mode);
         this._mode = AgentPanel.MODE_ORDER[(idx + 1) % AgentPanel.MODE_ORDER.length];
         this._updateModeInfo();
+        this._renderActionBar();
         this._saveState();
         // notify backend silently — no agent execution
         if (this._kernel) {
@@ -862,12 +1076,31 @@ class AgentPanel extends widgets_1.Widget {
     _isDisplayCommand(text) {
         return AgentPanel.DISPLAY_COMMANDS.some(c => text === c || text.startsWith(c + ' '));
     }
+    get _hasActiveWorkflow() {
+        return this._workflowState !== 'IDLE';
+    }
+    get _canInterrupt() {
+        return [
+            'AGENT_STREAMING',
+            'CELL_DISPATCHING',
+            'CELL_EXECUTING',
+            'AUTO_FIXING',
+        ].includes(this._workflowState);
+    }
+    get _canSteer() {
+        return ['AGENT_STREAMING', 'AUTO_FIXING'].includes(this._workflowState);
+    }
     _sendPrompt() {
         if (this._planConfirmActive)
             return;
         const text = this._inputEl.value.trim();
         if (!text)
             return;
+        const cellReferences = this._cellReferences.map(ref => ({ ...ref }));
+        const isStop = text === '/stop' || text.startsWith('/stop ');
+        if (isStop && this._canInterrupt) {
+            this._interruptAgent();
+        }
         // Defensive: if config was pending and user somehow sent 'y'/'n' as query, ignore
         if ((text === 'y' || text === 'n') && !this._configPending) {
             this._inputEl.value = '';
@@ -877,10 +1110,29 @@ class AgentPanel extends widgets_1.Widget {
         }
         // Slash commands bypass queue
         const isSlash = text.startsWith('/');
-        if (this._busy && !isSlash) {
-            this._promptQueue.push({ text, mode: this._mode });
+        if (this._hasActiveWorkflow && !isSlash && this._canSteer && this._steerTarget) {
+            if (this._history.length === 0 || this._history[this._history.length - 1] !== text) {
+                this._history.push(text);
+            }
+            this._historyIdx = -1;
+            void this._sendSteer(text, cellReferences);
+            this._inputEl.value = '';
+            this._cellReferences = [];
+            this._renderCellReferences();
+            this._historyDraft = '';
+            this._resizeInput();
+            return;
+        }
+        if (this._hasActiveWorkflow && !isSlash) {
+            this._promptQueue.push({
+                text,
+                mode: this._mode,
+                cellReferences,
+            });
             this._updateStatusDisplay();
             this._inputEl.value = '';
+            this._cellReferences = [];
+            this._renderCellReferences();
             this._historyDraft = '';
             this._resizeInput();
             return;
@@ -888,7 +1140,7 @@ class AgentPanel extends widgets_1.Widget {
         // No kernel — sending would lose the prompt and leave a stuck spinner
         if (!this._kernel) {
             this._setStatus('⚠', 'idle');
-            this._renderResponseText('<span style="color:rgb(220,120,100)">[no kernel connected — start a kernel in the notebook first]</span>');
+            this._renderResponseText('[no kernel connected — start a kernel in the notebook first]');
             this._updateStatusDisplay();
             return;
         }
@@ -898,7 +1150,8 @@ class AgentPanel extends widgets_1.Widget {
         this._historyIdx = -1;
         const isDisplay = this._isDisplayCommand(text);
         if (!isSlash) {
-            this._busy = true;
+            // Optimistic projection closes the small gap before the backend snapshot arrives.
+            this._workflowState = 'AGENT_STREAMING';
         }
         if (isDisplay) {
             // Skills commands enter dedicated view
@@ -912,7 +1165,7 @@ class AgentPanel extends widgets_1.Widget {
         }
         else {
             this._startBlock();
-            this._renderPrompt(text);
+            this._renderPrompt(text, cellReferences);
             this._startSpinner();
             this._setStatus('…', 'thinking');
         }
@@ -933,25 +1186,77 @@ class AgentPanel extends widgets_1.Widget {
                     }
                 }
             }
-            const code = `get_ipython().user_ns['_panel_input'](${JSON.stringify(text)}, mode="${this._mode}")`;
+            const referencesJson = JSON.stringify(cellReferences);
+            const code = `get_ipython().user_ns['_panel_input'](${JSON.stringify(text)}, mode="${this._mode}", cell_references=${JSON.stringify(referencesJson)})`;
             const future = this._kernel.requestExecute({ code, store_history: false });
             let firstStdout = true;
             future.onIOPub = (msg) => {
                 var _a;
                 if (msg.header.msg_type === 'stream' && ((_a = msg.content) === null || _a === void 0 ? void 0 : _a.name) === 'stdout') {
                     if (firstStdout) {
-                        this._renderResponseText(this._ansiToHtml(msg.content.text));
+                        this._renderResponseText(this._stripAnsi(msg.content.text));
                         firstStdout = false;
                     }
                     else {
-                        this._appendTextChunk(this._ansiToHtml(msg.content.text));
+                        this._appendTextChunk(this._stripAnsi(msg.content.text));
                     }
                 }
             };
         }
         this._inputEl.value = '';
+        this._cellReferences = [];
+        this._renderCellReferences();
         this._historyDraft = '';
         this._resizeInput();
+    }
+    async _sendSteer(text, refs) {
+        var _a, _b;
+        const target = this._steerTarget;
+        if (!target)
+            return;
+        let message = text;
+        if (refs.length) {
+            message += '\n\n[Referenced Notebook Cells]\n' + refs.map(ref => JSON.stringify({
+                cell_id: ref.cell_id,
+                label: ref.label,
+                cell_type: ref.cell_type,
+                code: ref.code,
+                output: ref.output,
+                error: ref.error,
+            })).join('\n');
+        }
+        this._renderPrompt(text, refs);
+        this._textEl = null;
+        this._thinkingEl = null;
+        const messageId = ((_b = (_a = globalThis.crypto) === null || _a === void 0 ? void 0 : _a.randomUUID) === null || _b === void 0 ? void 0 : _b.call(_a))
+            || `steer-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        try {
+            const url = new URL(target.url);
+            if (url.protocol !== 'http:'
+                || url.hostname !== '127.0.0.1'
+                || url.port !== '9000') {
+                throw new Error('invalid steering endpoint');
+            }
+            const response = await fetch(url.toString(), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    message_id: messageId,
+                    message,
+                    control_token: target.control_token,
+                }),
+            });
+            if (!response.ok) {
+                const detail = await response.text();
+                throw new Error(`${response.status}: ${detail}`);
+            }
+            const receipt = await response.json();
+            this._infoEl.innerHTML =
+                `<span style="color:rgb(0,180,180)">direction queued #${Number(receipt.seq || 0)}</span>`;
+        }
+        catch (error) {
+            this._appendTextChunk(`\nDirection not delivered: ${String(error)}\n`);
+        }
     }
     // ---- block management ---------------------------------------------------
     _startBlock() {
@@ -970,7 +1275,9 @@ class AgentPanel extends widgets_1.Widget {
     }
     // ---- renderers ----------------------------------------------------------
     _ensureResponsePrefix() { R.ensureResponsePrefix(this); }
-    _renderPrompt(text) { R.renderPrompt(this, text); }
+    _renderPrompt(text, refs = []) {
+        R.renderPrompt(this, text, refs);
+    }
     _renderResponseText(content) { R.renderResponseText(this, content); }
     _appendTextChunk(content) { R.appendTextChunk(this, content); }
     _renderTool(name) { R.renderTool(this, name); }
@@ -978,368 +1285,12 @@ class AgentPanel extends widgets_1.Widget {
     _renderCodeBlock(l, c) { R.renderCodeBlock(this, l, c); }
     _renderPlanBlock(text) { R.renderPlanBlock(this, text); }
     _renderResult(summary) { R.renderResult(this, summary); }
-    _enterSkillsMode() {
-        this._skillsMode = true;
-        this._inputWrapper.style.display = 'none';
-        this._outputEl.querySelectorAll('.skillbot-skill-list').forEach(el => el.remove());
-    }
-    _exitSkillsMode() {
-        this._skillsMode = false;
-        this._inputWrapper.style.display = '';
-        this._skillRows = [];
-        this._skillSelectedIdx = 0;
-        this._expandedIdx = -1;
-        this._outputEl.querySelectorAll('.skillbot-skill-list').forEach(el => el.remove());
-        this._inputEl.focus();
-        // Reset textarea height (lost during display:none)
-        setTimeout(() => this._resizeInput(), 0);
-    }
-    _renderSkillList(skills) {
-        this._skillData = skills.map(s => ({ ...s, body: s.body || '' }));
-        this._skillRows = [];
-        this._skillSelectedIdx = 0;
-        this._expandedIdx = -1;
-        this._fullBodyIdx = -1;
-        this._installMode = false;
-        this._installError = '';
-        // Remove old list, rebuild
-        this._outputEl.querySelectorAll('.skillbot-skill-list').forEach(el => el.remove());
-        const wrapper = document.createElement('div');
-        wrapper.className = 'skillbot-skill-list';
-        wrapper.tabIndex = 0;
-        wrapper.style.outline = 'none';
-        wrapper.innerHTML = `<div style="font-size:13px;font-weight:600;color:${panelStyles_1.CC.text};margin-bottom:4px;padding:0 4px;">Skills</div>`;
-        const listEl = document.createElement('div');
-        listEl.className = 'skillbot-skill-items';
-        wrapper.appendChild(listEl);
-        const hint = document.createElement('div');
-        hint.className = 'skillbot-skill-hint';
-        hint.style.cssText = `font-size:10px;color:rgb(120,120,120);margin-top:4px;padding:0 4px;`;
-        hint.textContent = skills.length === 0
-            ? 'Press i to install from .zip  Esc close'
-            : '↑↓ select  Enter details  Space toggle  d uninstall  i install  Esc close';
-        wrapper.appendChild(hint);
-        wrapper.addEventListener('keydown', (e) => this._onSkillKeydown(e));
-        this._skillListWrapper = wrapper;
-        this._outputEl.appendChild(wrapper);
-        this._scrollBottom();
-        this._refreshSkillRows();
-        // Focus wrapper so keyboard nav works (input is hidden in skills mode)
-        setTimeout(() => wrapper.focus(), 50);
-        // Focus the list so keyboard nav works (input is hidden in skills mode)
-        setTimeout(() => wrapper.focus(), 50);
-    }
-    _onSkillKeydown(e) {
-        var _a;
-        // Install mode handled separately
-        if (this._installMode) {
-            if (e.key === 'Escape') {
-                e.preventDefault();
-                e.stopPropagation();
-                this._installMode = false;
-                this._refreshSkillRows();
-                setTimeout(() => { var _a; return (_a = this._skillListWrapper) === null || _a === void 0 ? void 0 : _a.focus(); }, 0);
-            }
-            return;
-        }
-        // Level 3: full body view — only Esc → back to info
-        if (this._fullBodyIdx !== -1) {
-            if (e.key === 'Escape') {
-                e.preventDefault();
-                e.stopPropagation();
-                this._fullBodyIdx = -1;
-                this._refreshSkillRows();
-                setTimeout(() => { var _a; return (_a = this._skillListWrapper) === null || _a === void 0 ? void 0 : _a.focus(); }, 0);
-            }
-            return;
-        }
-        // Level 2: info view — Enter → full body, Esc → list
-        if (this._expandedIdx !== -1) {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                e.stopPropagation();
-                this._fullBodyIdx = this._expandedIdx;
-                this._refreshSkillRows();
-                setTimeout(() => { var _a; return (_a = this._skillListWrapper) === null || _a === void 0 ? void 0 : _a.focus(); }, 0);
-                return;
-            }
-            if (e.key === 'Escape') {
-                e.preventDefault();
-                e.stopPropagation();
-                this._expandedIdx = -1;
-                this._fullBodyIdx = -1;
-                this._refreshSkillRows();
-                setTimeout(() => { var _a; return (_a = this._skillListWrapper) === null || _a === void 0 ? void 0 : _a.focus(); }, 0);
-            }
-            return;
-        }
-        const skills = this._skillData;
-        // Allow install + exit even when list is empty
-        if (!skills.length) {
-            if (e.key === 'i') {
-                e.preventDefault();
-                e.stopPropagation();
-                this._installMode = true;
-                this._installError = '';
-                this._refreshSkillRows();
-            }
-            else if (e.key === 'Escape') {
-                e.preventDefault();
-                e.stopPropagation();
-                this._exitSkillsMode();
-            }
-            return;
-        }
-        switch (e.key) {
-            case 'i':
-                // Install — show inline path input
-                e.preventDefault();
-                e.stopPropagation();
-                this._installMode = true;
-                this._installError = '';
-                this._refreshSkillRows();
-                // Focus the input after render
-                setTimeout(() => {
-                    var _a;
-                    const inp = (_a = this._skillListWrapper) === null || _a === void 0 ? void 0 : _a.querySelector('.skillbot-install-input');
-                    inp === null || inp === void 0 ? void 0 : inp.focus();
-                }, 50);
-                break;
-            case 'd':
-                // Uninstall — requires double-tap for safety
-                e.preventDefault();
-                e.stopPropagation();
-                const toRemove = skills[this._skillSelectedIdx];
-                if (!toRemove)
-                    break;
-                // Show confirmation hint
-                const hintEl = (_a = this._skillListWrapper) === null || _a === void 0 ? void 0 : _a.querySelector('.skillbot-skill-hint');
-                if (hintEl) {
-                    hintEl.textContent = `Press d again to confirm uninstall of "${toRemove.name}" (any other key to cancel)`;
-                    hintEl.style.color = 'rgb(220,120,100)';
-                }
-                // Wait for second keypress (auto-cancel after 3s)
-                let cancelled = false;
-                const cancelTimer = setTimeout(() => {
-                    var _a;
-                    cancelled = true;
-                    (_a = this._skillListWrapper) === null || _a === void 0 ? void 0 : _a.removeEventListener('keydown', onConfirm);
-                    if (hintEl) {
-                        hintEl.style.color = '';
-                    }
-                    this._refreshSkillRows();
-                }, 3000);
-                const onConfirm = (e2) => {
-                    var _a;
-                    if (cancelled)
-                        return;
-                    clearTimeout(cancelTimer);
-                    (_a = this._skillListWrapper) === null || _a === void 0 ? void 0 : _a.removeEventListener('keydown', onConfirm);
-                    if (hintEl) {
-                        hintEl.style.color = '';
-                    }
-                    if (e2.key === 'd') {
-                        if (this._kernel) {
-                            this._kernel.requestExecute({
-                                code: `get_ipython().user_ns['_panel_input'](${JSON.stringify('/skills uninstall ' + toRemove.name)})`,
-                                store_history: false,
-                            });
-                        }
-                        this._skillData.splice(this._skillSelectedIdx, 1);
-                        this._skillSelectedIdx = Math.min(this._skillSelectedIdx, this._skillData.length - 1);
-                        this._refreshSkillRows();
-                    }
-                    else {
-                        this._refreshSkillRows(); // reset hint
-                    }
-                };
-                setTimeout(() => {
-                    var _a;
-                    (_a = this._skillListWrapper) === null || _a === void 0 ? void 0 : _a.addEventListener('keydown', onConfirm, { once: false });
-                }, 0);
-                break;
-            case 'Tab':
-            case 'ArrowDown':
-                e.preventDefault();
-                e.stopPropagation();
-                this._skillSelectedIdx = Math.min(skills.length - 1, this._skillSelectedIdx + 1);
-                this._refreshSkillRows();
-                break;
-            case 'ArrowUp':
-                e.preventDefault();
-                e.stopPropagation();
-                this._skillSelectedIdx = Math.max(0, this._skillSelectedIdx - 1);
-                this._refreshSkillRows();
-                break;
-            case 'Enter':
-                e.preventDefault();
-                e.stopPropagation();
-                this._expandedIdx = this._skillSelectedIdx;
-                this._refreshSkillRows();
-                break;
-            case ' ':
-                e.preventDefault();
-                e.stopPropagation();
-                const s = skills[this._skillSelectedIdx];
-                if (s && this._kernel) {
-                    s.enabled = !s.enabled;
-                    this._refreshSkillRows();
-                    this._kernel.requestExecute({
-                        code: `get_ipython().user_ns['_panel_input'](${JSON.stringify('/skills toggle ' + s.name)})`,
-                        store_history: false,
-                    });
-                }
-                break;
-            case 'Escape':
-                e.preventDefault();
-                e.stopPropagation();
-                this._exitSkillsMode();
-                break;
-        }
-    }
-    _refreshSkillRows() {
-        var _a, _b;
-        const listEl = (_a = this._skillListWrapper) === null || _a === void 0 ? void 0 : _a.querySelector('.skillbot-skill-items');
-        if (!listEl)
-            return;
-        listEl.innerHTML = '';
-        this._skillRows = [];
-        // Empty state in list area
-        if (!this._installMode && this._skillData.length === 0) {
-            const empty = document.createElement('div');
-            empty.style.cssText = `padding:12px 4px;font-size:12px;color:rgb(120,120,120);text-align:center;`;
-            empty.textContent = 'No skills installed';
-            listEl.appendChild(empty);
-        }
-        // Install mode: show input row
-        if (this._installMode) {
-            const row = document.createElement('div');
-            row.style.cssText = `padding:4px;display:flex;gap:6px;align-items:center;`;
-            const input = document.createElement('input');
-            input.className = 'skillbot-install-input';
-            input.type = 'text';
-            input.placeholder = 'path/to/skill.zip';
-            input.style.cssText = `flex:1;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:${panelStyles_1.CC.text};padding:4px 8px;border-radius:3px;font-size:12px;outline:none;`;
-            input.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter') {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    const path = input.value.trim();
-                    if (path && this._kernel) {
-                        this._kernel.requestExecute({
-                            code: `get_ipython().user_ns['_panel_input'](${JSON.stringify('/skills install ' + path)})`,
-                            store_history: false,
-                        });
-                    }
-                    // Close input, wait for skill_list refresh
-                    this._installMode = false;
-                    this._refreshSkillRows();
-                    setTimeout(() => { var _a; return (_a = this._skillListWrapper) === null || _a === void 0 ? void 0 : _a.focus(); }, 0);
-                }
-                if (e.key === 'Escape') {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    this._installMode = false;
-                    this._refreshSkillRows();
-                    setTimeout(() => { var _a; return (_a = this._skillListWrapper) === null || _a === void 0 ? void 0 : _a.focus(); }, 0);
-                }
-            });
-            row.appendChild(input);
-            const label = document.createElement('span');
-            label.style.cssText = `font-size:10px;color:rgb(140,140,140);white-space:nowrap;`;
-            label.textContent = 'Enter to install';
-            row.appendChild(label);
-            listEl.appendChild(row);
-            // Show last error
-            if (this._installError) {
-                const errRow = document.createElement('div');
-                errRow.style.cssText = `padding:4px;font-size:11px;color:rgb(220,120,100);`;
-                errRow.textContent = this._installError;
-                listEl.appendChild(errRow);
-            }
-        }
-        this._skillData.forEach((s, i) => {
-            const selected = i === this._skillSelectedIdx;
-            const expanded = i === this._expandedIdx;
-            const row = document.createElement('div');
-            row.style.cssText = `padding:2px 4px;border-radius:3px;background:${selected ? 'rgba(255,255,255,0.08)' : ''};`;
-            const header = document.createElement('div');
-            header.style.cssText = `display:flex;align-items:center;gap:8px;cursor:pointer;`;
-            const dot = s.enabled
-                ? `<span style="color:rgb(100,200,100);font-size:14px;">●</span>`
-                : `<span style="color:rgb(200,100,100);font-size:14px;">●</span>`;
-            const status = s.enabled ? 'enabled' : 'disabled';
-            const statusColor = s.enabled ? 'rgb(100,200,100)' : 'rgb(200,100,100)';
-            header.innerHTML = `${dot} <span style="color:${panelStyles_1.CC.text};font-size:12px;">${this._esc(s.name)}</span> <span style="color:${statusColor};font-size:10px;margin-left:auto;">${status}</span>`;
-            row.appendChild(header);
-            if (expanded) {
-                const showFull = this._fullBodyIdx === i;
-                const detail = document.createElement('div');
-                detail.style.cssText = `margin:6px 0 4px 22px;font-size:11px;color:rgb(180,180,180);line-height:1.5;`;
-                if (showFull) {
-                    // Level 3: full SKILL.md body
-                    detail.innerHTML = `<div style="color:${panelStyles_1.CC.text};background:rgba(255,255,255,0.04);padding:8px;border-radius:3px;max-height:350px;overflow-y:auto;white-space:pre-wrap;font-size:11px;line-height:1.4;">${this._esc(s.body || '')}</div>`;
-                }
-                else {
-                    // Level 2: info view (description + truncated body)
-                    detail.innerHTML = `<div style="margin-bottom:4px;">${this._esc(s.description)}</div>`;
-                    if (s.body) {
-                        const bodyText = s.body.slice(0, 1000);
-                        detail.innerHTML += `<div style="color:${panelStyles_1.CC.text};background:rgba(255,255,255,0.03);padding:6px;border-radius:3px;max-height:150px;overflow-y:auto;white-space:pre-wrap;font-size:11px;">${this._esc(bodyText)}${s.body.length > 1000 ? '...' : ''}</div>`;
-                    }
-                }
-                row.appendChild(detail);
-            }
-            listEl.appendChild(row);
-            this._skillRows.push(row);
-        });
-        const hintEl = (_b = this._skillListWrapper) === null || _b === void 0 ? void 0 : _b.querySelector('.skillbot-skill-hint');
-        if (hintEl) {
-            if (this._installMode) {
-                hintEl.textContent = 'Enter install path to skill.zip  Esc cancel';
-            }
-            else if (this._skillData.length === 0) {
-                hintEl.textContent = 'Press i to install from .zip  Esc close';
-            }
-            else if (this._fullBodyIdx !== -1) {
-                hintEl.textContent = 'Esc back to info';
-            }
-            else if (this._expandedIdx !== -1) {
-                hintEl.textContent = 'Enter full body  Esc back to list';
-            }
-            else {
-                hintEl.textContent = '↑↓ select  Enter details  Space toggle  d uninstall  i install  Esc close';
-            }
-        }
-    }
-    _renderSkillInfo(skill) {
-        const wrapper = document.createElement('div');
-        wrapper.className = 'skillbot-skill-info';
-        const dot = skill.enabled
-            ? `<span style="color:rgb(100,200,100);font-size:16px;">●</span>`
-            : `<span style="color:rgb(200,100,100);font-size:16px;">●</span>`;
-        const header = document.createElement('div');
-        header.style.cssText = `font-size:14px;font-weight:600;color:${panelStyles_1.CC.text};margin-bottom:4px;`;
-        header.innerHTML = `${dot} ${this._esc(skill.name)}`;
-        const meta = document.createElement('div');
-        meta.style.cssText = `font-size:12px;color:rgb(180,180,180);margin-bottom:8px;line-height:1.5;`;
-        meta.innerHTML = `
-      ${this._esc(skill.description)}<br>
-      <span style="color:rgb(140,140,140);">Status:</span> ${skill.enabled ? 'enabled' : 'disabled'}<br>
-      <span style="color:rgb(140,140,140);">Path:</span> ${this._esc(skill.path)}
-    `;
-        const bodyText = (skill.body || '').slice(0, 1500);
-        const bodyWrap = document.createElement('div');
-        bodyWrap.style.cssText = `font-size:12px;color:${panelStyles_1.CC.text};background:rgba(255,255,255,0.04);padding:8px;border-radius:4px;max-height:200px;overflow-y:auto;white-space:pre-wrap;line-height:1.4;`;
-        bodyWrap.textContent = bodyText;
-        if ((skill.body || '').length > 1500) {
-            bodyWrap.textContent += '\n\n... (truncated)';
-        }
-        wrapper.appendChild(header);
-        wrapper.appendChild(meta);
-        wrapper.appendChild(bodyWrap);
-        this._appendToBlock(wrapper);
-    }
+    _enterSkillsMode() { SK.enterSkillsMode(this); }
+    _exitSkillsMode() { SK.exitSkillsMode(this); }
+    _renderSkillList(skills) { SK.renderSkillList(this, skills); }
+    _onSkillKeydown(e) { SK.onSkillKeydown(this, e); }
+    _refreshSkillRows() { SK.refreshSkillRows(this); }
+    _renderSkillInfo(skill) { SK.renderSkillInfo(this, skill); }
     // ---- thinking collapse (Ctrl+T) ----
     _toggleThinkingCollapse() {
         this._thinkingCollapsed = !this._thinkingCollapsed;
@@ -1359,9 +1310,9 @@ class AgentPanel extends widgets_1.Widget {
             if (this._thinkingCollapsed) {
                 const currentFull = el.getAttribute('data-full') || el.textContent || '';
                 el.setAttribute('data-full', currentFull);
-                const truncated = currentFull.length > 150 ? currentFull.slice(0, 150) + '...' : currentFull;
-                if (el.textContent !== truncated)
-                    el.textContent = truncated;
+                const collapsed = '∴ Thinking…';
+                if (el.textContent !== collapsed)
+                    el.textContent = collapsed;
                 el.style.cursor = 'pointer';
                 el.title = 'ctrl+t to expand';
             }
@@ -1383,8 +1334,9 @@ class AgentPanel extends widgets_1.Widget {
         this._thinkingEl = null;
         this._thinkingCollapsed = true;
         this._streaming = false;
-        this._busy = false;
         this._promptQueue = [];
+        this._cellReferences = [];
+        this._renderCellReferences();
         if (this._configPending) {
             this._configPending = false;
             this._infoEl.innerHTML = '';
@@ -1418,46 +1370,63 @@ class AgentPanel extends widgets_1.Widget {
         const savedMode = this._mode;
         this._mode = next.mode;
         this._inputEl.value = next.text;
-        this._busy = false;
+        this._cellReferences = next.cellReferences;
+        this._renderCellReferences();
         this._sendPrompt();
         this._mode = savedMode;
     }
     // ---- persistence (localStorage) ----
-    _saveState() {
+    // ---- session persistence + switcher (see panelSessions.ts) --------------
+    _storageKey(path) { return SS.storageKey(this, path); }
+    _saveState() { SS.saveState(this); }
+    _restoreState() { SS.restoreState(this); }
+    _loadBuffer(path) { SS.loadBuffer(this, path); }
+    _applyBuffer(raw) { SS.applyBuffer(this, raw); }
+    _loadRegistry() { return SS.loadRegistry(this); }
+    _saveRegistry(reg) { SS.saveRegistry(this, reg); }
+    _registerSession(path) { SS.registerSession(this, path); }
+    _renderSessionBar() { SS.renderSessionBar(this); }
+    /** Bind the JupyterLab app so the switcher can open / create notebooks. */
+    setApp(app) { this._app = app; }
+    /**
+     * Mark a notebook path as the active conversation. Registers it in the
+     * switcher and, if it differs from the currently shown one, saves the old
+     * buffer and loads the target buffer. Returns true if the path changed.
+     */
+    setActivePath(path, kernel = this._kernel) {
+        this._registerSession(path);
+        if (path === this._currentPath) {
+            if (!kernel && this._kernel)
+                this.resetComm();
+            if (kernel)
+                this.connectKernel(kernel);
+            return false;
+        }
+        if (this._currentPath)
+            this._saveState(); // persist buffer we're leaving
+        this._currentPath = path;
+        if (!kernel && this._kernel)
+            this.resetComm();
+        if (kernel)
+            this.connectKernel(kernel);
+        this._loadBuffer(path);
+        this._renderSessionBar();
+        return true;
+    }
+    /** Tell the backend the active notebook changed so it resets agent memory. */
+    notifyNotebookSwitch(path) {
+        if (!this._kernel)
+            return;
         try {
-            localStorage.setItem(AgentPanel.STORAGE_KEY, JSON.stringify({
-                output: this._outputEl.innerHTML,
-                history: this._history,
-                mode: this._mode,
-                status: this._statusEl.innerHTML,
-            }));
+            this._kernel.requestExecute({
+                code: `get_ipython().user_ns['_panel_switch_notebook'](${JSON.stringify(path)})`,
+                store_history: false,
+            });
         }
         catch (_) { }
     }
-    _restoreState() {
-        try {
-            const raw = localStorage.getItem(AgentPanel.STORAGE_KEY);
-            if (!raw)
-                return;
-            const s = JSON.parse(raw);
-            if (s.output) {
-                // persisted HTML is self-generated, but strip scripts/handlers anyway
-                const clean = s.output.replace(/<script[\s\S]*?<\/script>/gi, '')
-                    .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '');
-                this._outputEl.innerHTML = clean;
-                this._scrollBottom();
-            }
-            if (s.history)
-                this._history = s.history;
-            if (s.mode) {
-                this._mode = s.mode;
-                this._updateModeInfo();
-            }
-            if (s.status)
-                this._statusEl.innerHTML = s.status;
-        }
-        catch (_) { }
-    }
+    /** Public: called by the plugin when a notebook file is deleted from disk. */
+    onNotebookFileDeleted(path) { SS.onNotebookFileDeleted(this, path); }
     // ---- spinner -------------------------------------------------------------
     _startSpinner() {
         if (this._spinnerEl)
@@ -1517,6 +1486,143 @@ class AgentPanel extends widgets_1.Widget {
         else {
             this._statusEl.innerHTML = `<span>${icon} ${label}${q}</span><span>skillbot</span>`;
         }
+        this._updateTopDot(icon);
+        this._syncActionBar();
+    }
+    /** Map the current status icon to the top-bar dot state modifier. */
+    _updateTopDot(icon) {
+        if (!this._topDotEl)
+            return;
+        const state = icon === '…' ? 'thinking' :
+            icon === '✓' ? 'done' :
+                icon === '⏏' ? 'interrupted' :
+                    icon === '⏸' ? 'plan' :
+                        'idle';
+        this._topDotEl.className = `skillbot-status-dot skillbot-status-dot--${state}`;
+    }
+    // ---- agent action bar ---------------------------------------------------
+    /** Run a slash command from a button without disturbing the user's draft/history. */
+    _dispatchCommand(cmd) {
+        const draft = this._inputEl.value;
+        const references = this._cellReferences.map(ref => ({ ...ref }));
+        const histLen = this._history.length;
+        this._inputEl.value = cmd;
+        this._sendPrompt();
+        // _sendPrompt pushes to history — button-issued commands shouldn't pollute it.
+        if (this._history.length > histLen && this._history[this._history.length - 1] === cmd) {
+            this._history.pop();
+            this._historyIdx = -1;
+        }
+        // Restore whatever the user was typing (input is hidden in skills mode).
+        if (cmd !== '/clear') {
+            if (draft)
+                this._inputEl.value = draft;
+            this._cellReferences = references;
+            this._renderCellReferences();
+            if (!this._skillsMode)
+                this._resizeInput();
+        }
+    }
+    /** Interrupt the running kernel immediately (same as Ctrl+C twice). */
+    _interruptAgent() {
+        var _a;
+        (_a = this._kernel) === null || _a === void 0 ? void 0 : _a.interrupt();
+        this._setStatus('⏏', 'interrupted');
+        this._stopSpinner();
+        this._workflowState = 'INTERRUPTING';
+        this._promptQueue = [];
+        this._updateStatusDisplay();
+    }
+    /** Plan button: toggle between plan and default (same sync path as Shift+Tab). */
+    _togglePlanMode() {
+        this._mode = this._mode === 'plan' ? 'default' : 'plan';
+        this._updateModeInfo();
+        this._renderActionBar();
+        this._saveState();
+        if (this._kernel) {
+            this._kernel.requestExecute({
+                code: `get_ipython().user_ns['_panel_set_mode']("${this._mode}")`,
+                store_history: false,
+            });
+        }
+    }
+    /** Render the visible agent controls; enable/disable by busy state. */
+    _renderActionBar() {
+        if (!this._actionBarEl)
+            return;
+        this._actionBarEl.innerHTML = '';
+        const mk = (label, title, cls, on) => {
+            const b = document.createElement('span');
+            b.className = 'skillbot-action-btn' + (cls ? ' ' + cls : '');
+            b.textContent = label;
+            b.title = title;
+            b.addEventListener('click', (e) => { e.preventDefault(); on(); });
+            return b;
+        };
+        // Stop is prominent while busy, muted otherwise.
+        const stop = mk('■ Stop', '停止当前任务 (/stop)', 'skillbot-action-stop', () => {
+            this._dispatchCommand('/stop');
+        });
+        if (!this._canInterrupt)
+            stop.classList.add('disabled');
+        this._actionBarEl.appendChild(stop);
+        // Plan is a toggle: switch into plan mode, or back to default if active.
+        const plan = mk('⏸ Plan', 'Plan 模式开关 (Shift+Tab)', 'skillbot-action-plan', () => this._togglePlanMode());
+        if (this._mode === 'plan')
+            plan.classList.add('active');
+        this._actionBarEl.appendChild(plan);
+        this._actionBarEl.appendChild(mk('🗑 Clear', '清空当前会话对话', '', () => this._dispatchCommand('/clear')));
+        this._actionBarEl.appendChild(mk('@', '引用 Notebook 单元格', 'skillbot-action-reference', () => {
+            this._openCellPicker();
+        }));
+        // Skills is a toggle: open the manager, or close it if already open.
+        const skills = mk('≣ Skills', '管理技能 (/skills)', 'skillbot-action-skills', () => {
+            if (this._skillsMode)
+                this._exitSkillsMode();
+            else
+                this._dispatchCommand('/skills');
+        });
+        if (this._skillsMode)
+            skills.classList.add('active');
+        this._actionBarEl.appendChild(skills);
+    }
+    /** Keep the Stop button's enabled/prominent state in sync with busy. */
+    _syncActionBar() {
+        var _a;
+        const stop = (_a = this._actionBarEl) === null || _a === void 0 ? void 0 : _a.querySelector('.skillbot-action-stop');
+        if (!stop)
+            return;
+        if (this._canInterrupt)
+            stop.classList.remove('disabled');
+        else
+            stop.classList.add('disabled');
+    }
+    _applyWorkflowState(data) {
+        const revision = Number(data.revision || 0);
+        if (revision && revision <= this._workflowRevision)
+            return;
+        this._workflowRevision = revision;
+        this._workflowState = String(data.state || 'IDLE');
+        const display = {
+            IDLE: ['✓', 'ready'],
+            AGENT_STREAMING: ['…', 'thinking'],
+            PLAN_REVIEW: ['⏸', 'plan'],
+            WAITING_CONFIRM: ['⏸', 'confirm'],
+            CELL_DISPATCHING: ['…', 'preparing cells'],
+            CELL_EXECUTING: ['…', 'running cells'],
+            AUTO_FIXING: ['…', 'fixing'],
+            INTERRUPTING: ['⏏', 'interrupting'],
+        };
+        const [icon, label] = display[this._workflowState] || ['…', 'working'];
+        this._setStatus(icon, label);
+        if (this._workflowState === 'IDLE') {
+            this._stopSpinner();
+            this._dequeueNext();
+        }
+        else if (this._workflowState === 'PLAN_REVIEW'
+            || this._workflowState === 'WAITING_CONFIRM') {
+            this._stopSpinner();
+        }
     }
     // ---- plan confirmation (delegates to panelPlanConfirm) ------------------
     _renderPlanConfirm(s) { PC.renderPlanConfirm(this, s); }
@@ -1575,6 +1681,38 @@ class AgentPanel extends widgets_1.Widget {
     _stripAnsi(s) {
         return s.replace(/\x1b\[[0-9;]*m/g, '');
     }
+    _renderMarkdown(host, source) {
+        host.dataset.markdown = source;
+        if (this._markdownRendering.has(host))
+            return;
+        this._markdownRendering.add(host);
+        const renderLatest = async () => {
+            const current = host.dataset.markdown || '';
+            try {
+                await (0, rendermime_1.renderMarkdown)({
+                    host,
+                    source: current,
+                    trusted: false,
+                    sanitizer: this._rendermime.sanitizer,
+                    resolver: this._rendermime.resolver,
+                    linkHandler: this._rendermime.linkHandler,
+                    shouldTypeset: true,
+                    latexTypesetter: this._rendermime.latexTypesetter,
+                    markdownParser: this._rendermime.markdownParser,
+                });
+            }
+            catch (_) {
+                host.textContent = current;
+            }
+            if (host.dataset.markdown !== current && host.isConnected) {
+                await renderLatest();
+            }
+            else {
+                this._markdownRendering.delete(host);
+            }
+        };
+        void renderLatest();
+    }
     _ansiToHtml(s) {
         // escape raw text first so ANSI conversion can't inject markup
         s = this._esc(s);
@@ -1592,62 +1730,6 @@ class AgentPanel extends widgets_1.Widget {
     setTracker(tracker) {
         this._tracker = tracker;
     }
-    _handleCellComm(comm, msg) {
-        try {
-            this._handleCellCommImpl(comm, msg);
-        }
-        catch (e) {
-            console.error('[panel] _handleCellComm failed:', e);
-        }
-    }
-    _handleCellCommImpl(comm, msg) {
-        var _a, _b;
-        const data = ((_a = msg.content) === null || _a === void 0 ? void 0 : _a.data) || {};
-        const nb = (_b = this._tracker) === null || _b === void 0 ? void 0 : _b.currentWidget;
-        // Always reply so the kernel can close the comm; otherwise it leaks and
-        // the on_cell_id callback (batch-completion tracking) never fires
-        if (!nb || !nb.model) {
-            comm.send({ cell_id: '' });
-            return;
-        }
-        const model = nb.model;
-        const code = data.code || '';
-        const auto = data.auto !== false;
-        const cellType = data.cell_type || 'code';
-        const replaceId = data.replace_cell_id || '';
-        if (!code) {
-            comm.send({ cell_id: '' });
-            return;
-        }
-        const notebook = nb.content;
-        if (replaceId) {
-            const cells = model.sharedModel.cells;
-            for (let i = cells.length - 1; i >= 0; i--) {
-                if (cells[i].id === replaceId) {
-                    cells[i].source = code;
-                    notebook.activeCellIndex = i;
-                    comm.send({ cell_id: cells[i].id });
-                    if (cellType !== 'markdown' && auto) {
-                        notebook_1.NotebookActions.run(notebook, nb.context.sessionContext);
-                    }
-                    return;
-                }
-            }
-        }
-        // Insert new cell + execute
-        const activeIndex = notebook.activeCellIndex;
-        model.sharedModel.insertCell(activeIndex + 1, {
-            cell_type: cellType,
-            source: code,
-            metadata: {},
-        });
-        const newCell = model.sharedModel.cells[activeIndex + 1];
-        notebook.activeCellIndex = activeIndex + 1;
-        comm.send({ cell_id: newCell.id });
-        if (cellType === 'markdown' || !auto)
-            return;
-        notebook_1.NotebookActions.run(notebook, nb.context.sessionContext);
-    }
     // ---- kernel / comm -------------------------------------------------------
     resetComm() {
         if (this._comm) {
@@ -1658,10 +1740,16 @@ class AgentPanel extends widgets_1.Widget {
             this._comm = null;
         }
         this._kernel = null;
+        this._workflowState = 'IDLE';
+        this._workflowRevision = 0;
+        this._steerTarget = null;
         this._stopStatusTimer();
     }
     connectKernel(kernel) {
         var _a, _b;
+        if (this._kernel && this._kernel !== kernel) {
+            this.resetComm();
+        }
         this._kernel = kernel;
         // Notify kernel of active notebook path for snapshot file isolation.
         // Must happen BEFORE `if (this._comm) return` so it fires on every
@@ -1674,21 +1762,12 @@ class AgentPanel extends widgets_1.Widget {
                 store_history: false,
             });
         }
-        // Re-register cell-execution target (needed on kernel restart)
-        try {
-            kernel.registerCommTarget('skillbot:execute-cell', (comm, msg) => {
-                this._handleCellComm(comm, msg);
-            });
-        }
-        catch (e) {
-            console.error('[panel] registerCommTarget failed:', e);
-        }
         if (this._comm)
             return;
         try {
             this._comm = kernel.createComm(TARGET);
             this._comm.onMsg = (m) => {
-                var _a;
+                var _a, _b;
                 const d = ((_a = m.content) === null || _a === void 0 ? void 0 : _a.data) || {};
                 switch (d.action) {
                     case 'text':
@@ -1698,8 +1777,13 @@ class AgentPanel extends widgets_1.Widget {
                                 this._installError = txt.trim();
                         }
                         else {
-                            const txt = this._ansiToHtml(d.content || '');
-                            this._appendTextChunk(txt);
+                            const txt = this._stripAnsi(d.content || '');
+                            if (this._responseStarted) {
+                                this._appendTextChunk(txt);
+                            }
+                            else {
+                                this._renderResponseText(txt);
+                            }
                             // Backend sent config confirmation → enable y/n
                             if (txt.includes('Press y to apply')) {
                                 this._configPending = true;
@@ -1746,46 +1830,83 @@ class AgentPanel extends widgets_1.Widget {
                         const info = d.skill || {};
                         if (!info.name)
                             break;
-                        if (!this._skillsMode)
-                            this._enterSkillsMode();
-                        if (!this._skillListWrapper)
-                            this._renderSkillList(this._skillData);
-                        const idx = this._skillData.findIndex((s) => s.name === info.name);
-                        if (idx === -1) {
-                            this._skillData.push({ name: info.name, description: info.description || '', enabled: !!info.enabled, body: info.body || '' });
-                            this._expandedIdx = this._skillData.length - 1;
-                        }
-                        else {
-                            this._skillData[idx] = Object.assign({}, this._skillData[idx], { description: info.description || '', enabled: !!info.enabled, body: info.body || '' });
-                            this._expandedIdx = idx;
-                        }
-                        this._refreshSkillRows();
+                        this._renderSkillInfo(info);
                         break;
                     }
                     case 'continue_confirm':
                         this._stopSpinner();
-                        this._busy = false;
-                        this._dequeueNext();
                         this._renderContinueButtons(d.summary || '');
                         break;
                     case 'ready':
+                        // Compatibility fallback for older kernels without workflow_state.
                         this._stopSpinner();
-                        this._busy = false;
-                        this._dequeueNext();
+                        if (this._workflowRevision === 0) {
+                            this._workflowState = 'IDLE';
+                            this._dequeueNext();
+                        }
+                        break;
+                    case 'workflow_state':
+                        this._applyWorkflowState(d);
+                        break;
+                    case 'steer_target':
+                        this._steerTarget = {
+                            url: String(d.url || ''),
+                            run_id: String(d.run_id || ''),
+                            control_token: String(d.control_token || ''),
+                        };
+                        break;
+                    case 'steer_receipt':
+                        this._infoEl.innerHTML =
+                            `<span style="color:rgb(74,222,128)">direction applied #${Number(d.seq || 0)}</span>`;
+                        break;
+                    case 'steer_closed':
+                        if (!d.run_id || ((_b = this._steerTarget) === null || _b === void 0 ? void 0 : _b.run_id) === String(d.run_id)) {
+                            this._steerTarget = null;
+                        }
                         break;
                     case 'clear':
                         this._clear();
                         break;
+                    case 'restore_conversation':
+                        // Disk copy arrived for a path with no localStorage cache.
+                        if ((d.path || '') === this._currentPath && d.buffer) {
+                            this._applyBuffer(d.buffer);
+                            try {
+                                localStorage.setItem(this._storageKey(this._currentPath), d.buffer);
+                            }
+                            catch (_) { }
+                        }
+                        break;
+                    case 'conversation_list':
+                        // Merge disk-persisted sessions into the switcher registry.
+                        if (Array.isArray(d.sessions)) {
+                            const reg = this._loadRegistry();
+                            for (const s of d.sessions) {
+                                if (s.path && !(s.path in reg)) {
+                                    reg[s.path] = s.path.split('/').pop() || s.path;
+                                }
+                            }
+                            this._saveRegistry(reg);
+                            this._renderSessionBar();
+                        }
+                        break;
                 }
             };
             this._comm.open();
+            // Pull disk-persisted sessions into the switcher (covers fresh browsers).
+            try {
+                this._kernel.requestExecute({
+                    code: `get_ipython().user_ns['_panel_list_conversations']()`,
+                    store_history: false,
+                });
+            }
+            catch (_) { }
         }
         catch (e) {
             console.error('[panel] createComm failed:', e);
         }
     }
 }
-AgentPanel.STORAGE_KEY = 'skillbot-panel';
 // ---- mode cycling (cc-haha: Shift+Tab) ----
 AgentPanel.MODE_ORDER = ['default', 'plan', 'auto'];
 AgentPanel.MODE_COLOR = {
@@ -1821,7 +1942,7 @@ function _jpBtn(text, kind) {
 }
 function _showSnapshotDialog(snapshots, panel, nb, cellRestored, nbPath) {
     const container = document.createElement('div');
-    container.style.cssText = 'min-width:520px;max-height:550px;overflow-y:auto;font-size:13px;color:#ddd;background:#1a1a2e;padding:12px;';
+    container.style.cssText = `min-width:520px;max-height:550px;overflow-y:auto;font-size:13px;color:${panelStyles_1.CC.text};background:${panelStyles_1.CC.bg};padding:12px;border-radius:10px;`;
     const title = document.createElement('div');
     title.style.cssText = 'font-weight:600;margin-bottom:10px;font-size:14px;';
     const label = nbPath || '(unsaved notebook)';
@@ -1829,19 +1950,19 @@ function _showSnapshotDialog(snapshots, panel, nb, cellRestored, nbPath) {
     container.appendChild(title);
     if (cellRestored) {
         const warning = document.createElement('div');
-        warning.style.cssText = 'padding:6px 8px;margin-bottom:10px;background:rgba(220,120,100,0.15);border-left:2px solid rgb(220,120,100);font-size:12px;color:rgb(220,160,140);';
+        warning.style.cssText = `padding:6px 8px;margin-bottom:10px;background:rgba(255,107,128,0.12);border-left:2px solid ${panelStyles_1.CC.error};border-radius:0 6px 6px 0;font-size:12px;color:rgb(255,160,175);`;
         warning.textContent = '⚠ Cells have been individually restored in this session. Notebook restore will overwrite those changes.';
         container.appendChild(warning);
     }
     let selectedId = '';
     const previewPanel = document.createElement('div');
-    previewPanel.style.cssText = 'background:#111;padding:10px;border-radius:4px;margin-top:10px;max-height:280px;overflow-y:auto;white-space:pre-wrap;font-family:monospace;font-size:12px;color:#ccc;line-height:1.5;';
+    previewPanel.style.cssText = `background:${panelStyles_1.CC.raised};padding:10px;border-radius:8px;margin-top:10px;max-height:280px;overflow-y:auto;white-space:pre-wrap;font-family:monospace;font-size:12px;color:${panelStyles_1.CC.inactive};line-height:1.5;`;
     previewPanel.textContent = 'Select a snapshot to preview';
     container.appendChild(previewPanel);
     const updateSelection = (s, row) => {
         selectedId = s.id;
         container.querySelectorAll('.snapshot-row').forEach((el) => el.style.background = '');
-        row.style.background = 'rgba(255,255,255,0.1)';
+        row.style.background = 'rgba(0,200,200,0.14)';
         // Show preview
         const previews = s.preview || [];
         if (previews.length > 0) {
@@ -1854,9 +1975,9 @@ function _showSnapshotDialog(snapshots, panel, nb, cellRestored, nbPath) {
     snapshots.forEach((s, i) => {
         const row = document.createElement('div');
         row.className = 'snapshot-row';
-        row.style.cssText = `padding:5px 10px;cursor:pointer;border-radius:3px;display:flex;justify-content:space-between;${i === 0 ? 'background:rgba(255,255,255,0.08);' : ''}`;
+        row.style.cssText = `padding:6px 10px;cursor:pointer;border-radius:6px;display:flex;justify-content:space-between;${i === 0 ? 'background:rgba(0,200,200,0.14);' : ''}`;
         const ts = new Date((s.timestamp || 0) * 1000).toLocaleString();
-        row.innerHTML = `<span style="font-size:13px;"><b>${ts}</b></span><span style="color:#999;font-size:12px;">${s.cells_count} cells</span>`;
+        row.innerHTML = `<span style="font-size:13px;"><b>${ts}</b></span><span style="color:${panelStyles_1.CC.subtle};font-size:12px;">${s.cells_count} cells</span>`;
         row.addEventListener('click', () => updateSelection(s, row));
         container.appendChild(row);
         if (i === 0) {
@@ -1940,14 +2061,14 @@ function _showCellSnapshotsDialog(cell, versions, panel) {
         return;
     }
     const container = document.createElement('div');
-    container.style.cssText = 'min-width:520px;max-height:550px;overflow-y:auto;font-size:13px;color:#ddd;background:#1a1a2e;padding:12px;';
+    container.style.cssText = `min-width:520px;max-height:550px;overflow-y:auto;font-size:13px;color:${panelStyles_1.CC.text};background:${panelStyles_1.CC.bg};padding:12px;border-radius:10px;`;
     const title = document.createElement('div');
     title.style.cssText = 'font-weight:600;margin-bottom:10px;font-size:14px;';
     title.textContent = `Cell Snapshots (${versions.length})`;
     container.appendChild(title);
     let selectedIdx = 0;
     const preview = document.createElement('div');
-    preview.style.cssText = 'background:#111;padding:10px;border-radius:4px;margin-top:10px;max-height:300px;overflow-y:auto;white-space:pre-wrap;font-family:monospace;font-size:12px;color:#ccc;line-height:1.5;';
+    preview.style.cssText = `background:${panelStyles_1.CC.raised};padding:10px;border-radius:8px;margin-top:10px;max-height:300px;overflow-y:auto;white-space:pre-wrap;font-family:monospace;font-size:12px;color:${panelStyles_1.CC.inactive};line-height:1.5;`;
     container.appendChild(preview);
     const updatePreview = (idx) => {
         const v = versions[idx];
@@ -1958,14 +2079,14 @@ function _showCellSnapshotsDialog(cell, versions, panel) {
     updatePreview(0);
     versions.forEach((v, i) => {
         const row = document.createElement('div');
-        row.style.cssText = `padding:5px 10px;cursor:pointer;border-radius:3px;display:flex;justify-content:space-between;${i === 0 ? 'background:rgba(255,255,255,0.1);' : ''}`;
+        row.style.cssText = `padding:6px 10px;cursor:pointer;border-radius:6px;display:flex;justify-content:space-between;${i === 0 ? 'background:rgba(0,200,200,0.14);' : ''}`;
         const ts = new Date((v.timestamp || 0) * 1000).toLocaleString();
         const code = (v.code || '').replace(/\n/g, ' ').substring(0, 80);
-        row.innerHTML = `<span style="font-size:13px;"><b>${v.version}</b> ${ts}</span><span style="color:#999;font-size:12px;">${_stripHtml(code)}</span>`;
+        row.innerHTML = `<span style="font-size:13px;"><b>${v.version}</b> ${ts}</span><span style="color:${panelStyles_1.CC.subtle};font-size:12px;">${_stripHtml(code)}</span>`;
         row.addEventListener('click', () => {
             selectedIdx = i;
             container.querySelectorAll('div[style]').forEach((el) => el.style.background = '');
-            row.style.background = 'rgba(255,255,255,0.1)';
+            row.style.background = 'rgba(0,200,200,0.14)';
             updatePreview(i);
         });
         container.appendChild(row);
@@ -2016,16 +2137,32 @@ function _showCellSnapshotsDialog(cell, versions, panel) {
 exports.panelPlugin = {
     id: 'skillbot:tui',
     autoStart: true,
-    requires: [notebook_1.INotebookTracker],
-    activate: (_app, tracker) => {
-        const panel = new AgentPanel();
+    requires: [notebook_1.INotebookTracker, rendermime_1.IRenderMimeRegistry],
+    activate: (_app, tracker, rendermime) => {
+        var _a, _b;
+        const panel = new AgentPanel(rendermime);
         panel.setTracker(tracker);
+        panel.setApp(_app);
         _app.shell.add(panel, 'right', { rank: 100 });
         _panelInstance = panel;
         let _panelOpened = false;
         let _currentCtx = null;
         let _cellsChangedModel = null;
-        let _currentNbPath = '';
+        const onCellsChanged = (_sender, args) => {
+            var _a, _b, _c, _d, _e;
+            if (args.type !== 'remove' || !args.oldValues)
+                return;
+            const kernel = (_b = (_a = tracker.currentWidget) === null || _a === void 0 ? void 0 : _a.context.sessionContext.session) === null || _b === void 0 ? void 0 : _b.kernel;
+            for (const cell of args.oldValues) {
+                const src = ((_d = (_c = cell === null || cell === void 0 ? void 0 : cell.sharedModel) === null || _c === void 0 ? void 0 : _c.getSource) === null || _d === void 0 ? void 0 : _d.call(_c)) || ((_e = cell === null || cell === void 0 ? void 0 : cell.value) === null || _e === void 0 ? void 0 : _e.text) || '';
+                if (src.trim()) {
+                    kernel === null || kernel === void 0 ? void 0 : kernel.requestExecute({
+                        code: `get_ipython().user_ns['_panel_track_cell_delete'](${JSON.stringify(src)})`,
+                        store_history: false,
+                    });
+                }
+            }
+        };
         const onKernelChanged = (_sender, args) => {
             // Always reset the comm: a kernel change (restart, switch, or lazy start
             // where oldValue is null) must never leave _comm bound to an old kernel.
@@ -2037,20 +2174,16 @@ exports.panelPlugin = {
                 panel.connectKernel(args.newValue);
         };
         const register = () => {
-            var _a;
+            var _a, _b;
             const nb = tracker.currentWidget;
             if (!nb)
                 return;
-            const nbPath = nb.context.path || nb.context.localPath || '';
-            if (nbPath !== _currentNbPath) {
-                // Notebook switch — drop comms from the previous notebook's kernel
-                _currentNbPath = nbPath;
-                panel.resetComm();
-                panel._clear();
-            }
             const ctx = nb.context.sessionContext;
             if (!ctx)
                 return;
+            // Save the old buffer on its kernel; load the new buffer on the target kernel.
+            const kernel = ((_a = ctx.session) === null || _a === void 0 ? void 0 : _a.kernel) || null;
+            const pathChanged = panel.setActivePath(nb.context.path || '', kernel);
             // wire kernel restart handler when context changes
             if (ctx !== _currentCtx) {
                 if (_currentCtx)
@@ -2058,37 +2191,14 @@ exports.panelPlugin = {
                 _currentCtx = ctx;
                 ctx.kernelChanged.connect(onKernelChanged);
             }
-            const kernel = (_a = ctx.session) === null || _a === void 0 ? void 0 : _a.kernel;
-            if (kernel) {
-                // register cell-execution target directly (not through connectKernel)
-                try {
-                    kernel.registerCommTarget('skillbot:execute-cell', (comm, msg) => {
-                        panel._handleCellComm(comm, msg);
-                    });
-                }
-                catch (e) {
-                    console.error('[panel] registerCommTarget failed:', e);
-                }
-                panel.connectKernel(kernel);
-            }
+            if (kernel && pathChanged)
+                panel.notifyNotebookSwitch(nb.context.path || '');
             // Wire cell deletion tracking (disconnect old on notebook change)
-            const model = nb.model;
-            if (model && model.sharedModel !== _cellsChangedModel) {
-                _cellsChangedModel = model.sharedModel;
-                model.sharedModel.cellsChanged.connect((_sender, args) => {
-                    var _a;
-                    if (args.type === 'remove' && args.oldValues) {
-                        for (const cell of args.oldValues) {
-                            const src = cell.source || ((_a = cell.getSource) === null || _a === void 0 ? void 0 : _a.call(cell)) || '';
-                            if (src.trim()) {
-                                kernel === null || kernel === void 0 ? void 0 : kernel.requestExecute({
-                                    code: `get_ipython().user_ns['_panel_track_cell_delete'](${JSON.stringify(src)})`,
-                                    store_history: false,
-                                });
-                            }
-                        }
-                    }
-                });
+            const cells = (_b = nb.model) === null || _b === void 0 ? void 0 : _b.cells;
+            if (cells && cells !== _cellsChangedModel) {
+                _cellsChangedModel === null || _cellsChangedModel === void 0 ? void 0 : _cellsChangedModel.changed.disconnect(onCellsChanged);
+                _cellsChangedModel = cells;
+                cells.changed.connect(onCellsChanged);
             }
             // open panel once, after layout restore settles (avoid flash-close)
             if (!_panelOpened) {
@@ -2096,6 +2206,10 @@ exports.panelPlugin = {
                 setTimeout(() => _app.shell.activateById(panel.id), 300);
             }
         };
+        _app.commands.addCommand('skillbot:cell-reference', {
+            label: 'Reference in Agent Chat',
+            execute: () => panel.addActiveCellReference(),
+        });
         // Cell optimization — right-click → agent improve
         _app.commands.addCommand('skillbot:cell-optimize', {
             label: 'Optimize with Agent',
@@ -2135,9 +2249,9 @@ exports.panelPlugin = {
                 catch (_) { }
                 const input = document.createElement('textarea');
                 input.placeholder = 'e.g. optimize query, fix bug, improve readability...';
-                input.style.cssText = 'width:100%;min-height:60px;background:#111;color:#ddd;border:1px solid #444;padding:8px;font-size:12px;resize:vertical;font-family:inherit;';
+                input.style.cssText = `width:100%;min-height:60px;background:${panelStyles_1.CC.raised};color:${panelStyles_1.CC.text};border:1px solid ${panelStyles_1.CC.border};border-radius:8px;padding:8px;font-size:12px;resize:vertical;font-family:inherit;box-sizing:border-box;`;
                 const hint = document.createElement('div');
-                hint.style.cssText = 'font-size:11px;color:rgb(140,140,140);margin-top:4px;';
+                hint.style.cssText = `font-size:11px;color:${panelStyles_1.CC.subtle};margin-top:4px;`;
                 hint.textContent = 'Enter → Optimize    Shift+Enter → Optimize & Run';
                 const body = new widgets_1.Widget();
                 body.node.appendChild(input);
@@ -2271,6 +2385,7 @@ exports.panelPlugin = {
         // Submenu on both .jp-Cell and .jp-Notebook
         const historyMenu = new widgets_2.Menu({ commands: _app.commands });
         historyMenu.title.label = 'Agent';
+        historyMenu.addItem({ command: 'skillbot:cell-reference' });
         historyMenu.addItem({ command: 'skillbot:cell-optimize' });
         historyMenu.addItem({ type: 'separator' });
         historyMenu.addItem({ command: 'skillbot:cell-history' });
@@ -2283,5 +2398,21 @@ exports.panelPlugin = {
         });
         tracker.currentChanged.connect(() => register());
         setTimeout(register, 500);
+        // When a notebook file is deleted from the file browser, purge its
+        // conversation record so stale sessions don't linger in the switcher.
+        try {
+            const contents = (_a = _app.serviceManager) === null || _a === void 0 ? void 0 : _a.contents;
+            (_b = contents === null || contents === void 0 ? void 0 : contents.fileChanged) === null || _b === void 0 ? void 0 : _b.connect((_sender, change) => {
+                var _a;
+                if ((change === null || change === void 0 ? void 0 : change.type) === 'delete') {
+                    const p = ((_a = change.oldValue) === null || _a === void 0 ? void 0 : _a.path) || '';
+                    if (p && /\.ipynb$/.test(p))
+                        panel.onNotebookFileDeleted(p);
+                }
+            });
+        }
+        catch (e) {
+            console.error('[panel] fileChanged wiring failed:', e);
+        }
     },
 };

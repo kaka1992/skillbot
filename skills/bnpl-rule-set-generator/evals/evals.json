@@ -1,0 +1,29 @@
+{
+  "skill_name": "bnpl-rule-set-generator",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "帮我基于 df 和 check 生成一版 BNPL 规则集。df_path 是 /home/mira/files/sample_df.parquet，check_path 是 /home/mira/files/sample_check.parquet。日期列用 loan_date，标签列用 fpd7_flag，金额列用 fpd7_ovd_num，本金列用 fpd7_principal_den。oot 从 2026-05-20 开始，check 累计拦截率不超过 0.1，max_depth=5，fixed_feature_list=\"\"。features 先不要手填，如果你要自动推断的话先告诉我推断结果，再等我确认。",
+      "expected_output": "应识别为 BNPL 规则生成请求，正确抽取已给参数；当 features 为空时自动推断，但在执行前展示推断结果和完整参数总结，并等待用户确认。",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "帮我跑一版规则池和最终规则集，df 和 check 我都有，想控制 check 拦截率，oot 也需要切。标签列是 fpd7_flag，金额列是 fpd7_ovd_num，本金列是 fpd7_principal_den。其他你先帮我看看还缺什么。",
+      "expected_output": "应识别这是规则生成任务，但必须参数不完整；应定向追问缺失的必填参数，例如 df_path、check_path、date_col、oot_start_date、max_intercept、max_depth、fixed_feature_list，而不是直接执行。",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "用下面这组参数帮我生成规则集：df_path=/home/mira/files/sample_df.parquet；check_path=/home/mira/files/sample_check.parquet；date_col=loan_date；label_col=fpd7_flag；amount_col=fpd7_ovd_num；principal_col=fpd7_principal_den；oot_start_date=2026-05-20；max_intercept=0.08；max_depth=4；fixed_feature_list=bnpl_trade_model_v2,max_loan_hist_overdue_days；rule_pool_path=/home/mira/files/outputs/rule_pool_v2.csv；rule_set_path=/home/mira/files/outputs/final_rules_v2.csv。features 为空时你自动推断，但执行前先把完整参数发我确认。",
+      "expected_output": "应正确解析半结构化参数；若 features 未给出，应自动推断并在确认阶段展示；应明确 fixed_feature_list 非空意味着启用固定分裂特征约束，并在执行前等待用户确认。",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "我刚跑完一版规则集，现在想快速看下结果。规则池文件和最终规则集文件已经有了，你帮我简短解释一下：为什么最终只剩几条规则、当前 check 累计拦截率怎么看、压降率大概说明了什么。不用长报告，给我一个适合同组同学看的简洁结论。",
+      "expected_output": "应识别为规则相关轻量分析请求，并给出简洁的结果解读；不应把请求扩展成长报告、可视化或泛化数据分析。",
+      "files": []
+    }
+  ]
+}

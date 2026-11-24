@@ -3,8 +3,10 @@
 import json
 import logging
 import os
+import secrets
 import sys
 import time
+from contextlib import aclosing
 from pathlib import Path
 from typing import Optional
 
@@ -12,9 +14,10 @@ import tempfile
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
-from .session import SessionManager, _resolve_claude_home
+from agent.permissions import ExecutionMode
+from .session import SessionManager, SteerRejected, _resolve_claude_home
 
 # ---- config -----------------------------------------------------------
 
@@ -47,6 +50,22 @@ class ChatRequest(BaseModel):
     message: str
     timeout: Optional[int] = None
     allowed_tools: Optional[str] = None
+    execution_mode: ExecutionMode = ExecutionMode.DEFAULT
+    run_id: Optional[str] = None
+
+
+class SteerRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: str
+    message: str
+    control_token: str
+
+
+class PrepareRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_token: str
 
 
 class ChatResponse(BaseModel):
@@ -65,13 +84,45 @@ class SessionInfo(BaseModel):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "claude-code-server"}
+    return {"status": "ok", "service": "claude-code-server", "permission_policy_version": 1}
 
 
 @app.post("/sessions", status_code=201)
 async def create_session():
     s = manager.create()
-    return {"session_id": s.sid}
+    return {"session_id": s.sid, "session_token": s.session_token}
+
+
+@app.post("/sessions/{sid}/runs", status_code=201)
+async def prepare_run(sid: str, body: PrepareRunRequest):
+    s = manager.get(sid)
+    if not s:
+        raise HTTPException(404, f"Session {sid} not found")
+    if not secrets.compare_digest(s.session_token, body.session_token):
+        raise HTTPException(403, "INVALID_SESSION_TOKEN")
+    run = s.prepare_run()
+    return {
+        "session_id": sid,
+        "run_id": run.run_id,
+        "control_token": run.control_token,
+    }
+
+
+@app.post("/sessions/{sid}/runs/{run_id}/steer")
+async def steer_run(sid: str, run_id: str, body: SteerRequest):
+    s = manager.get(sid)
+    if not s:
+        raise HTTPException(404, f"Session {sid} not found")
+    try:
+        receipt = await s.steer(
+            run_id,
+            body.control_token,
+            body.message_id,
+            body.message,
+        )
+    except SteerRejected as exc:
+        raise HTTPException(exc.status_code, exc.code)
+    return receipt.as_dict()
 
 
 @app.get("/sessions")
@@ -115,8 +166,10 @@ async def chat(sid: str, body: ChatRequest):
                 body.message,
                 timeout=body.timeout or TIMEOUT,
                 allowed_tools=body.allowed_tools or ALLOWED_TOOLS or None,
-                    disallowed_tools=DISALLOWED_TOOLS or None,
+                disallowed_tools=DISALLOWED_TOOLS or None,
                 cwd=WORK_DIR,
+                execution_mode=body.execution_mode,
+                run_id=body.run_id,
             )
         except RuntimeError as e:
             logger.exception("Chat error for session %s", sid)
@@ -138,14 +191,17 @@ async def chat_stream(sid: str, body: ChatRequest):
     async def event_generator():
         async with s.lock:
             try:
-                async for chunk in s.send_stream(
+                async with aclosing(s.send_stream(
                     body.message,
                     timeout=body.timeout or TIMEOUT,
                     allowed_tools=body.allowed_tools or ALLOWED_TOOLS or None,
                     disallowed_tools=DISALLOWED_TOOLS or None,
                     cwd=WORK_DIR,
-                ):
-                    yield f"data: {json.dumps({'text': chunk})}\n\n"
+                    execution_mode=body.execution_mode,
+                    run_id=body.run_id,
+                )) as stream:
+                    async for chunk in stream:
+                        yield f"data: {json.dumps({'text': chunk})}\n\n"
             except RuntimeError as e:
                 yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
                 return
@@ -178,18 +234,21 @@ async def chat_trace(sid: str, body: ChatRequest):
     async def event_generator():
         async with s.lock:
             try:
-                async for chunk in s.send_stream_chunks(
+                async with aclosing(s.send_stream_chunks(
                     body.message,
                     timeout=body.timeout or TIMEOUT,
                     allowed_tools=body.allowed_tools or ALLOWED_TOOLS or None,
                     disallowed_tools=DISALLOWED_TOOLS or None,
                     cwd=WORK_DIR,
-                ):
-                    if chunk.text:
-                        yield f"data: {json.dumps({'type': 'text', 'text': chunk.text})}\n\n"
-                    if chunk.blocks:
-                        for b in chunk.blocks:
-                            yield f"data: {json.dumps({'type': b.type, 'data': b.data})}\n\n"
+                    execution_mode=body.execution_mode,
+                    run_id=body.run_id,
+                )) as stream:
+                    async for chunk in stream:
+                        if chunk.text:
+                            yield f"data: {json.dumps({'type': 'text', 'text': chunk.text})}\n\n"
+                        if chunk.blocks:
+                            for b in chunk.blocks:
+                                yield f"data: {json.dumps({'type': b.type, 'data': b.data})}\n\n"
             except RuntimeError as e:
                 yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
                 return

@@ -1,51 +1,62 @@
-"""Comm notification to frontend extension — fire-and-forget."""
+"""Compatibility wrapper for one-off Cell Comm requests."""
 
 from __future__ import annotations
 
 import logging
-import warnings
+from uuid import uuid4
 
-TARGET_NAME = "skillbot:execute-cell"
-_MAX_CODE_SIZE = 100_000  # 100KB max per cell to avoid choking the websocket
+from .cell_execution import (
+    CellCommClient,
+    CellExecutionRequest,
+    ReceiptPhase,
+    current_kernel_id,
+)
 
 _log = logging.getLogger(__name__)
+_clients: dict[int, CellCommClient] = {}
 
 
 def send_cell_via_comm(ns, code: str, auto: bool = False, cell_type: str = "code",
                        replace_cell_id: str = "", on_cell_id: callable | None = None) -> str:
-    """Notify frontend extension to create + optionally execute a cell.
+    """Send a versioned request outside an Agent execution batch.
 
-    Fire-and-forget: creates a comm, registers on_msg for async reply,
-    does NOT block or poll. The comm stays alive to receive the reply.
+    Agent-generated code uses ``ExecutionCoordinator`` directly. This wrapper
+    remains for plan markdown, snapshot restore, and hook compatibility.
     """
-    if len(code) > _MAX_CODE_SIZE:
-        _log.warning("send_cell_via_comm: code too large (%d bytes), truncating", len(code))
-        code = code[:_MAX_CODE_SIZE] + "\n# ...truncated..."
     try:
-        from comm import create_comm
-        shell = ns._shell
-        kernel = shell.kernel
+        from .magic import _get_magic, _notebook_path
+        from agent.permissions import ExecutionMode, check_cell_permission
 
-        if not hasattr(kernel, "comm_manager"):
-            return ""
+        if cell_type != "markdown":
+            inst = _get_magic()
+            decision = check_cell_permission(
+                getattr(inst, "_permission_mode", ExecutionMode.DEFAULT), auto,
+            )
+            if not decision.allowed:
+                _log.warning("Compatibility Cell dispatch denied: %s", decision.reason)
+                return ""
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)
-            comm = create_comm(TARGET_NAME,
-                               data={"code": code, "auto": auto, "cell_type": cell_type,
-                                      "replace_cell_id": replace_cell_id})
+        request_id = f"req_{uuid4().hex}"
+        batch_id = f"batch_{uuid4().hex}"
+        request = CellExecutionRequest(
+            request_id=request_id,
+            batch_id=batch_id,
+            notebook_path=_notebook_path(),
+            kernel_id=current_kernel_id(),
+            operation="replace" if replace_cell_id else "create",
+            code=code,
+            cell_type=cell_type,
+            auto_execute=auto,
+            replace_cell_id=replace_cell_id,
+        )
+        client = _clients.setdefault(id(ns._shell), CellCommClient(ns))
 
-            @comm.on_msg
-            def _on_msg(msg):
-                cell_id = msg.get("content", {}).get("data", {}).get("cell_id", "")
-                if cell_id and on_cell_id:
-                    on_cell_id(cell_id, code)
-                # Frontend replies with cell_id exactly once (see comm.ts), then close
-                try:
-                    comm.close()
-                except Exception:
-                    pass
-        return ""
+        def _on_receipt(receipt):
+            if receipt.phase is ReceiptPhase.MATERIALIZED and on_cell_id:
+                on_cell_id(receipt.cell_id, code)
+
+        client.send(request, _on_receipt)
+        return request_id
     except Exception:
         _log.debug("send_cell_via_comm: failed", exc_info=True)
         return ""

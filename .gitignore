@@ -123,3 +123,6 @@ config.yaml
 settings.json
 jupyter_agent.yaml
 conf/claude.md
+
+# Vendored third-party runtimes bundled into skills (installed via pip, not committed)
+skills/*/scripts/xgboost_runtime/

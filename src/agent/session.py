@@ -80,19 +80,40 @@ class AgentSession:
         if self._client and self._session_id:
             self._client.interrupt(self._session_id)
 
+    def prepare_run(self) -> dict | None:
+        """Prepare the control channel used to steer the next streamed run."""
+        if not self._client or not self._session_id:
+            return None
+        return self._client.prepare_run(self._session_id)
+
     # -- streaming --
 
     def stream(self, prompt: str, timeout: int | None = None,
-               show_text: bool = True, on_chunk=None, on_thinking=None) -> str:
+               show_text: bool = True, on_chunk=None, on_thinking=None,
+               execution_mode: str | None = None, on_steer=None) -> str:
         if self._client:
             prompt = self._client._maybe_inject_skills(prompt)
-        return self._stream(self._client, prompt, self._session_id, timeout, show_text, on_chunk, on_thinking)
+        if execution_mode is None:
+            return self._stream(
+                self._client, prompt, self._session_id, timeout,
+                show_text, on_chunk, on_thinking, on_steer,
+            )
+        from .permissions import ExecutionMode
+        mode = ExecutionMode(execution_mode)
+        self._client._backend.set_execution_mode(mode.value)
+        try:
+            return self._stream(
+                self._client, prompt, self._session_id, timeout,
+                show_text, on_chunk, on_thinking, on_steer,
+            )
+        finally:
+            self._client._backend.set_execution_mode(ExecutionMode.DEFAULT.value)
 
     @staticmethod
     def _stream(
         client, prompt: str, session: str,
         timeout: int | None = None, show_text: bool = True,
-        on_chunk=None, on_thinking=None,
+        on_chunk=None, on_thinking=None, on_steer=None,
     ) -> str:
         if timeout is not None and client is not None:
             client._backend._timeout = timeout
@@ -155,6 +176,8 @@ class AgentSession:
                                         f"  {color}{rest}\033[0m\n"
                                         f"  </details>\n"
                                     )
+                        elif b.type == "steer_receipt" and b.data and on_steer:
+                            on_steer(b.data)
                     for b in chunk.blocks:
                         if b.type == "thinking" and b.data:
                             t = b.data.get("thinking", "").strip()

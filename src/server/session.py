@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import secrets
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -10,10 +11,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from claude_agent_sdk import (
-    AgentDefinition,
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
+    HookMatcher,
+    PermissionResultDeny,
     ResultMessage,
     StreamEvent,
     TaskNotificationMessage,
@@ -26,6 +28,7 @@ from claude_agent_sdk import (
 )
 
 from chat.base import StreamChunk, TraceBlock  # noqa: E402
+from agent.permissions import BLOCKED_TOOLS, SDK_TOOLS, ExecutionMode, ToolPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -83,13 +86,10 @@ def _build_options(
     cwd: str | None = None,
     skills: list[str] | None = None,
     disallowed_tools: str | None = None,
+    policy_hook=None,
 ) -> ClaudeAgentOptions:
     claude_home = _resolve_claude_home()
     _ensure_claude_home(claude_home)
-
-    tools = None
-    if allowed_tools:
-        tools = [t.strip() for t in allowed_tools.split(",") if t.strip()]
 
     disallow: list[str] = []
     if disallowed_tools:
@@ -105,33 +105,34 @@ def _build_options(
             skills = mgr.active_skills
 
     return ClaudeAgentOptions(
-        allowed_tools=tools or [],
-        disallowed_tools=disallow,
+        tools=[t for t in SDK_TOOLS if not allowed_tools or t in {
+            n.strip() for n in allowed_tools.split(",")
+        }],
+        allowed_tools=[],
+        disallowed_tools=sorted(set(BLOCKED_TOOLS) | set(disallow)),
         skills=skills if skills is not None else "all",
-        permission_mode="bypassPermissions",
+        permission_mode="default",
+        can_use_tool=_deny_unhandled_tool,
+        hooks={"PreToolUse": [HookMatcher(hooks=[policy_hook or _deny_tool_hook])]},
         cwd=cwd or os.getcwd(),
         env={"HOME": str(claude_home)},
         setting_sources=["user"],
         max_turns=50,
         include_partial_messages=True,
-        agents={
-            "general-purpose": AgentDefinition(
-                description="General-purpose agent for complex multi-step tasks",
-                prompt="You are a capable agent. Complete the assigned task thoroughly and report results.",
-                tools=["Read", "Write", "Edit", "Bash", "Grep", "Glob"],
-            ),
-            "coding": AgentDefinition(
-                description="Coding specialist for writing and refactoring code",
-                prompt="You are a coding specialist. Write clean, working code. Explain your approach briefly then produce the implementation.",
-                tools=["Read", "Write", "Edit", "Bash", "Grep", "Glob"],
-            ),
-            "code-reviewer": AgentDefinition(
-                description="Reviews code for bugs, style, and security issues",
-                prompt="You are a code reviewer. Analyze the code carefully. Report bugs, style violations, and security concerns.",
-                tools=["Read", "Grep", "Glob"],
-            ),
-        },
+        agents={},
     )
+
+
+async def _deny_unhandled_tool(_name, _data, _context):
+    return PermissionResultDeny(message="Tool not authorized by execution policy")
+
+
+async def _deny_tool_hook(_data, _tool_id, _context):
+    return {"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": "NO_ACTIVE_REQUEST",
+    }}
 
 
 @dataclass
@@ -141,17 +142,214 @@ class Message:
     time: float = field(default_factory=time.time)
 
 
+@dataclass
+class SteerReceipt:
+    message_id: str
+    seq: int
+    status: str = "accepted"
+    message: str = ""
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "message_id": self.message_id,
+            "seq": self.seq,
+            "status": self.status,
+        }
+
+
+@dataclass
+class RunContext:
+    run_id: str
+    control_token: str
+    status: str = "prepared"
+    execution_mode: ExecutionMode | None = None
+    steers: dict[str, SteerReceipt] = field(default_factory=dict)
+
+
+class SteerRejected(RuntimeError):
+    def __init__(self, code: str, status_code: int = 409) -> None:
+        super().__init__(code)
+        self.code = code
+        self.status_code = status_code
+
+
 class Session:
     """A single Claude session backed by a ClaudeSDKClient."""
 
     def __init__(self, sid: str) -> None:
         self.sid = sid
+        self.session_token = secrets.token_urlsafe(32)
         self.history: list[Message] = []
         self.created_at = time.time()
         self.lock = asyncio.Lock()
         self._client: ClaudeSDKClient | None = None
         self._pending_tool_ids: list[str] = []
         self._needs_tool_fix: bool = False
+        self._policy: ToolPolicy | None = None
+        self._run: RunContext | None = None
+        self._steer_lock = asyncio.Lock()
+
+    def prepare_run(self) -> RunContext:
+        if self._run is not None and self._run.status in {"prepared", "active"}:
+            return self._run
+        self._run = RunContext(
+            run_id=uuid.uuid4().hex,
+            control_token=secrets.token_urlsafe(32),
+        )
+        return self._run
+
+    def _activate_run(
+        self,
+        run_id: str | None,
+        execution_mode: ExecutionMode,
+    ) -> RunContext:
+        if run_id:
+            run = self._run
+            if run is None or run.run_id != run_id or run.status != "prepared":
+                raise RuntimeError("INVALID_PREPARED_RUN")
+        else:
+            run = self.prepare_run()
+        run.status = "active"
+        run.execution_mode = ExecutionMode(execution_mode)
+        return run
+
+    async def steer(
+        self,
+        run_id: str,
+        control_token: str,
+        message_id: str,
+        message: str,
+    ) -> SteerReceipt:
+        text = message.strip()
+        if not text:
+            raise SteerRejected("EMPTY_STEER", 422)
+        if len(text) > 8000:
+            raise SteerRejected("STEER_TOO_LARGE", 422)
+        if not message_id or len(message_id) > 128:
+            raise SteerRejected("INVALID_MESSAGE_ID", 422)
+
+        async with self._steer_lock:
+            run = self._run
+            if run is None or run.run_id != run_id or run.status != "active":
+                raise SteerRejected("RUN_NOT_ACTIVE")
+            if not secrets.compare_digest(run.control_token, control_token):
+                raise SteerRejected("INVALID_CONTROL_TOKEN", 403)
+            if message_id in run.steers:
+                return run.steers[message_id]
+            if len(run.steers) >= 10:
+                raise SteerRejected("STEER_LIMIT_REACHED", 429)
+            if self._client is None or self._policy is None:
+                raise SteerRejected("RUN_NOT_READY")
+
+            receipt = SteerReceipt(
+                message_id=message_id,
+                seq=len(run.steers) + 1,
+                message=text,
+            )
+            run.steers[message_id] = receipt
+            try:
+                await self._client.query(
+                    "[Steering update for the current task. Preserve valid work "
+                    "already completed, apply this new direction, and state how "
+                    f"you handled it in the final answer.]\n\n{text}"
+                )
+            except Exception:
+                run.steers.pop(message_id, None)
+                raise SteerRejected("STEER_DELIVERY_FAILED", 503)
+            self.add("user", text)
+            logger.info(
+                "steer session=%s run=%s seq=%d message_id=%s accepted",
+                self.sid, run_id, receipt.seq, message_id,
+            )
+            return receipt
+
+    async def _complete_steers(self) -> list[dict[str, object]]:
+        async with self._steer_lock:
+            run = self._run
+            if run is None:
+                return []
+            run.status = "closing"
+            completed = []
+            for receipt in run.steers.values():
+                if receipt.status == "accepted":
+                    receipt.status = "applied"
+                    completed.append(receipt.as_dict())
+            return completed
+
+    async def _finish_run(self, succeeded: bool) -> None:
+        async with self._steer_lock:
+            run = self._run
+            if run is None:
+                return
+            for receipt in run.steers.values():
+                if receipt.status == "accepted":
+                    receipt.status = "not_consumed"
+            run.status = "completed" if succeeded else "failed"
+
+    async def _pre_tool_use(self, data, _tool_id, _context):
+        policy = self._policy
+        try:
+            decision = policy.decide(data["tool_name"], data["tool_input"]) if policy else None
+            allowed = decision is not None and decision.allowed
+            reason = decision.reason if decision else "NO_ACTIVE_REQUEST"
+        except Exception:
+            allowed, reason = False, "POLICY_CHECK_FAILED"
+        logger.info(
+            "permission session=%s mode=%s tool=%s call=%s allowed=%s reason=%s",
+            self.sid, policy.mode.value if policy else "inactive",
+            data.get("tool_name", ""), data.get("tool_use_id", ""),
+            allowed, reason,
+        )
+        return {"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow" if allowed else "deny",
+            "permissionDecisionReason": reason,
+        }}
+
+    def _request_options(self, mode, cwd, allowed_tools, disallowed_tools):
+        from chat.skill import SkillManager
+
+        work = Path(cwd or os.getcwd()).resolve()
+        artifacts = work / "artifacts" / self.sid
+        skill_root = _resolve_claude_home() / ".claude" / "skills"
+        active_skills = frozenset(SkillManager(str(skill_root)).active_skills)
+        configured_roots = tuple(
+            Path(p).expanduser().resolve()
+            for p in os.environ.get("CLAUDE_SERVER_READ_ROOTS", "").split(os.pathsep) if p
+        )
+        roots = (work, skill_root, *configured_roots)
+        allowed = frozenset(allowed_tools.split(",")) if allowed_tools else frozenset(SDK_TOOLS)
+        denied = frozenset(disallowed_tools.split(",")) if disallowed_tools else frozenset()
+        allowed = frozenset(t.strip() for t in allowed)
+        server_allowed = os.environ.get("CLAUDE_SERVER_ALLOWED_TOOLS", "")
+        if server_allowed:
+            allowed &= frozenset(t.strip() for t in server_allowed.split(","))
+        denied |= frozenset(
+            t.strip() for t in os.environ.get("CLAUDE_SERVER_DISALLOWED_TOOLS", "").split(",") if t
+        )
+        policy = ToolPolicy(
+            ExecutionMode(mode), work, roots, artifacts,
+            allowed, frozenset(t.strip() for t in denied), active_skills,
+        )
+        options = _build_options(
+            cwd=str(work),
+            skills=sorted(active_skills),
+            policy_hook=self._pre_tool_use,
+        )
+        self._policy = policy
+        return options
+
+    def _permission_note(self, message: str) -> str:
+        policy = self._policy
+        return (
+            f"[Execution policy: {policy.mode.value}. "
+            f"Read roots: {', '.join(str(p) for p in policy.read_roots)}. "
+            f"Write/Edit only in {policy.write_root} when execute/auto. "
+            "Bash, native delegation, and external tools are disabled. "
+            "Answer ordinary questions directly; do not turn simple text replies into code. "
+            "Only when a task requires running code, return notebook code for approval.]\n\n"
+            + message
+        )
 
     def add(self, role: str, content: str) -> None:
         self.history.append(Message(role=role, content=content))
@@ -164,17 +362,21 @@ class Session:
         allowed_tools: str | None = None,
         cwd: str | None = None,
         disallowed_tools: str | None = None,
+        execution_mode: ExecutionMode = ExecutionMode.DEFAULT,
+        run_id: str | None = None,
     ) -> str:
         self.add("user", message)
-        options = _build_options(allowed_tools=allowed_tools, cwd=cwd, disallowed_tools=disallowed_tools)
-
         await self._apply_tool_fix()
+        options = self._request_options(execution_mode, cwd, allowed_tools, disallowed_tools)
+        self._activate_run(run_id, execution_mode)
 
+        completed = False
         try:
             text = await asyncio.wait_for(
-                self._send_inner(message, options),
+                self._send_inner(self._permission_note(message), options),
                 timeout=timeout,
             )
+            completed = True
         except asyncio.TimeoutError:
             raise RuntimeError(f"claude timed out after {timeout}s")
         except asyncio.CancelledError:
@@ -183,6 +385,11 @@ class Session:
             logger.exception("Session %s error", self.sid)
             self.add("error", message)
             raise
+        finally:
+            self._policy = None
+            await self._finish_run(completed)
+            if not completed:
+                await self.close()
 
         self.add("assistant", text)
         return text
@@ -192,9 +399,8 @@ class Session:
     ) -> str:
         if self._client is None:
             self._client = ClaudeSDKClient(options=options)
-            await self._client.connect(prompt=message)
-        else:
-            await self._client.query(message)
+            await self._client.connect()
+        await self._client.query(message)
 
         text_parts: list[str] = []
         async for msg in self._client.receive_response():
@@ -216,18 +422,21 @@ class Session:
         allowed_tools: str | None = None,
         cwd: str | None = None,
         disallowed_tools: str | None = None,
+        execution_mode: ExecutionMode = ExecutionMode.DEFAULT,
+        run_id: str | None = None,
     ) -> AsyncIterator[str]:
         """Send a message and yield text chunks progressively.
 
         The caller MUST hold ``self.lock`` for the entire iteration.
         """
         self.add("user", message)
-        options = _build_options(allowed_tools=allowed_tools, cwd=cwd, disallowed_tools=disallowed_tools)
-
         await self._apply_tool_fix()
+        options = self._request_options(execution_mode, cwd, allowed_tools, disallowed_tools)
+        self._activate_run(run_id, execution_mode)
 
         full_text_parts: list[str] = []
-        gen = self._send_inner_stream(message, options)
+        gen = self._send_inner_stream(self._permission_note(message), options)
+        completed = False
         try:
             while True:
                 try:
@@ -238,6 +447,7 @@ class Session:
                     break
                 full_text_parts.append(chunk)
                 yield chunk
+            completed = True
         except asyncio.TimeoutError:
             raise RuntimeError(f"claude timed out after {timeout}s")
         except asyncio.CancelledError:
@@ -251,6 +461,14 @@ class Session:
             logger.exception("Session %s error", self.sid)
             self.add("error", message)
             raise
+        finally:
+            self._policy = None
+            await self._finish_run(completed)
+            try:
+                await gen.aclose()
+            finally:
+                if not completed:
+                    await self.close()
 
         self.add("assistant", "".join(full_text_parts))
 
@@ -259,9 +477,8 @@ class Session:
     ) -> AsyncIterator[str]:
         if self._client is None:
             self._client = ClaudeSDKClient(options=options)
-            await self._client.connect(prompt=message)
-        else:
-            await self._client.query(message)
+            await self._client.connect()
+        await self._client.query(message)
 
         async for msg in self._client.receive_response():
             if isinstance(msg, StreamEvent):
@@ -284,21 +501,24 @@ class Session:
         allowed_tools: str | None = None,
         cwd: str | None = None,
         disallowed_tools: str | None = None,
+        execution_mode: ExecutionMode = ExecutionMode.DEFAULT,
+        run_id: str | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Send a message and yield StreamChunks with full trace data.
 
         The caller MUST hold ``self.lock`` for the entire iteration.
         """
         self.add("user", message)
-        options = _build_options(allowed_tools=allowed_tools, cwd=cwd, disallowed_tools=disallowed_tools)
-
         # Fix interrupted tool_use state before next query
         if self._needs_tool_fix:
             logger.info("Session %s: applying tool fix, pending_ids=%s", self.sid, self._pending_tool_ids)
         await self._apply_tool_fix()
+        options = self._request_options(execution_mode, cwd, allowed_tools, disallowed_tools)
+        self._activate_run(run_id, execution_mode)
 
         text_parts: list[str] = []
-        gen = self._send_inner_chunks(message, options)
+        gen = self._send_inner_chunks(self._permission_note(message), options)
+        completed = False
         try:
             while True:
                 try:
@@ -317,6 +537,7 @@ class Session:
                             if tid:
                                 self._pending_tool_ids.append(tid)
                 yield chunk
+            completed = True
         except asyncio.TimeoutError:
             raise RuntimeError(f"claude timed out after {timeout}s")
         except asyncio.CancelledError:
@@ -332,6 +553,14 @@ class Session:
             logger.exception("Session %s error", self.sid)
             self.add("error", message)
             raise
+        finally:
+            self._policy = None
+            await self._finish_run(completed)
+            try:
+                await gen.aclose()
+            finally:
+                if not completed:
+                    await self.close()
 
         self.add("assistant", "".join(text_parts))
 
@@ -340,9 +569,8 @@ class Session:
     ) -> AsyncIterator[StreamChunk]:
         if self._client is None:
             self._client = ClaudeSDKClient(options=options)
-            await self._client.connect(prompt=message)
-        else:
-            await self._client.query(message)
+            await self._client.connect()
+        await self._client.query(message)
 
         async for msg in self._client.receive_response():
             blocks: list[TraceBlock] = []
@@ -420,6 +648,11 @@ class Session:
                         "usage": msg.usage,
                     },
                 ))
+                for receipt in await self._complete_steers():
+                    blocks.append(TraceBlock(
+                        type="steer_receipt",
+                        data=receipt,
+                    ))
 
             yield StreamChunk(
                 text="".join(text_parts),
@@ -428,6 +661,7 @@ class Session:
 
     async def interrupt(self) -> None:
         """Interrupt current query — sends signal to subprocess, preserves context."""
+        self._policy = None
         if self._client is not None:
             logger.info("Session %s: interrupt — tool_ids=%s", self.sid, self._pending_tool_ids)
             self._needs_tool_fix = True
@@ -473,9 +707,11 @@ class Session:
                 self._client = None
 
     async def close(self) -> None:
+        self._policy = None
         if self._client is not None:
-            await self._client.disconnect()
+            client = self._client
             self._client = None
+            await client.disconnect()
 
     def to_dict(self) -> dict:
         return {

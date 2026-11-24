@@ -129,20 +129,32 @@ class TestClaudeTrace:
         assert all(isinstance(c, StreamChunk) for c in chunks)
 
     def test_stream_chunks_tool_use_prompt(self, claude_client):
-        """A prompt requiring Python execution emits tool_use + tool_result blocks."""
-        chunks = list(
-            claude_client.stream_chunks(
-                "使用Python执行: print('hello_trace_test')",
-                session="trace-tool",
+        """Default mode permits scoped reads, not arbitrary Python execution."""
+        import os
+        import tempfile
+        from pathlib import Path
+        from server.session import _resolve_claude_home
+
+        work = Path(os.environ.get("CLAUDE_SERVER_WORK_DIR") or _resolve_claude_home() / "run")
+        work.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", dir=work) as fixture:
+            fixture.write("TRACE_READ_SENTINEL")
+            fixture.flush()
+            chunks = list(
+                claude_client.stream_chunks(
+                    f"Use the Read tool to read {fixture.name}. Reply with its content.",
+                    session="trace-tool",
+                )
             )
-        )
         tool_blocks = [
             b for c in chunks if c.blocks
             for b in c.blocks if b.type in ("tool_use", "tool_result")
         ]
         assert len(tool_blocks) >= 1, f"No tool blocks in {chunks}"
         tool_names = {b.data.get("name") for b in tool_blocks if b.type == "tool_use"}
-        assert tool_names, f"Expected tool blocks: {tool_blocks}"
+        assert "Read" in tool_names, f"Expected Read tool: {tool_blocks}"
+        assert "Bash" not in tool_names
+        assert "TRACE_READ_SENTINEL" in "".join(c.text for c in chunks)
 
 
 class TestClaudeSessionManagement:
